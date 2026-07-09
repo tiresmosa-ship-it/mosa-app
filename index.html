@@ -1,0 +1,1652 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+<title>MOSA Neumáticos</title>
+<meta name="description" content="Gestión de neumáticos para flotas de camiones - MOSA" />
+<meta name="theme-color" content="#FAFAF8" />
+<link rel="manifest" href="manifest.json" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+<link rel="icon" href="icon-192.png" />
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700;800&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          cream: '#FAFAF8',
+          ink: '#1a1a1a',
+          forest: '#2D5016',
+          forestdark: '#1f3a0f'
+        },
+        fontFamily: {
+          display: ['"Playfair Display"', 'serif'],
+          sans: ['Inter', 'sans-serif']
+        }
+      }
+    }
+  }
+</script>
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone@7/babel.min.js" crossorigin></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" crossorigin></script>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js" crossorigin></script>
+
+<style>
+  html, body { font-family: 'Inter', sans-serif; background:#FAFAF8; -webkit-tap-highlight-color: transparent; }
+  .font-display { font-family: 'Playfair Display', serif; }
+  * { -webkit-font-smoothing: antialiased; }
+  input, select, textarea { font-family: 'Inter', sans-serif; }
+  ::-webkit-scrollbar { height: 8px; width: 8px; }
+  ::-webkit-scrollbar-thumb { background: #d8d4cc; border-radius: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+  .safe-top { padding-top: env(safe-area-inset-top); }
+  @keyframes pulse-soft { 0%,100%{opacity:1} 50%{opacity:.55} }
+  .animate-pulse-soft { animation: pulse-soft 1.8s ease-in-out infinite; }
+  .field-alert { border-color:#dc2626 !important; background:#fef2f2 !important; }
+  .spinner { border: 3px solid #e5e2da; border-top-color: #2D5016; border-radius: 50%; width: 22px; height: 22px; animation: spin 0.7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body class="bg-cream text-ink">
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react" data-type="module">
+const { useState, useEffect, useRef, useMemo, useCallback, createContext, useContext } = React;
+
+/* =====================================================================
+   CONFIG & CONSTANTES
+===================================================================== */
+const SUPABASE_URL = "https://dnbrqjenkiwobzfssxlf.supabase.co";
+const SUPABASE_KEY = "sb_publishable_zi1xe8N5H1nx_X6xbb4BjQ_a4eqc6G0";
+const CLIENTE_ID_DEFAULT = "la_portada";
+const ADMIN_USER = "admin";
+const ADMIN_PASS = "mosadmin2026";
+
+const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+const TOOLS_CHECKLIST = [
+  "Dado 33","Dado 32","Dado 22","Gata","Medidor PSI","Profundímetro",
+  "Caimán","Sacatapas","Cuñas","Mangueras","Banquillos",
+  "Desmontadora neumática","Extractor de rueda","Conos verdes",
+  "Destalonador","Espejo","Barra para montar","Turbina","Copa",
+  "Rulín","Marcador Elrick","Inflador","Llave punta corona 16",
+  "Atomizador rost off","Sacapepas","Llave punta corona 14",
+  "Limpieza taller","Pata de cabra","Multiplicador","Chita",
+  "Pistola 1\"","Cadenas","Alicate pequeño"
+];
+
+/* =====================================================================
+   UTILIDADES
+===================================================================== */
+function cx(...xs) { return xs.filter(Boolean).join(" "); }
+
+function todayISO() {
+  const d = new Date();
+  return d.getFullYear() + "-" + pad2(d.getMonth()+1) + "-" + pad2(d.getDate());
+}
+function nowHM() {
+  const d = new Date();
+  return pad2(d.getHours()) + ":" + pad2(d.getMinutes());
+}
+function pad2(n) { n = String(n); return n.length < 2 ? "0"+n : n; }
+
+function isoWeek(date) {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const dayNum = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+}
+
+function uuid() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, c => {
+    const r = Math.random()*16|0, v = c === "x" ? r : (r&0x3|0x8);
+    return v.toString(16);
+  });
+}
+
+async function sha256Hex(text) {
+  const enc = new TextEncoder().encode(text);
+  const buf = await crypto.subtle.digest("SHA-256", enc);
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,"0")).join("");
+}
+
+function formatDateCL(iso) {
+  if (!iso) return "-";
+  const [y,m,d] = iso.split("-");
+  return `${d}-${m}-${y}`;
+}
+
+/* =====================================================================
+   ALMACENAMIENTO LOCAL (sesión, cache, cola offline)
+===================================================================== */
+const LS = {
+  session: "mosa_session",
+  queue: "mosa_queue",
+  cacheEquipos: (cid) => `mosa_cache_equipos_${cid}`,
+  cacheMecanicos: (cid) => `mosa_cache_mecanicos_${cid}`,
+  cacheConfig: (cid) => `mosa_cache_config_${cid}`,
+};
+
+function getSession() {
+  try { return JSON.parse(localStorage.getItem(LS.session) || "null"); } catch(e) { return null; }
+}
+function setSession(s) { localStorage.setItem(LS.session, JSON.stringify(s)); }
+function clearSession() { localStorage.removeItem(LS.session); }
+
+function getQueue() {
+  try { return JSON.parse(localStorage.getItem(LS.queue) || "[]"); } catch(e) { return []; }
+}
+function setQueue(q) { localStorage.setItem(LS.queue, JSON.stringify(q)); window.dispatchEvent(new Event("mosa-queue-changed")); }
+function pushQueue(item) { const q = getQueue(); q.push(item); setQueue(q); }
+function removeFromQueue(id) { setQueue(getQueue().filter(x => x.id !== id)); }
+
+function getCache(key, fallback) {
+  try { return JSON.parse(localStorage.getItem(key) || "null") || fallback; } catch(e) { return fallback; }
+}
+function setCache(key, val) { localStorage.setItem(key, JSON.stringify(val)); }
+
+/* =====================================================================
+   CAPA DE DATOS (Supabase)
+===================================================================== */
+const db = {
+  async fetchEquipos(clienteId) {
+    const { data, error } = await supabase.from("equipos").select("*").eq("cliente_id", clienteId).order("numero_interno");
+    if (error) throw error;
+    setCache(LS.cacheEquipos(clienteId), data);
+    return data;
+  },
+  async fetchMecanicos(clienteId) {
+    const { data, error } = await supabase.from("mecanicos").select("*").eq("cliente_id", clienteId).order("nombre");
+    if (error) throw error;
+    setCache(LS.cacheMecanicos(clienteId), data);
+    return data;
+  },
+  async fetchConfig(clienteId) {
+    const { data, error } = await supabase.from("config_cliente").select("*").eq("cliente_id", clienteId);
+    if (error) throw error;
+    const map = {};
+    (data||[]).forEach(r => map[r.clave] = r.valor);
+    setCache(LS.cacheConfig(clienteId), map);
+    return map;
+  },
+  async setConfigValor(clienteId, clave, valor) {
+    const { error } = await supabase.from("config_cliente").upsert(
+      { cliente_id: clienteId, clave, valor: String(valor) },
+      { onConflict: "cliente_id,clave" }
+    );
+    if (error) throw error;
+  },
+  async fetchNeumaticoPorFuego(clienteId, numeroFuego) {
+    const { data, error } = await supabase.from("neumaticos").select("*")
+      .eq("cliente_id", clienteId).eq("numero_fuego", numeroFuego).maybeSingle();
+    if (error) throw error;
+    return data;
+  },
+};
+
+/* =====================================================================
+   CORRELATIVOS (numero_auditoria, numero_cambio, numero_flash, numero_hoja)
+   Se leen/incrementan en config_cliente. Se cachean offline y se
+   compensa con la cantidad de items pendientes en cola del mismo tipo
+   para no repetir numeros mientras no hay conexion.
+===================================================================== */
+async function obtenerSiguienteNumero(clienteId, clave) {
+  let base = 1;
+  const online = navigator.onLine;
+  if (online) {
+    try {
+      const cfg = await db.fetchConfig(clienteId);
+      base = parseInt(cfg[clave] || "1", 10) || 1;
+    } catch(e) {
+      const cached = getCache(LS.cacheConfig(clienteId), {});
+      base = parseInt(cached[clave] || "1", 10) || 1;
+    }
+  } else {
+    const cached = getCache(LS.cacheConfig(clienteId), {});
+    base = parseInt(cached[clave] || "1", 10) || 1;
+  }
+  const pendientes = getQueue().filter(q => q.clienteId === clienteId && q.numeroClave === clave).length;
+  return base + pendientes;
+}
+
+async function confirmarUsoNumero(clienteId, clave, numeroUsado) {
+  if (!navigator.onLine) return;
+  try {
+    const cfg = await db.fetchConfig(clienteId);
+    const actual = parseInt(cfg[clave] || "1", 10) || 1;
+    const siguiente = Math.max(actual, numeroUsado + 1);
+    if (siguiente !== actual) await db.setConfigValor(clienteId, clave, siguiente);
+  } catch(e) { /* si falla, el proximo obtenerSiguienteNumero recalcula */ }
+}
+
+/* =====================================================================
+   MARCA DE FUEGO AUTOMATICA
+===================================================================== */
+function generarFuegoLaPortada(numeroInterno, posicion, fecha) {
+  const d = fecha ? new Date(fecha+"T00:00:00") : new Date();
+  const semana = pad2(isoWeek(d));
+  const anio = pad2(d.getFullYear() % 100);
+  return `${numeroInterno}${semana}${anio}${posicion}`;
+}
+
+async function generarFuegoSecuencial(clienteId) {
+  const { data, error } = await supabase.from("neumaticos").select("numero_fuego")
+    .eq("cliente_id", clienteId).order("fecha_ingreso", { ascending: false }).limit(1);
+  let base = 1;
+  if (!error && data && data.length) {
+    const n = parseInt(data[0].numero_fuego, 10);
+    if (!isNaN(n)) base = n + 1;
+  } else {
+    const cfg = await db.fetchConfig(clienteId).catch(() => ({}));
+    base = parseInt(cfg["numero_fuego_inicio"] || "1", 10) || 1;
+  }
+  return String(base);
+}
+
+/* =====================================================================
+   MOTOR DE SINCRONIZACION OFFLINE
+===================================================================== */
+let syncing = false;
+async function syncQueue(onProgress) {
+  if (syncing || !navigator.onLine) return;
+  syncing = true;
+  try {
+    let queue = getQueue();
+    for (const item of queue.slice().sort((a,b) => a.ts - b.ts)) {
+      try {
+        await enviarItem(item);
+        removeFromQueue(item.id);
+        if (item.numeroClave) await confirmarUsoNumero(item.clienteId, item.numeroClave, item.numeroUsado);
+        if (onProgress) onProgress();
+      } catch (e) {
+        console.error("Error sincronizando item", item, e);
+        break; // detener FIFO si falla uno (probablemente sin red real)
+      }
+    }
+  } finally {
+    syncing = false;
+  }
+}
+
+async function enviarItem(item) {
+  switch (item.tipo) {
+    case "auditoria": return enviarAuditoria(item.data);
+    case "cambio": return enviarCambio(item.data);
+    case "flash": return enviarFlash(item.data);
+    case "novedad": return enviarNovedad(item.data);
+    default: throw new Error("Tipo desconocido " + item.tipo);
+  }
+}
+
+async function enviarAuditoria(data) {
+  const { posiciones, ...cab } = data;
+  const { error: e1 } = await supabase.from("auditorias").insert(cab);
+  if (e1) throw e1;
+  const rows = posiciones.filter(p => p.numero_fuego).map(p => ({ ...p, auditoria_id: cab.id_auditoria }));
+  if (rows.length) {
+    const { error: e2 } = await supabase.from("auditoria_posiciones").insert(rows);
+    if (e2) throw e2;
+  }
+}
+
+async function enviarCambio(data) {
+  const { sale, entra, ...cab } = data;
+  const { error: e1 } = await supabase.from("cambios_neumaticos").insert(cab);
+  if (e1) throw e1;
+  const detalle = [];
+  for (const s of sale) {
+    if (!s.numero_fuego) continue;
+    detalle.push({
+      id: uuid(), cambio_id: cab.id_cambio, tipo: "sale", numero_fuego: s.numero_fuego,
+      posicion: s.posicion || null, milimetros: s.milimetros || null, psi: s.psi || null,
+      estado: null, motivo_salida: s.motivo || null
+    });
+    await actualizarNeumaticoSale(cab.cliente_id, s);
+  }
+  for (const en of entra) {
+    if (!en.numero_fuego) continue;
+    detalle.push({
+      id: uuid(), cambio_id: cab.id_cambio, tipo: "entra", numero_fuego: en.numero_fuego,
+      posicion: en.posicion || null, milimetros: en.milimetros || null, psi: en.psi || null,
+      estado: en.estado || null, motivo_salida: null
+    });
+    await actualizarNeumaticoEntra(cab.cliente_id, cab.equipo_id, en);
+  }
+  if (detalle.length) {
+    const { error: e2 } = await supabase.from("cambio_detalle").insert(detalle);
+    if (e2) throw e2;
+  }
+}
+
+async function actualizarNeumaticoSale(clienteId, s) {
+  const existente = await db.fetchNeumaticoPorFuego(clienteId, s.numero_fuego);
+  const estado = s.motivo === "baja" ? "baja" : "transito";
+  if (existente) {
+    await supabase.from("neumaticos").update({ estado_actual: estado, equipo_actual: null, posicion_actual: null }).eq("id_neumatico", existente.id_neumatico);
+  } else {
+    await supabase.from("neumaticos").insert({ id_neumatico: uuid(), numero_fuego: s.numero_fuego, cliente_id: clienteId, estado_actual: estado, equipo_actual: null, posicion_actual: null, fecha_ingreso: todayISO(), activo: true });
+  }
+}
+
+async function actualizarNeumaticoEntra(clienteId, equipoId, en) {
+  const existente = await db.fetchNeumaticoPorFuego(clienteId, en.numero_fuego);
+  if (existente) {
+    await supabase.from("neumaticos").update({ estado_actual: en.estado || existente.estado_actual, equipo_actual: equipoId, posicion_actual: en.posicion || null }).eq("id_neumatico", existente.id_neumatico);
+  } else {
+    await supabase.from("neumaticos").insert({
+      id_neumatico: uuid(), numero_fuego: en.numero_fuego, cliente_id: clienteId,
+      marca: en.marca || null, modelo: en.modelo || null, medida: en.medida || null,
+      estado_actual: en.estado || "nuevo", equipo_actual: equipoId, posicion_actual: en.posicion || null,
+      fecha_ingreso: todayISO(), activo: true
+    });
+  }
+}
+
+async function enviarFlash(data) {
+  const { error } = await supabase.from("flash_diario").insert(data);
+  if (error) throw error;
+}
+
+async function enviarNovedad(data) {
+  const { checklist, ...cab } = data;
+  const { error: e1 } = await supabase.from("novedades_diarias").insert(cab);
+  if (e1) throw e1;
+  const rows = checklist.filter(c => c.cantidad !== "" && c.cantidad != null).map(c => ({ id: uuid(), novedad_id: cab.id, herramienta: c.herramienta, cantidad: c.cantidad }));
+  if (rows.length) {
+    const { error: e2 } = await supabase.from("novedades_checklist").insert(rows);
+    if (e2) throw e2;
+  }
+}
+
+window.addEventListener("online", () => syncQueue());
+setInterval(() => { if (navigator.onLine) syncQueue(); }, 20000);
+
+/* =====================================================================
+   CONTEXTO GLOBAL
+===================================================================== */
+const AppCtx = createContext(null);
+function useApp() { return useContext(AppCtx); }
+
+function useOnline() {
+  const [online, setOnline] = useState(navigator.onLine);
+  useEffect(() => {
+    const on = () => setOnline(true), off = () => setOnline(false);
+    window.addEventListener("online", on); window.addEventListener("offline", off);
+    return () => { window.removeEventListener("online", on); window.removeEventListener("offline", off); };
+  }, []);
+  return online;
+}
+
+function useQueueCount() {
+  const [count, setCount] = useState(getQueue().length);
+  useEffect(() => {
+    const upd = () => setCount(getQueue().length);
+    window.addEventListener("mosa-queue-changed", upd);
+    const t = setInterval(upd, 3000);
+    return () => { window.removeEventListener("mosa-queue-changed", upd); clearInterval(t); };
+  }, []);
+  return count;
+}
+
+/* =====================================================================
+   COMPONENTES UI BASICOS
+===================================================================== */
+function Button({ variant="primary", className="", children, ...props }) {
+  const base = "h-[52px] px-5 rounded-xl font-semibold text-[15px] transition active:scale-[0.98] disabled:opacity-50 disabled:active:scale-100 flex items-center justify-center gap-2";
+  const variants = {
+    primary: "bg-forest text-white hover:bg-forestdark",
+    dark: "bg-ink text-white hover:bg-black",
+    ghost: "bg-transparent text-ink border border-gray-300 hover:bg-gray-50",
+    danger: "bg-red-600 text-white hover:bg-red-700",
+    subtle: "bg-gray-100 text-ink hover:bg-gray-200"
+  };
+  return <button className={cx(base, variants[variant], className)} {...props}>{children}</button>;
+}
+
+function Field({ label, required, children, hint }) {
+  return (
+    <label className="block">
+      <span className="block text-sm font-medium text-gray-700 mb-1.5">{label}{required && <span className="text-red-500"> *</span>}</span>
+      {children}
+      {hint && <span className="block text-xs text-gray-400 mt-1">{hint}</span>}
+    </label>
+  );
+}
+
+function TextInput({ className="", alert, ...props }) {
+  return <input className={cx("w-full h-[52px] px-4 rounded-xl border border-gray-300 bg-white focus:outline-none focus:ring-2 focus:ring-forest/40 focus:border-forest", alert && "field-alert", className)} {...props} />;
+}
+
+function Select({ className="", children, ...props }) {
+  return <select className={cx("w-full h-[52px] px-4 rounded-xl border border-gray-300 bg-white focus:outline-none focus:ring-2 focus:ring-forest/40 focus:border-forest", className)} {...props}>{children}</select>;
+}
+
+function TextArea({ className="", ...props }) {
+  return <textarea className={cx("w-full min-h-[90px] px-4 py-3 rounded-xl border border-gray-300 bg-white focus:outline-none focus:ring-2 focus:ring-forest/40 focus:border-forest", className)} {...props} />;
+}
+
+function Card({ className="", children }) {
+  return <div className={cx("bg-white rounded-2xl shadow-sm border border-gray-100 p-5", className)}>{children}</div>;
+}
+
+function Toggle({ checked, onChange, labelOn="Activo", labelOff="Inactivo" }) {
+  return (
+    <button type="button" onClick={() => onChange(!checked)}
+      className={cx("h-9 px-3 rounded-full text-xs font-semibold transition flex items-center gap-2", checked ? "bg-forest/10 text-forest" : "bg-gray-100 text-gray-500")}>
+      <span className={cx("w-2.5 h-2.5 rounded-full", checked ? "bg-forest" : "bg-gray-400")}></span>
+      {checked ? labelOn : labelOff}
+    </button>
+  );
+}
+
+function Modal({ title, onClose, children, wide }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 p-0 sm:p-4">
+      <div className={cx("bg-white w-full sm:rounded-2xl rounded-t-2xl max-h-[92vh] overflow-y-auto", wide ? "sm:max-w-2xl" : "sm:max-w-md")}>
+        <div className="sticky top-0 bg-white border-b border-gray-100 px-5 py-4 flex items-center justify-between">
+          <h3 className="font-display text-lg font-bold">{title}</h3>
+          <button onClick={onClose} className="w-9 h-9 rounded-full hover:bg-gray-100 flex items-center justify-center text-gray-500">✕</button>
+        </div>
+        <div className="p-5">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+function Badge({ children, color="gray" }) {
+  const colors = {
+    gray: "bg-gray-100 text-gray-600", green: "bg-forest/10 text-forest",
+    red: "bg-red-100 text-red-700", amber: "bg-amber-100 text-amber-700", blue: "bg-blue-100 text-blue-700"
+  };
+  return <span className={cx("px-2.5 py-1 rounded-full text-xs font-semibold", colors[color])}>{children}</span>;
+}
+
+function Toast({ msg, type, onDone }) {
+  useEffect(() => { const t = setTimeout(onDone, 3000); return () => clearTimeout(t); }, []);
+  return (
+    <div className={cx("fixed bottom-24 sm:bottom-6 left-1/2 -translate-x-1/2 z-[70] px-5 py-3 rounded-xl shadow-lg text-white text-sm font-medium",
+      type === "error" ? "bg-red-600" : "bg-ink")}>
+      {msg}
+    </div>
+  );
+}
+
+/* =====================================================================
+   ENCABEZADO / NAVEGACION
+===================================================================== */
+function OfflineBadge() {
+  const online = useOnline();
+  const pending = useQueueCount();
+  if (online && pending === 0) return null;
+  return (
+    <div className="flex items-center gap-2">
+      {!online && <span className="flex items-center gap-1.5 bg-red-600 text-white text-xs font-semibold px-2.5 py-1 rounded-full"><span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse-soft"></span>Sin conexión</span>}
+      {pending > 0 && <span className="bg-amber-500 text-white text-xs font-semibold px-2.5 py-1 rounded-full">{pending} pendiente{pending!==1?"s":""}</span>}
+    </div>
+  );
+}
+
+function Header({ title, onMenu }) {
+  const { session, logout } = useApp();
+  return (
+    <header className="safe-top sticky top-0 z-30 bg-white/95 backdrop-blur border-b border-gray-100">
+      <div className="h-16 px-4 flex items-center justify-between max-w-6xl mx-auto w-full">
+        <div className="flex items-center gap-3">
+          {onMenu && <button onClick={onMenu} className="lg:hidden w-9 h-9 flex items-center justify-center rounded-lg hover:bg-gray-100">☰</button>}
+          <div>
+            <div className="font-display text-lg font-bold leading-none">MOSA</div>
+            <div className="text-xs text-gray-400 leading-none mt-0.5">{title}</div>
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          <OfflineBadge />
+          <div className="hidden sm:flex flex-col items-end leading-none">
+            <span className="text-sm font-semibold">{session.nombre}</span>
+            <span className="text-[11px] text-gray-400">{session.role === "admin" ? "Administrador" : "Mecánico"}</span>
+          </div>
+          <button onClick={logout} className="w-9 h-9 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-500" title="Cerrar sesión">⏻</button>
+        </div>
+      </div>
+    </header>
+  );
+}
+
+function PendingBar() {
+  const pending = useQueueCount();
+  const online = useOnline();
+  if (pending === 0) return null;
+  return (
+    <div className="bg-amber-50 border-t border-amber-200 text-amber-800 text-xs px-4 py-2 flex items-center justify-between">
+      <span>{pending} registro{pending!==1?"s":""} pendiente{pending!==1?"s":""} de envío{online ? " — sincronizando…" : " — esperando conexión"}</span>
+      {online && <button onClick={() => syncQueue()} className="underline font-semibold">Reintentar</button>}
+    </div>
+  );
+}
+
+const MECH_TABS = [
+  { id: "auditoria", label: "Auditoría", icon: "🔍" },
+  { id: "cambio", label: "Cambios", icon: "🔄" },
+  { id: "flash", label: "Flash", icon: "⚡" },
+  { id: "novedad", label: "Novedades", icon: "📋" },
+];
+
+function BottomNav({ view, setView }) {
+  return (
+    <nav className="safe-bottom fixed bottom-0 left-0 right-0 bg-white border-t border-gray-100 z-30 lg:hidden">
+      <div className="grid grid-cols-4">
+        {MECH_TABS.map(t => (
+          <button key={t.id} onClick={() => setView(t.id)}
+            className={cx("flex flex-col items-center justify-center py-2.5 gap-0.5 text-xs font-medium", view===t.id ? "text-forest" : "text-gray-400")}>
+            <span className="text-xl leading-none">{t.icon}</span>
+            {t.label}
+          </button>
+        ))}
+      </div>
+    </nav>
+  );
+}
+
+const ADMIN_SECTIONS = [
+  { id: "dashboard", label: "Dashboard", icon: "📊" },
+  { id: "formularios", label: "Formularios", icon: "🔧" },
+  { id: "equipos", label: "Equipos", icon: "🚛" },
+  { id: "mecanicos", label: "Mecánicos", icon: "👷" },
+  { id: "neumaticos", label: "Neumáticos", icon: "🛞" },
+  { id: "historial", label: "Historial", icon: "📋" },
+  { id: "configuracion", label: "Configuración", icon: "⚙️" },
+];
+
+function Sidebar({ view, setView, open, setOpen }) {
+  return (
+    <>
+      {open && <div className="fixed inset-0 bg-black/40 z-40 lg:hidden" onClick={() => setOpen(false)}></div>}
+      <aside className={cx("fixed lg:sticky top-0 lg:top-16 left-0 h-full lg:h-[calc(100vh-4rem)] w-64 bg-white border-r border-gray-100 z-50 lg:z-0 transition-transform lg:translate-x-0",
+        open ? "translate-x-0" : "-translate-x-full")}>
+        <div className="p-4 border-b border-gray-100 lg:hidden flex items-center justify-between">
+          <span className="font-display font-bold">Menú</span>
+          <button onClick={() => setOpen(false)} className="w-8 h-8 rounded-lg hover:bg-gray-100">✕</button>
+        </div>
+        <nav className="p-3 space-y-1">
+          {ADMIN_SECTIONS.map(s => (
+            <button key={s.id} onClick={() => { setView(s.id); setOpen(false); }}
+              className={cx("w-full flex items-center gap-3 px-3 h-12 rounded-xl text-sm font-medium transition",
+                view===s.id ? "bg-forest/10 text-forest" : "text-gray-600 hover:bg-gray-50")}>
+              <span className="text-lg">{s.icon}</span>{s.label}
+            </button>
+          ))}
+        </nav>
+      </aside>
+    </>
+  );
+}
+
+/* =====================================================================
+   SELECTOR DE EQUIPO (agrupado TRACTO / SEMI)
+===================================================================== */
+function EquipoSelector({ equipos, value, onChange, required }) {
+  const tractos = equipos.filter(e => e.tipo === "TRACTO" && e.activo !== false);
+  const semis = equipos.filter(e => e.tipo === "SEMI" && e.activo !== false);
+  return (
+    <Select value={value||""} onChange={e => onChange(e.target.value)} required={required}>
+      <option value="">Seleccionar equipo…</option>
+      {tractos.length > 0 && <optgroup label="TRACTOS">
+        {tractos.map(e => <option key={e.id_equipo} value={e.id_equipo}>{e.numero_interno} - {e.patente}</option>)}
+      </optgroup>}
+      {semis.length > 0 && <optgroup label="SEMIS">
+        {semis.map(e => <option key={e.id_equipo} value={e.id_equipo}>{e.numero_interno} - {e.patente}</option>)}
+      </optgroup>}
+    </Select>
+  );
+}
+
+/* =====================================================================
+   LOGIN
+===================================================================== */
+function Login({ onLogin }) {
+  const [usuario, setUsuario] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function submit(e) {
+    e.preventDefault();
+    setError(""); setLoading(true);
+    try {
+      if (usuario.trim().toLowerCase() === ADMIN_USER && password === ADMIN_PASS) {
+        onLogin({ role: "admin", nombre: "Administrador", cliente_id: CLIENTE_ID_DEFAULT, usuario: ADMIN_USER });
+        return;
+      }
+      if (!navigator.onLine) { setError("Sin conexión: solo el administrador puede ingresar sin conexión."); return; }
+      const { data, error: err } = await supabase.from("mecanicos").select("*").eq("usuario", usuario.trim()).eq("activo", true).maybeSingle();
+      if (err) throw err;
+      if (!data) { setError("Usuario o contraseña incorrectos."); return; }
+      const hash = await sha256Hex(password);
+      if (hash !== data.password_hash) { setError("Usuario o contraseña incorrectos."); return; }
+      onLogin({
+        role: "mecanico", id_mecanico: data.id_mecanico, nombre: `${data.nombre} ${data.apellido||""}`.trim(),
+        cliente_id: data.cliente_id || CLIENTE_ID_DEFAULT, usuario: data.usuario
+      });
+    } catch (e) {
+      setError("Error al iniciar sesión: " + e.message);
+    } finally { setLoading(false); }
+  }
+
+  return (
+    <div className="min-h-screen flex items-center justify-center px-4">
+      <div className="w-full max-w-sm">
+        <div className="text-center mb-8">
+          <div className="font-display text-4xl font-extrabold tracking-tight">MOSA</div>
+          <div className="text-gray-400 text-sm mt-1">Gestión de neumáticos</div>
+        </div>
+        <form onSubmit={submit} className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 space-y-4">
+          <Field label="Usuario"><TextInput value={usuario} onChange={e=>setUsuario(e.target.value)} autoCapitalize="none" autoCorrect="off" required /></Field>
+          <Field label="Contraseña"><TextInput type="password" value={password} onChange={e=>setPassword(e.target.value)} required /></Field>
+          {error && <div className="text-sm text-red-600 bg-red-50 rounded-xl px-3 py-2">{error}</div>}
+          <Button type="submit" disabled={loading} className="w-full">{loading ? <span className="spinner"></span> : "Ingresar"}</Button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+/* =====================================================================
+   FORMULARIO 1 — AUDITORIA
+===================================================================== */
+function AuditoriaForm() {
+  const { session, equipos, config } = useApp();
+  const [equipoId, setEquipoId] = useState("");
+  const [fecha, setFecha] = useState(todayISO());
+  const [km, setKm] = useState("");
+  const [numero, setNumero] = useState(null);
+  const [posiciones, setPosiciones] = useState(Array.from({length:13}, (_,i) => ({ posicion:i+1, milimetros:"", psi:"", numero_fuego:"" })));
+  const [toast, setToast] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  const equipoSel = equipos.find(e => e.id_equipo === equipoId);
+  const psiMin = parseFloat(config.psi_minimo || 85);
+  const mmMin = parseFloat(config.mm_minimo || 4);
+
+  useEffect(() => { obtenerSiguienteNumero(session.cliente_id, "numero_auditoria_inicio").then(setNumero); }, []);
+
+  function updatePos(idx, field, val) {
+    setPosiciones(ps => ps.map((p,i) => i===idx ? { ...p, [field]: val } : p));
+  }
+
+  function sugerenciaFuego(pos) {
+    if (!equipoSel || config.formula_marca_fuego === "secuencial") return "";
+    return generarFuegoLaPortada(equipoSel.numero_interno, pos, fecha);
+  }
+
+  async function guardar(e) {
+    e.preventDefault();
+    if (!equipoId) { setToast({ type:"error", msg:"Seleccioná un equipo." }); return; }
+    setSaving(true);
+    const id_auditoria = uuid();
+    const data = {
+      id_auditoria, equipo_id: equipoId, bultero_id: session.role==="mecanico" ? session.id_mecanico : session.id_mecanico || null,
+      fecha, kilometraje: km ? parseInt(km,10) : null, numero_auditoria: String(numero),
+      posiciones: posiciones.filter(p=>p.numero_fuego || p.milimetros || p.psi).map(p => ({
+        id: uuid(), posicion: p.posicion, numero_fuego: p.numero_fuego || sugerenciaFuego(p.posicion),
+        milimetros: p.milimetros ? parseFloat(p.milimetros) : null, psi: p.psi ? parseInt(p.psi,10) : null
+      }))
+    };
+    const item = { id: uuid(), tipo: "auditoria", data, ts: Date.now(), clienteId: session.cliente_id, numeroClave: "numero_auditoria_inicio", numeroUsado: numero };
+    try {
+      if (navigator.onLine) { await enviarAuditoria(data); await confirmarUsoNumero(session.cliente_id, "numero_auditoria_inicio", numero); }
+      else pushQueue(item);
+      setToast({ type:"ok", msg: navigator.onLine ? "Auditoría guardada." : "Guardada localmente. Se enviará al recuperar conexión." });
+      setEquipoId(""); setKm(""); setPosiciones(Array.from({length:13}, (_,i) => ({ posicion:i+1, milimetros:"", psi:"", numero_fuego:"" })));
+      obtenerSiguienteNumero(session.cliente_id, "numero_auditoria_inicio").then(setNumero);
+    } catch (err) {
+      pushQueue(item);
+      setToast({ type:"ok", msg:"Sin conexión al servidor. Guardada localmente." });
+      setEquipoId(""); setKm(""); setPosiciones(Array.from({length:13}, (_,i) => ({ posicion:i+1, milimetros:"", psi:"", numero_fuego:"" })));
+    } finally { setSaving(false); }
+  }
+
+  return (
+    <form onSubmit={guardar} className="max-w-3xl mx-auto p-4 space-y-4 pb-28 lg:pb-8">
+      {toast && <Toast {...toast} onDone={()=>setToast(null)} />}
+      <Card className="space-y-4">
+        <h2 className="font-display text-xl font-bold">Auditoría de Equipos</h2>
+        <div className="grid sm:grid-cols-2 gap-4">
+          <Field label="Equipo" required><EquipoSelector equipos={equipos} value={equipoId} onChange={setEquipoId} required /></Field>
+          <Field label="Fecha" required><TextInput type="date" value={fecha} onChange={e=>setFecha(e.target.value)} required /></Field>
+          <Field label="Kilometraje" required><TextInput inputMode="numeric" value={km} onChange={e=>setKm(e.target.value.replace(/\D/g,""))} required /></Field>
+          <Field label="N° Auditoría"><TextInput value={numero ?? "…"} disabled className="bg-gray-50 text-gray-500 font-semibold" /></Field>
+        </div>
+        <div className="text-sm text-gray-500">Atendido por: <span className="font-semibold text-ink">{session.nombre}</span></div>
+      </Card>
+
+      <div className="grid sm:grid-cols-2 gap-3">
+        {posiciones.map((p, idx) => {
+          const psiAlert = p.psi !== "" && parseFloat(p.psi) < psiMin;
+          const mmAlert = p.milimetros !== "" && parseFloat(p.milimetros) < mmMin;
+          return (
+            <Card key={p.posicion} className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="font-display font-bold text-lg">Posición {p.posicion}</span>
+                {(psiAlert || mmAlert) && <span className="text-red-600 text-sm font-semibold">⚠ Revisar</span>}
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <Field label="MM"><TextInput inputMode="decimal" alert={mmAlert} value={p.milimetros} onChange={e=>updatePos(idx,"milimetros",e.target.value.replace(/[^0-9.]/g,""))} className="!h-12 !px-2 text-center" /></Field>
+                <Field label="PSI"><TextInput inputMode="numeric" alert={psiAlert} value={p.psi} onChange={e=>updatePos(idx,"psi",e.target.value.replace(/\D/g,""))} className="!h-12 !px-2 text-center" /></Field>
+                <Field label="N° Fuego"><TextInput inputMode="numeric" placeholder={sugerenciaFuego(p.posicion)} value={p.numero_fuego} onChange={e=>updatePos(idx,"numero_fuego",e.target.value)} className="!h-12 !px-2 text-center" /></Field>
+              </div>
+              {mmAlert && <div className="text-xs text-red-600 font-medium">Revisar — desgaste bajo</div>}
+              {psiAlert && <div className="text-xs text-red-600 font-medium">Revisar — PSI bajo</div>}
+            </Card>
+          );
+        })}
+      </div>
+      <Button type="submit" disabled={saving} className="w-full">{saving ? <span className="spinner"></span> : "Guardar auditoría"}</Button>
+    </form>
+  );
+}
+
+/* =====================================================================
+   FORMULARIO 2 — CAMBIO DE NEUMATICOS
+===================================================================== */
+function filaVacia() { return { posicion:"", numero_fuego:"", milimetros:"", psi:"", motivo:"transito", estado:"nuevo", marca:"", modelo:"" }; }
+
+function CambioForm() {
+  const { session, equipos } = useApp();
+  const [equipoId, setEquipoId] = useState("");
+  const [fecha, setFecha] = useState(todayISO());
+  const [km, setKm] = useState("");
+  const [horaIngreso, setHoraIngreso] = useState(nowHM());
+  const [horaSalida, setHoraSalida] = useState("");
+  const [numero, setNumero] = useState(null);
+  const [psiReg, setPsiReg] = useState(false);
+  const [ruedasTorq, setRuedasTorq] = useState("");
+  const [obs, setObs] = useState("");
+  const [sale, setSale] = useState([filaVacia(), filaVacia(), filaVacia()]);
+  const [entra, setEntra] = useState([filaVacia(), filaVacia(), filaVacia()]);
+  const [toast, setToast] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => { obtenerSiguienteNumero(session.cliente_id, "numero_cambio_inicio").then(setNumero); }, []);
+
+  function upd(setter, idx, field, val) { setter(rows => rows.map((r,i) => i===idx ? {...r,[field]:val} : r)); }
+
+  async function buscarFuego(idx) {
+    const nf = entra[idx].numero_fuego;
+    if (!nf || !navigator.onLine) return;
+    try {
+      const n = await db.fetchNeumaticoPorFuego(session.cliente_id, nf);
+      if (n) upd(setEntra, idx, "marca", n.marca || "");
+    } catch(e) {}
+  }
+
+  async function guardar(e) {
+    e.preventDefault();
+    if (!equipoId) { setToast({type:"error", msg:"Seleccioná un equipo."}); return; }
+    setSaving(true);
+    const id_cambio = uuid();
+    const data = {
+      id_cambio, equipo_id: equipoId, bultero_id: session.id_mecanico || null, fecha,
+      kilometraje: km ? parseInt(km,10) : null, hora_ingreso: horaIngreso || null, hora_salida: horaSalida || null,
+      psi_regulados: psiReg, ruedas_torqueadas: ruedasTorq ? parseInt(ruedasTorq,10) : null,
+      observaciones: obs, numero_cambio: String(numero), cliente_id: session.cliente_id,
+      sale: sale.filter(s=>s.numero_fuego).map(s => ({ ...s, posicion: s.posicion?parseInt(s.posicion,10):null, milimetros: s.milimetros?parseFloat(s.milimetros):null, psi: s.psi?parseInt(s.psi,10):null })),
+      entra: entra.filter(s=>s.numero_fuego).map(s => ({ ...s, posicion: s.posicion?parseInt(s.posicion,10):null, milimetros: s.milimetros?parseFloat(s.milimetros):null, psi: s.psi?parseInt(s.psi,10):null }))
+    };
+    const item = { id: uuid(), tipo:"cambio", data, ts: Date.now(), clienteId: session.cliente_id, numeroClave:"numero_cambio_inicio", numeroUsado: numero };
+    try {
+      if (navigator.onLine) { await enviarCambio(data); await confirmarUsoNumero(session.cliente_id, "numero_cambio_inicio", numero); }
+      else pushQueue(item);
+      setToast({type:"ok", msg: navigator.onLine ? "Cambio guardado." : "Guardado localmente."});
+      setEquipoId(""); setKm(""); setRuedasTorq(""); setObs(""); setPsiReg(false);
+      setSale([filaVacia(),filaVacia(),filaVacia()]); setEntra([filaVacia(),filaVacia(),filaVacia()]);
+      obtenerSiguienteNumero(session.cliente_id, "numero_cambio_inicio").then(setNumero);
+    } catch (err) {
+      pushQueue(item);
+      setToast({type:"ok", msg:"Sin conexión. Guardado localmente."});
+      setEquipoId("");
+    } finally { setSaving(false); }
+  }
+
+  function TablaFilas({ rows, setRows, tipo }) {
+    return (
+      <div className="overflow-x-auto -mx-1">
+        <table className="w-full text-sm min-w-[560px]">
+          <thead><tr className="text-left text-gray-400 text-xs">
+            <th className="px-1 py-1">Pos.</th><th className="px-1 py-1">N° Fuego</th><th className="px-1 py-1">MM</th><th className="px-1 py-1">PSI</th>
+            <th className="px-1 py-1">{tipo==="sale"?"Motivo":"Estado"}</th>
+          </tr></thead>
+          <tbody>
+            {rows.map((r, idx) => (
+              <tr key={idx}>
+                <td className="p-1"><TextInput inputMode="numeric" value={r.posicion} onChange={e=>upd(setRows,idx,"posicion",e.target.value.replace(/\D/g,""))} className="!h-11 !px-2 w-16 text-center" /></td>
+                <td className="p-1"><TextInput inputMode="numeric" value={r.numero_fuego} onChange={e=>upd(setRows,idx,"numero_fuego",e.target.value)} onBlur={() => tipo==="entra" && buscarFuego(idx)} className="!h-11 !px-2 min-w-[110px]" /></td>
+                <td className="p-1"><TextInput inputMode="decimal" value={r.milimetros} onChange={e=>upd(setRows,idx,"milimetros",e.target.value.replace(/[^0-9.]/g,""))} className="!h-11 !px-2 w-20 text-center" /></td>
+                <td className="p-1"><TextInput inputMode="numeric" value={r.psi} onChange={e=>upd(setRows,idx,"psi",e.target.value.replace(/\D/g,""))} className="!h-11 !px-2 w-20 text-center" /></td>
+                <td className="p-1">
+                  {tipo==="sale" ? (
+                    <Select value={r.motivo} onChange={e=>upd(setRows,idx,"motivo",e.target.value)} className="!h-11 min-w-[130px]">
+                      <option value="transito">Tránsito</option><option value="baja">Baja</option><option value="reparacion">Reparación</option>
+                    </Select>
+                  ) : (
+                    <Select value={r.estado} onChange={e=>upd(setRows,idx,"estado",e.target.value)} className="!h-11 min-w-[130px]">
+                      <option value="nuevo">Nuevo</option><option value="transito">Tránsito</option><option value="recauchado">Recauchado</option>
+                    </Select>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <button type="button" onClick={()=>setRows(r=>[...r, filaVacia()])} className="mt-2 text-sm font-semibold text-forest">+ Agregar fila</button>
+      </div>
+    );
+  }
+
+  return (
+    <form onSubmit={guardar} className="max-w-3xl mx-auto p-4 space-y-4 pb-28 lg:pb-8">
+      {toast && <Toast {...toast} onDone={()=>setToast(null)} />}
+      <Card className="space-y-4">
+        <h2 className="font-display text-xl font-bold">Cambio de Neumáticos</h2>
+        <div className="grid sm:grid-cols-2 gap-4">
+          <Field label="Equipo" required><EquipoSelector equipos={equipos} value={equipoId} onChange={setEquipoId} required /></Field>
+          <Field label="N° Cambio"><TextInput value={numero ?? "…"} disabled className="bg-gray-50 text-gray-500 font-semibold" /></Field>
+          <Field label="Fecha" required><TextInput type="date" value={fecha} onChange={e=>setFecha(e.target.value)} required /></Field>
+          <Field label="Kilometraje"><TextInput inputMode="numeric" value={km} onChange={e=>setKm(e.target.value.replace(/\D/g,""))} /></Field>
+          <Field label="Hora ingreso"><TextInput type="time" value={horaIngreso} onChange={e=>setHoraIngreso(e.target.value)} /></Field>
+          <Field label="Hora salida"><TextInput type="time" value={horaSalida} onChange={e=>setHoraSalida(e.target.value)} /></Field>
+          <Field label="Ruedas torqueadas"><TextInput inputMode="numeric" value={ruedasTorq} onChange={e=>setRuedasTorq(e.target.value.replace(/\D/g,""))} /></Field>
+          <Field label="PSI regulados"><Toggle checked={psiReg} onChange={setPsiReg} labelOn="Sí" labelOff="No" /></Field>
+        </div>
+        <Field label="Observaciones"><TextArea value={obs} onChange={e=>setObs(e.target.value)} /></Field>
+      </Card>
+      <Card><h3 className="font-display font-bold mb-3">Neumáticos que SALEN</h3><TablaFilas rows={sale} setRows={setSale} tipo="sale" /></Card>
+      <Card><h3 className="font-display font-bold mb-3">Neumáticos que ENTRAN</h3><TablaFilas rows={entra} setRows={setEntra} tipo="entra" /></Card>
+      <Button type="submit" disabled={saving} className="w-full">{saving ? <span className="spinner"></span> : "Guardar cambio"}</Button>
+    </form>
+  );
+}
+
+/* =====================================================================
+   FORMULARIO 3 — FLASH DIARIO
+===================================================================== */
+const FLASH_INV = [["direccionales","Direccionales"],["traccionales","Traccionales"],["eje_libre","Eje Libre"],["transito","Tránsito"],["bajas","Bajas"],["recauchados","Recauchados"]];
+const FLASH_PATIO = [["llantas_am_aluminio","Americanas aluminio"],["llantas_am_fierro","Americanas fierro"],["llantas_eu_aluminio","Europeas aluminio"],["llantas_eu_fierro","Europeas fierro"],["reparacion_patio","Reparación"]];
+const FLASH_TRABAJOS = [["montajes","Montajes"],["marcajes","Marcajes"],["rotaciones","Rotaciones"],["reparaciones","Reparaciones"],["regulacion_psi","Regulación PSI"],["retorqueo","Retorqueo"]];
+
+function NumGrid({ fields, values, onChange }) {
+  return (
+    <div className="grid grid-cols-2 gap-3">
+      {fields.map(([key,label]) => (
+        <Field key={key} label={label}><TextInput inputMode="numeric" value={values[key]||""} onChange={e=>onChange(key, e.target.value.replace(/\D/g,""))} /></Field>
+      ))}
+    </div>
+  );
+}
+
+function FlashForm() {
+  const { session } = useApp();
+  const [fecha, setFecha] = useState(todayISO());
+  const [hora, setHora] = useState(nowHM());
+  const [numero, setNumero] = useState(null);
+  const [vals, setVals] = useState({});
+  const [tractos, setTractos] = useState(""); const [semis, setSemis] = useState("");
+  const [otros, setOtros] = useState("");
+  const [toast, setToast] = useState(null); const [saving, setSaving] = useState(false);
+
+  useEffect(() => { obtenerSiguienteNumero(session.cliente_id, "numero_flash_inicio").then(setNumero); }, []);
+  function setVal(k,v) { setVals(o => ({...o,[k]:v})); }
+
+  async function guardar(e) {
+    e.preventDefault(); setSaving(true);
+    const id = uuid();
+    const data = {
+      id, cliente_id: session.cliente_id, bultero_id: session.id_mecanico || null, fecha, hora, numero_flash: String(numero),
+      direccionales: n(vals.direccionales), traccionales: n(vals.traccionales), eje_libre: n(vals.eje_libre),
+      transito: n(vals.transito), bajas: n(vals.bajas), recauchados: n(vals.recauchados),
+      llantas_am_aluminio: n(vals.llantas_am_aluminio), llantas_am_fierro: n(vals.llantas_am_fierro),
+      llantas_eu_aluminio: n(vals.llantas_eu_aluminio), llantas_eu_fierro: n(vals.llantas_eu_fierro),
+      reparacion_patio: n(vals.reparacion_patio), tractos_intervenidos: n(tractos), semis_intervenidos: n(semis),
+      montajes: n(vals.montajes), marcajes: n(vals.marcajes), rotaciones: n(vals.rotaciones),
+      reparaciones: n(vals.reparaciones), regulacion_psi: n(vals.regulacion_psi), retorqueo: n(vals.retorqueo), otros
+    };
+    const item = { id: uuid(), tipo:"flash", data, ts: Date.now(), clienteId: session.cliente_id, numeroClave:"numero_flash_inicio", numeroUsado: numero };
+    try {
+      if (navigator.onLine) { await enviarFlash(data); await confirmarUsoNumero(session.cliente_id, "numero_flash_inicio", numero); }
+      else pushQueue(item);
+      setToast({type:"ok", msg: navigator.onLine ? "Flash guardado." : "Guardado localmente."});
+      setVals({}); setTractos(""); setSemis(""); setOtros("");
+      obtenerSiguienteNumero(session.cliente_id, "numero_flash_inicio").then(setNumero);
+    } catch (err) { pushQueue(item); setToast({type:"ok", msg:"Sin conexión. Guardado localmente."}); }
+    finally { setSaving(false); }
+  }
+  function n(v) { return v === "" || v == null ? null : parseInt(v,10); }
+
+  return (
+    <form onSubmit={guardar} className="max-w-2xl mx-auto p-4 space-y-4 pb-28 lg:pb-8">
+      {toast && <Toast {...toast} onDone={()=>setToast(null)} />}
+      <Card className="space-y-4">
+        <h2 className="font-display text-xl font-bold">Informe Flash — La Portada</h2>
+        <div className="grid grid-cols-3 gap-3">
+          <Field label="Fecha"><TextInput type="date" value={fecha} onChange={e=>setFecha(e.target.value)} /></Field>
+          <Field label="Hora"><TextInput type="time" value={hora} onChange={e=>setHora(e.target.value)} /></Field>
+          <Field label="N° Flash"><TextInput value={numero ?? "…"} disabled className="bg-gray-50 text-gray-500 font-semibold" /></Field>
+        </div>
+      </Card>
+      <Card><h3 className="font-display font-bold mb-3">Inventario</h3><NumGrid fields={FLASH_INV} values={vals} onChange={setVal} /></Card>
+      <Card><h3 className="font-display font-bold mb-3">Llantas en patio</h3><NumGrid fields={FLASH_PATIO} values={vals} onChange={setVal} /></Card>
+      <Card><h3 className="font-display font-bold mb-3">Equipos intervenidos</h3>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Tractos"><TextInput inputMode="numeric" value={tractos} onChange={e=>setTractos(e.target.value.replace(/\D/g,""))} /></Field>
+          <Field label="Semis"><TextInput inputMode="numeric" value={semis} onChange={e=>setSemis(e.target.value.replace(/\D/g,""))} /></Field>
+        </div>
+      </Card>
+      <Card><h3 className="font-display font-bold mb-3">Trabajos realizados</h3><NumGrid fields={FLASH_TRABAJOS} values={vals} onChange={setVal} /></Card>
+      <Card><Field label="Otros"><TextArea value={otros} onChange={e=>setOtros(e.target.value)} /></Field></Card>
+      <Button type="submit" disabled={saving} className="w-full">{saving ? <span className="spinner"></span> : "Guardar flash"}</Button>
+    </form>
+  );
+}
+
+/* =====================================================================
+   FORMULARIO 4 — NOVEDADES DIARIAS
+===================================================================== */
+const NOVEDAD_STOCK = [["nuevos","Nuevos"],["transito","Tránsito"],["reparar","Reparar"],["recauchados","Recauchados"],["llantas_am_aluminio","Llantas AM aluminio"],["llantas_am_fierro","Llantas AM fierro"],["llantas_eu_aluminio","Llantas EU aluminio"],["llantas_eu_fierro","Llantas EU fierro"]];
+
+function NovedadForm() {
+  const { session } = useApp();
+  const [fecha, setFecha] = useState(todayISO());
+  const [horaInicio, setHoraInicio] = useState(nowHM());
+  const [numero, setNumero] = useState(null);
+  const [vals, setVals] = useState({});
+  const [checklist, setChecklist] = useState(TOOLS_CHECKLIST.map(h => ({ herramienta:h, cantidad:"" })));
+  const [toast, setToast] = useState(null); const [saving, setSaving] = useState(false);
+
+  useEffect(() => { obtenerSiguienteNumero(session.cliente_id, "numero_hoja_inicio").then(setNumero); }, []);
+  function setVal(k,v) { setVals(o => ({...o,[k]:v})); }
+  function setCant(idx, v) { setChecklist(cl => cl.map((c,i) => i===idx ? {...c, cantidad: v} : c)); }
+  function n(v) { return v === "" || v == null ? null : parseInt(v,10); }
+
+  async function guardar(e) {
+    e.preventDefault(); setSaving(true);
+    const id = uuid();
+    const data = {
+      id, cliente_id: session.cliente_id, bultero_id: session.id_mecanico || null, fecha, hora_inicio: horaInicio, numero_hoja: String(numero),
+      nuevos: n(vals.nuevos), transito: n(vals.transito), reparar: n(vals.reparar), recauchados: n(vals.recauchados),
+      llantas_am_aluminio: n(vals.llantas_am_aluminio), llantas_am_fierro: n(vals.llantas_am_fierro),
+      llantas_eu_aluminio: n(vals.llantas_eu_aluminio), llantas_eu_fierro: n(vals.llantas_eu_fierro),
+      checklist: checklist.map(c => ({ herramienta: c.herramienta, cantidad: c.cantidad===""?null:parseInt(c.cantidad,10) }))
+    };
+    const item = { id: uuid(), tipo:"novedad", data, ts: Date.now(), clienteId: session.cliente_id, numeroClave:"numero_hoja_inicio", numeroUsado: numero };
+    try {
+      if (navigator.onLine) { await enviarNovedad(data); await confirmarUsoNumero(session.cliente_id, "numero_hoja_inicio", numero); }
+      else pushQueue(item);
+      setToast({type:"ok", msg: navigator.onLine ? "Novedad guardada." : "Guardada localmente."});
+      setVals({}); setChecklist(TOOLS_CHECKLIST.map(h => ({ herramienta:h, cantidad:"" })));
+      obtenerSiguienteNumero(session.cliente_id, "numero_hoja_inicio").then(setNumero);
+    } catch (err) { pushQueue(item); setToast({type:"ok", msg:"Sin conexión. Guardada localmente."}); }
+    finally { setSaving(false); }
+  }
+
+  return (
+    <form onSubmit={guardar} className="max-w-2xl mx-auto p-4 space-y-4 pb-28 lg:pb-8">
+      {toast && <Toast {...toast} onDone={()=>setToast(null)} />}
+      <Card className="space-y-4">
+        <h2 className="font-display text-xl font-bold">Hoja de Novedades — La Portada</h2>
+        <div className="grid grid-cols-3 gap-3">
+          <Field label="Fecha"><TextInput type="date" value={fecha} onChange={e=>setFecha(e.target.value)} /></Field>
+          <Field label="Hora inicio"><TextInput type="time" value={horaInicio} onChange={e=>setHoraInicio(e.target.value)} /></Field>
+          <Field label="N° Hoja"><TextInput value={numero ?? "…"} disabled className="bg-gray-50 text-gray-500 font-semibold" /></Field>
+        </div>
+      </Card>
+      <Card><h3 className="font-display font-bold mb-3">Stock de neumáticos</h3><NumGrid fields={NOVEDAD_STOCK} values={vals} onChange={setVal} /></Card>
+      <Card>
+        <h3 className="font-display font-bold mb-3">Checklist de herramientas</h3>
+        <div className="grid sm:grid-cols-2 gap-2">
+          {checklist.map((c, idx) => (
+            <div key={c.herramienta} className="flex items-center justify-between gap-3 bg-gray-50 rounded-xl px-3 py-1.5">
+              <span className="text-sm">{c.herramienta}</span>
+              <TextInput inputMode="numeric" value={c.cantidad} onChange={e=>setCant(idx, e.target.value.replace(/\D/g,""))} className="!h-10 !w-20 !px-2 text-center" />
+            </div>
+          ))}
+        </div>
+      </Card>
+      <Button type="submit" disabled={saving} className="w-full">{saving ? <span className="spinner"></span> : "Guardar novedad"}</Button>
+    </form>
+  );
+}
+
+/* =====================================================================
+   ADMIN — EQUIPOS
+===================================================================== */
+function EquiposAdmin() {
+  const { session, equipos, reloadEquipos } = useApp();
+  const [q, setQ] = useState("");
+  const [modal, setModal] = useState(null); // null | {} (nuevo) | equipo (editar)
+  const [saving, setSaving] = useState(false);
+
+  const filtrados = equipos.filter(e => !q || e.patente.toLowerCase().includes(q.toLowerCase()) || String(e.numero_interno).includes(q));
+
+  async function guardar(form) {
+    setSaving(true);
+    try {
+      if (form.id_equipo) {
+        const { error } = await supabase.from("equipos").update({ patente: form.patente, numero_interno: form.numero_interno, tipo: form.tipo, anio: form.anio||null, modelo: form.modelo||null }).eq("id_equipo", form.id_equipo);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.from("equipos").insert({ id_equipo: uuid(), cliente_id: session.cliente_id, patente: form.patente, numero_interno: form.numero_interno, tipo: form.tipo, anio: form.anio||null, modelo: form.modelo||null, activo: true });
+        if (error) throw error;
+      }
+      await reloadEquipos(); setModal(null);
+    } catch(e) { alert("Error: " + e.message); } finally { setSaving(false); }
+  }
+  async function toggleActivo(eq) {
+    await supabase.from("equipos").update({ activo: !eq.activo }).eq("id_equipo", eq.id_equipo);
+    reloadEquipos();
+  }
+
+  return (
+    <div className="p-4 max-w-5xl mx-auto space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="font-display text-2xl font-bold">Equipos</h2>
+        <Button onClick={()=>setModal({})}>+ Nuevo equipo</Button>
+      </div>
+      <TextInput placeholder="Buscar por patente o número interno…" value={q} onChange={e=>setQ(e.target.value)} className="max-w-sm" />
+      <Card className="!p-0 overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead><tr className="text-left text-gray-400 border-b border-gray-100"><th className="p-3">Interno</th><th className="p-3">Patente</th><th className="p-3">Tipo</th><th className="p-3">Modelo</th><th className="p-3">Año</th><th className="p-3">Estado</th><th className="p-3"></th></tr></thead>
+          <tbody>
+            {filtrados.map(e => (
+              <tr key={e.id_equipo} className="border-b border-gray-50 last:border-0">
+                <td className="p-3 font-semibold">{e.numero_interno}</td><td className="p-3">{e.patente}</td>
+                <td className="p-3"><Badge color={e.tipo==="TRACTO"?"blue":"amber"}>{e.tipo}</Badge></td>
+                <td className="p-3">{e.modelo||"-"}</td><td className="p-3">{e.anio||"-"}</td>
+                <td className="p-3"><Toggle checked={e.activo!==false} onChange={()=>toggleActivo(e)} /></td>
+                <td className="p-3"><button onClick={()=>setModal(e)} className="text-forest font-semibold">Editar</button></td>
+              </tr>
+            ))}
+            {filtrados.length===0 && <tr><td colSpan={7} className="p-6 text-center text-gray-400">Sin resultados</td></tr>}
+          </tbody>
+        </table>
+      </Card>
+      {modal && <EquipoModal equipo={modal} onClose={()=>setModal(null)} onSave={guardar} saving={saving} />}
+    </div>
+  );
+}
+
+function EquipoModal({ equipo, onClose, onSave, saving }) {
+  const [form, setForm] = useState({ id_equipo: equipo.id_equipo, patente: equipo.patente||"", numero_interno: equipo.numero_interno||"", tipo: equipo.tipo||"TRACTO", anio: equipo.anio||"", modelo: equipo.modelo||"" });
+  return (
+    <Modal title={equipo.id_equipo ? "Editar equipo" : "Nuevo equipo"} onClose={onClose}>
+      <form onSubmit={e=>{e.preventDefault(); onSave(form);}} className="space-y-3">
+        <Field label="Número interno" required><TextInput value={form.numero_interno} onChange={e=>setForm(f=>({...f,numero_interno:e.target.value}))} required /></Field>
+        <Field label="Patente" required><TextInput value={form.patente} onChange={e=>setForm(f=>({...f,patente:e.target.value.toUpperCase()}))} required /></Field>
+        <Field label="Tipo" required><Select value={form.tipo} onChange={e=>setForm(f=>({...f,tipo:e.target.value}))}><option value="TRACTO">TRACTO</option><option value="SEMI">SEMI</option></Select></Field>
+        <Field label="Modelo"><TextInput value={form.modelo} onChange={e=>setForm(f=>({...f,modelo:e.target.value}))} /></Field>
+        <Field label="Año"><TextInput inputMode="numeric" value={form.anio} onChange={e=>setForm(f=>({...f,anio:e.target.value.replace(/\D/g,"")}))} /></Field>
+        <Button type="submit" disabled={saving} className="w-full">{saving ? <span className="spinner"></span> : "Guardar"}</Button>
+      </form>
+    </Modal>
+  );
+}
+
+/* =====================================================================
+   ADMIN — MECANICOS
+===================================================================== */
+function MecanicosAdmin() {
+  const { session, mecanicos, reloadMecanicos } = useApp();
+  const [modal, setModal] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  async function guardar(form) {
+    setSaving(true);
+    try {
+      const payload = { nombre: form.nombre, apellido: form.apellido, telefono: form.telefono||null, usuario: form.usuario.trim() };
+      if (form.password) payload.password_hash = await sha256Hex(form.password);
+      if (form.id_mecanico) {
+        const { error } = await supabase.from("mecanicos").update(payload).eq("id_mecanico", form.id_mecanico);
+        if (error) throw error;
+      } else {
+        if (!form.password) throw new Error("La contraseña es obligatoria para un mecánico nuevo.");
+        const { error } = await supabase.from("mecanicos").insert({ id_mecanico: uuid(), cliente_id: session.cliente_id, activo: true, ...payload });
+        if (error) throw error;
+      }
+      await reloadMecanicos(); setModal(null);
+    } catch(e) { alert("Error: " + e.message); } finally { setSaving(false); }
+  }
+  async function toggleActivo(m) { await supabase.from("mecanicos").update({ activo: !m.activo }).eq("id_mecanico", m.id_mecanico); reloadMecanicos(); }
+
+  return (
+    <div className="p-4 max-w-5xl mx-auto space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="font-display text-2xl font-bold">Mecánicos</h2>
+        <Button onClick={()=>setModal({})}>+ Nuevo mecánico</Button>
+      </div>
+      <Card className="!p-0 overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead><tr className="text-left text-gray-400 border-b border-gray-100"><th className="p-3">Nombre</th><th className="p-3">Apellido</th><th className="p-3">Usuario</th><th className="p-3">Teléfono</th><th className="p-3">Estado</th><th className="p-3"></th></tr></thead>
+          <tbody>
+            {mecanicos.map(m => (
+              <tr key={m.id_mecanico} className="border-b border-gray-50 last:border-0">
+                <td className="p-3 font-semibold">{m.nombre}</td><td className="p-3">{m.apellido}</td><td className="p-3">{m.usuario}</td><td className="p-3">{m.telefono||"-"}</td>
+                <td className="p-3"><Toggle checked={m.activo!==false} onChange={()=>toggleActivo(m)} /></td>
+                <td className="p-3"><button onClick={()=>setModal(m)} className="text-forest font-semibold">Editar</button></td>
+              </tr>
+            ))}
+            {mecanicos.length===0 && <tr><td colSpan={6} className="p-6 text-center text-gray-400">Sin mecánicos</td></tr>}
+          </tbody>
+        </table>
+      </Card>
+      {modal && <MecanicoModal mecanico={modal} onClose={()=>setModal(null)} onSave={guardar} saving={saving} />}
+    </div>
+  );
+}
+
+function MecanicoModal({ mecanico, onClose, onSave, saving }) {
+  const [form, setForm] = useState({ id_mecanico: mecanico.id_mecanico, nombre: mecanico.nombre||"", apellido: mecanico.apellido||"", telefono: mecanico.telefono||"", usuario: mecanico.usuario||"", password:"" });
+  return (
+    <Modal title={mecanico.id_mecanico ? "Editar mecánico" : "Nuevo mecánico"} onClose={onClose}>
+      <form onSubmit={e=>{e.preventDefault(); onSave(form);}} className="space-y-3">
+        <Field label="Nombre" required><TextInput value={form.nombre} onChange={e=>setForm(f=>({...f,nombre:e.target.value}))} required /></Field>
+        <Field label="Apellido"><TextInput value={form.apellido} onChange={e=>setForm(f=>({...f,apellido:e.target.value}))} /></Field>
+        <Field label="Teléfono"><TextInput value={form.telefono} onChange={e=>setForm(f=>({...f,telefono:e.target.value}))} /></Field>
+        <Field label="Usuario" required><TextInput value={form.usuario} onChange={e=>setForm(f=>({...f,usuario:e.target.value}))} autoCapitalize="none" required /></Field>
+        <Field label="Contraseña" hint={mecanico.id_mecanico ? "Dejar vacío para no cambiarla" : ""}><TextInput type="password" value={form.password} onChange={e=>setForm(f=>({...f,password:e.target.value}))} /></Field>
+        <Button type="submit" disabled={saving} className="w-full">{saving ? <span className="spinner"></span> : "Guardar"}</Button>
+      </form>
+    </Modal>
+  );
+}
+
+/* =====================================================================
+   ADMIN — NEUMATICOS
+===================================================================== */
+function NeumaticosAdmin() {
+  const { session, equipos } = useApp();
+  const [rows, setRows] = useState([]);
+  const [q, setQ] = useState("");
+  const [estadoF, setEstadoF] = useState("");
+  const [equipoF, setEquipoF] = useState("");
+  const [modal, setModal] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  async function load() {
+    setLoading(true);
+    let query = supabase.from("neumaticos").select("*").eq("cliente_id", session.cliente_id).order("numero_fuego");
+    const { data, error } = await query;
+    if (!error) setRows(data||[]);
+    setLoading(false);
+  }
+  useEffect(() => { load(); }, []);
+
+  const filtrados = rows.filter(r =>
+    (!q || r.numero_fuego.toLowerCase().includes(q.toLowerCase())) &&
+    (!estadoF || r.estado_actual === estadoF) &&
+    (!equipoF || r.equipo_actual === equipoF)
+  );
+  function equipoLabel(id) { const e = equipos.find(x=>x.id_equipo===id); return e ? `${e.numero_interno} - ${e.patente}` : "-"; }
+
+  async function guardar(form) {
+    setSaving(true);
+    try {
+      const payload = { marca: form.marca||null, modelo: form.modelo||null, medida: form.medida||null, tipo: form.tipo||null, estado_actual: form.estado_actual, equipo_actual: form.equipo_actual||null, posicion_actual: form.posicion_actual?parseInt(form.posicion_actual,10):null };
+      const { error } = await supabase.from("neumaticos").update(payload).eq("id_neumatico", form.id_neumatico);
+      if (error) throw error;
+      await load(); setModal(null);
+    } catch(e) { alert("Error: " + e.message); } finally { setSaving(false); }
+  }
+  async function toggleActivo(r) { await supabase.from("neumaticos").update({ activo: !r.activo }).eq("id_neumatico", r.id_neumatico); load(); }
+
+  const estadoColor = { nuevo:"green", transito:"amber", recauchado:"blue", baja:"red" };
+
+  return (
+    <div className="p-4 max-w-5xl mx-auto space-y-4">
+      <h2 className="font-display text-2xl font-bold">Neumáticos</h2>
+      <div className="flex flex-wrap gap-3">
+        <TextInput placeholder="Buscar N° fuego…" value={q} onChange={e=>setQ(e.target.value)} className="max-w-xs" />
+        <Select value={estadoF} onChange={e=>setEstadoF(e.target.value)} className="max-w-[160px]"><option value="">Todos los estados</option><option value="nuevo">Nuevo</option><option value="transito">Tránsito</option><option value="recauchado">Recauchado</option><option value="baja">Baja</option></Select>
+        <Select value={equipoF} onChange={e=>setEquipoF(e.target.value)} className="max-w-[200px]"><option value="">Todos los equipos</option>{equipos.map(e=><option key={e.id_equipo} value={e.id_equipo}>{e.numero_interno} - {e.patente}</option>)}</Select>
+      </div>
+      <Card className="!p-0 overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead><tr className="text-left text-gray-400 border-b border-gray-100"><th className="p-3">N° Fuego</th><th className="p-3">Marca</th><th className="p-3">Modelo</th><th className="p-3">Estado</th><th className="p-3">Equipo actual</th><th className="p-3">Posición</th><th className="p-3">Activo</th><th className="p-3"></th></tr></thead>
+          <tbody>
+            {loading && <tr><td colSpan={8} className="p-6 text-center text-gray-400">Cargando…</td></tr>}
+            {!loading && filtrados.map(r => (
+              <tr key={r.id_neumatico} className="border-b border-gray-50 last:border-0">
+                <td className="p-3 font-semibold">{r.numero_fuego}</td><td className="p-3">{r.marca||"-"}</td><td className="p-3">{r.modelo||"-"}</td>
+                <td className="p-3"><Badge color={estadoColor[r.estado_actual]||"gray"}>{r.estado_actual}</Badge></td>
+                <td className="p-3">{equipoLabel(r.equipo_actual)}</td><td className="p-3">{r.posicion_actual||"-"}</td>
+                <td className="p-3"><Toggle checked={r.activo!==false} onChange={()=>toggleActivo(r)} /></td>
+                <td className="p-3"><button onClick={()=>setModal(r)} className="text-forest font-semibold">Editar</button></td>
+              </tr>
+            ))}
+            {!loading && filtrados.length===0 && <tr><td colSpan={8} className="p-6 text-center text-gray-400">Sin resultados</td></tr>}
+          </tbody>
+        </table>
+      </Card>
+      {modal && <NeumaticoModal neumatico={modal} equipos={equipos} onClose={()=>setModal(null)} onSave={guardar} saving={saving} />}
+    </div>
+  );
+}
+
+function NeumaticoModal({ neumatico, equipos, onClose, onSave, saving }) {
+  const [form, setForm] = useState({ id_neumatico: neumatico.id_neumatico, marca: neumatico.marca||"", modelo: neumatico.modelo||"", medida: neumatico.medida||"", tipo: neumatico.tipo||"", estado_actual: neumatico.estado_actual||"nuevo", equipo_actual: neumatico.equipo_actual||"", posicion_actual: neumatico.posicion_actual||"" });
+  return (
+    <Modal title={`Neumático ${neumatico.numero_fuego}`} onClose={onClose}>
+      <form onSubmit={e=>{e.preventDefault(); onSave(form);}} className="space-y-3">
+        <Field label="Marca"><TextInput value={form.marca} onChange={e=>setForm(f=>({...f,marca:e.target.value}))} /></Field>
+        <Field label="Modelo"><TextInput value={form.modelo} onChange={e=>setForm(f=>({...f,modelo:e.target.value}))} /></Field>
+        <Field label="Medida"><TextInput value={form.medida} onChange={e=>setForm(f=>({...f,medida:e.target.value}))} /></Field>
+        <Field label="Tipo"><TextInput value={form.tipo} onChange={e=>setForm(f=>({...f,tipo:e.target.value}))} /></Field>
+        <Field label="Estado"><Select value={form.estado_actual} onChange={e=>setForm(f=>({...f,estado_actual:e.target.value}))}><option value="nuevo">Nuevo</option><option value="transito">Tránsito</option><option value="recauchado">Recauchado</option><option value="baja">Baja</option></Select></Field>
+        <Field label="Equipo actual"><EquipoSelector equipos={equipos} value={form.equipo_actual} onChange={v=>setForm(f=>({...f,equipo_actual:v}))} /></Field>
+        <Field label="Posición actual"><TextInput inputMode="numeric" value={form.posicion_actual} onChange={e=>setForm(f=>({...f,posicion_actual:e.target.value.replace(/\D/g,"")}))} /></Field>
+        <Button type="submit" disabled={saving} className="w-full">{saving ? <span className="spinner"></span> : "Guardar"}</Button>
+      </form>
+    </Modal>
+  );
+}
+
+/* =====================================================================
+   ADMIN — HISTORIAL
+===================================================================== */
+function HistorialAdmin() {
+  const { equipos, config } = useApp();
+  const [equipoId, setEquipoId] = useState("");
+  const [eventos, setEventos] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const psiMin = parseFloat(config.psi_minimo || 85), mmMin = parseFloat(config.mm_minimo || 4);
+
+  async function cargar(id) {
+    setEquipoId(id); if (!id) { setEventos(null); return; }
+    setLoading(true);
+    const [{ data: auds }, { data: cambios }] = await Promise.all([
+      supabase.from("auditorias").select("*, auditoria_posiciones(*)").eq("equipo_id", id).order("fecha", { ascending: false }),
+      supabase.from("cambios_neumaticos").select("*, cambio_detalle(*)").eq("equipo_id", id).order("fecha", { ascending: false })
+    ]);
+    const evs = [
+      ...(auds||[]).map(a => ({ tipo:"auditoria", fecha:a.fecha, ...a })),
+      ...(cambios||[]).map(c => ({ tipo:"cambio", fecha:c.fecha, ...c }))
+    ].sort((a,b) => new Date(b.fecha) - new Date(a.fecha));
+    setEventos(evs); setLoading(false);
+  }
+
+  function exportar() {
+    const equipo = equipos.find(e=>e.id_equipo===equipoId);
+    const rows = [];
+    (eventos||[]).forEach(ev => {
+      if (ev.tipo === "auditoria") {
+        (ev.auditoria_posiciones||[]).forEach(p => rows.push({ Fecha: ev.fecha, Tipo:"Auditoría", "N° Doc": ev.numero_auditoria, Km: ev.kilometraje, Posición: p.posicion, "N° Fuego": p.numero_fuego, MM: p.milimetros, PSI: p.psi, Alerta: (p.psi<psiMin||p.milimetros<mmMin) ? "SI" : "" }));
+      } else {
+        (ev.cambio_detalle||[]).forEach(d => rows.push({ Fecha: ev.fecha, Tipo:`Cambio (${d.tipo})`, "N° Doc": ev.numero_cambio, Km: ev.kilometraje, Posición: d.posicion, "N° Fuego": d.numero_fuego, MM: d.milimetros, PSI: d.psi, Estado: d.estado||d.motivo_salida||"" }));
+      }
+    });
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Historial");
+    XLSX.writeFile(wb, `historial_${equipo?.numero_interno||"equipo"}.xlsx`);
+  }
+
+  return (
+    <div className="p-4 max-w-4xl mx-auto space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="font-display text-2xl font-bold">Historial por Equipo</h2>
+        {eventos && eventos.length>0 && <Button variant="ghost" onClick={exportar}>⬇ Exportar Excel</Button>}
+      </div>
+      <EquipoSelector equipos={equipos} value={equipoId} onChange={cargar} />
+      {loading && <div className="text-center py-10"><span className="spinner mx-auto"></span></div>}
+      {!loading && eventos && eventos.length===0 && <div className="text-center text-gray-400 py-10">Sin eventos registrados para este equipo.</div>}
+      {!loading && eventos && eventos.length>0 && (
+        <div className="relative pl-6 space-y-6 border-l-2 border-gray-100">
+          {eventos.map((ev, i) => (
+            <div key={i} className="relative">
+              <div className={cx("absolute -left-[29px] top-1 w-3.5 h-3.5 rounded-full border-2 border-white", ev.tipo==="auditoria"?"bg-blue-500":"bg-forest")}></div>
+              <Card>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="font-display font-bold">{ev.tipo==="auditoria" ? `Auditoría N° ${ev.numero_auditoria}` : `Cambio N° ${ev.numero_cambio}`}</span>
+                  <span className="text-xs text-gray-400">{formatDateCL(ev.fecha)} · {ev.kilometraje ? ev.kilometraje.toLocaleString("es-CL")+" km" : ""}</span>
+                </div>
+                {ev.tipo === "auditoria" ? (
+                  <div className="flex flex-wrap gap-1.5">
+                    {(ev.auditoria_posiciones||[]).sort((a,b)=>a.posicion-b.posicion).map(p => {
+                      const alerta = (p.psi!=null && p.psi<psiMin) || (p.milimetros!=null && p.milimetros<mmMin);
+                      return <span key={p.id} className={cx("text-xs px-2 py-1 rounded-lg", alerta ? "bg-red-100 text-red-700 font-semibold" : "bg-gray-50 text-gray-600")}>P{p.posicion}: {p.numero_fuego} · {p.milimetros}mm · {p.psi}psi</span>;
+                    })}
+                  </div>
+                ) : (
+                  <div className="grid sm:grid-cols-2 gap-2 text-xs">
+                    <div>
+                      <div className="text-gray-400 font-semibold mb-1">Salen</div>
+                      {(ev.cambio_detalle||[]).filter(d=>d.tipo==="sale").map(d => <div key={d.id} className="text-gray-600">P{d.posicion}: {d.numero_fuego} ({d.motivo_salida})</div>)}
+                    </div>
+                    <div>
+                      <div className="text-gray-400 font-semibold mb-1">Entran</div>
+                      {(ev.cambio_detalle||[]).filter(d=>d.tipo==="entra").map(d => <div key={d.id} className="text-gray-600">P{d.posicion}: {d.numero_fuego} ({d.estado})</div>)}
+                    </div>
+                  </div>
+                )}
+              </Card>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* =====================================================================
+   ADMIN — CONFIGURACION
+===================================================================== */
+const CONFIG_FIELDS = [
+  { clave:"numero_auditoria_inicio", label:"N° inicio auditoría", hint:"Próximo correlativo a usar" },
+  { clave:"numero_cambio_inicio", label:"N° inicio cambio" },
+  { clave:"numero_flash_inicio", label:"N° inicio flash" },
+  { clave:"numero_hoja_inicio", label:"N° inicio hoja de novedades" },
+  { clave:"numero_fuego_inicio", label:"N° inicio fuego (secuencial)", hint:"Solo para clientes con fórmula secuencial" },
+  { clave:"psi_minimo", label:"PSI mínimo (alerta)" },
+  { clave:"mm_minimo", label:"MM mínimo (alerta)" },
+];
+
+function ConfiguracionAdmin() {
+  const { session, config, reloadConfig } = useApp();
+  const [vals, setVals] = useState(config);
+  const [formula, setFormula] = useState(config.formula_marca_fuego || "interno_semana_anio_posicion");
+  const [saving, setSaving] = useState(false);
+  const [toast, setToast] = useState(null);
+
+  useEffect(() => { setVals(config); setFormula(config.formula_marca_fuego || "interno_semana_anio_posicion"); }, [config]);
+
+  async function guardar() {
+    setSaving(true);
+    try {
+      for (const f of CONFIG_FIELDS) await db.setConfigValor(session.cliente_id, f.clave, vals[f.clave] ?? "");
+      await db.setConfigValor(session.cliente_id, "formula_marca_fuego", formula);
+      await reloadConfig();
+      setToast({ type:"ok", msg:"Configuración guardada." });
+    } catch(e) { setToast({ type:"error", msg:"Error: " + e.message }); } finally { setSaving(false); }
+  }
+
+  return (
+    <div className="p-4 max-w-2xl mx-auto space-y-4">
+      {toast && <Toast {...toast} onDone={()=>setToast(null)} />}
+      <h2 className="font-display text-2xl font-bold">Configuración</h2>
+      <Card className="space-y-4">
+        <div className="grid sm:grid-cols-2 gap-4">
+          {CONFIG_FIELDS.map(f => (
+            <Field key={f.clave} label={f.label} hint={f.hint}>
+              <TextInput inputMode="numeric" value={vals[f.clave]||""} onChange={e=>setVals(v=>({...v,[f.clave]:e.target.value.replace(/\D/g,"")}))} />
+            </Field>
+          ))}
+        </div>
+        <Field label="Fórmula de marca de fuego">
+          <Select value={formula} onChange={e=>setFormula(e.target.value)}>
+            <option value="interno_semana_anio_posicion">La Portada (interno+semana+año+posición)</option>
+            <option value="secuencial">Secuencial</option>
+          </Select>
+        </Field>
+        <Button onClick={guardar} disabled={saving} className="w-full">{saving ? <span className="spinner"></span> : "Guardar configuración"}</Button>
+      </Card>
+    </div>
+  );
+}
+
+/* =====================================================================
+   ADMIN — DASHBOARD
+===================================================================== */
+function Dashboard() {
+  const { session, equipos, mecanicos, config } = useApp();
+  const [stats, setStats] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const psiMin = parseFloat(config.psi_minimo || 85), mmMin = parseFloat(config.mm_minimo || 4);
+
+  async function load() {
+    setLoading(true);
+    const hoy = todayISO();
+    const inicioMes = hoy.slice(0,8) + "01";
+    const hace30 = new Date(Date.now() - 30*86400000).toISOString().slice(0,10);
+
+    const [{ data: audsHoy }, { data: cambiosHoy }, { data: flashHoy }, { data: neumaticos }, { data: audsMes }, { data: cambiosMes }, { data: ultimasAuds }] = await Promise.all([
+      supabase.from("auditorias").select("*").eq("fecha", hoy),
+      supabase.from("cambios_neumaticos").select("*").eq("fecha", hoy),
+      supabase.from("flash_diario").select("*").eq("fecha", hoy).eq("cliente_id", session.cliente_id),
+      supabase.from("neumaticos").select("estado_actual").eq("cliente_id", session.cliente_id).eq("activo", true),
+      supabase.from("auditorias").select("bultero_id").gte("fecha", inicioMes),
+      supabase.from("cambios_neumaticos").select("bultero_id").gte("fecha", inicioMes),
+      supabase.from("auditorias").select("*, auditoria_posiciones(*)").order("fecha", { ascending:false }).limit(500)
+    ]);
+
+    const stock = { nuevo:0, transito:0, recauchado:0, baja:0 };
+    (neumaticos||[]).forEach(n => { if (stock[n.estado_actual] != null) stock[n.estado_actual]++; });
+
+    const prodMap = {};
+    [...(audsMes||[]), ...(cambiosMes||[])].forEach(r => { if (r.bultero_id) prodMap[r.bultero_id] = (prodMap[r.bultero_id]||0)+1; });
+
+    const ultimaPorEquipo = {};
+    (ultimasAuds||[]).forEach(a => { if (!ultimaPorEquipo[a.equipo_id] || a.fecha > ultimaPorEquipo[a.equipo_id].fecha) ultimaPorEquipo[a.equipo_id] = a; });
+    const sinAuditar = equipos.filter(e => e.activo !== false && (!ultimaPorEquipo[e.id_equipo] || ultimaPorEquipo[e.id_equipo].fecha < hace30));
+
+    const alertas = [];
+    Object.values(ultimaPorEquipo).forEach(a => {
+      (a.auditoria_posiciones||[]).forEach(p => {
+        if ((p.psi!=null && p.psi<psiMin) || (p.milimetros!=null && p.milimetros<mmMin)) {
+          const eq = equipos.find(e=>e.id_equipo===a.equipo_id);
+          alertas.push({ equipo: eq ? `${eq.numero_interno} - ${eq.patente}` : a.equipo_id, posicion:p.posicion, psi:p.psi, mm:p.milimetros, fecha:a.fecha });
+        }
+      });
+    });
+
+    setStats({
+      auditoriasHoy: (audsHoy||[]).length, cambiosHoy: (cambiosHoy||[]).length,
+      regulacionesPsi: (flashHoy||[]).reduce((s,f)=>s+(f.regulacion_psi||0),0),
+      retorqueos: (flashHoy||[]).reduce((s,f)=>s+(f.retorqueo||0),0),
+      stock, alertas, sinAuditar, prodMap
+    });
+    setLoading(false);
+  }
+  useEffect(() => { load(); }, []);
+
+  function exportarDia() {
+    const hoy = todayISO();
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([{
+      Fecha: hoy, "Auditorías": stats.auditoriasHoy, "Cambios": stats.cambiosHoy,
+      "Regulaciones PSI": stats.regulacionesPsi, "Retorqueos": stats.retorqueos,
+      "Stock Nuevo": stats.stock.nuevo, "Stock Tránsito": stats.stock.transito, "Stock Recauchado": stats.stock.recauchado, "Stock Baja": stats.stock.baja
+    }]), "Resumen del día");
+    XLSX.writeFile(wb, `mosa_dashboard_${hoy}.xlsx`);
+  }
+
+  if (loading || !stats) return <div className="p-10 text-center"><span className="spinner mx-auto"></span></div>;
+
+  const Kpi = ({label, value, color="ink"}) => (
+    <Card className="text-center">
+      <div className={`text-3xl font-display font-extrabold text-${color==="ink"?"ink":color}`}>{value}</div>
+      <div className="text-xs text-gray-400 mt-1">{label}</div>
+    </Card>
+  );
+
+  return (
+    <div className="p-4 max-w-5xl mx-auto space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="font-display text-2xl font-bold">Dashboard</h2>
+        <Button variant="ghost" onClick={exportarDia}>⬇ Exportar día a Excel</Button>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <Kpi label="Auditorías hoy" value={stats.auditoriasHoy} />
+        <Kpi label="Cambios hoy" value={stats.cambiosHoy} />
+        <Kpi label="Regulaciones PSI" value={stats.regulacionesPsi} />
+        <Kpi label="Retorqueos" value={stats.retorqueos} />
+      </div>
+
+      <Card>
+        <h3 className="font-display font-bold mb-3">Stock actual de neumáticos</h3>
+        <div className="grid grid-cols-4 gap-3 text-center">
+          <div><div className="text-2xl font-bold text-forest">{stats.stock.nuevo}</div><div className="text-xs text-gray-400">Nuevo</div></div>
+          <div><div className="text-2xl font-bold text-amber-600">{stats.stock.transito}</div><div className="text-xs text-gray-400">Tránsito</div></div>
+          <div><div className="text-2xl font-bold text-blue-600">{stats.stock.recauchado}</div><div className="text-xs text-gray-400">Recauchado</div></div>
+          <div><div className="text-2xl font-bold text-red-600">{stats.stock.baja}</div><div className="text-xs text-gray-400">Baja</div></div>
+        </div>
+      </Card>
+
+      <Card>
+        <h3 className="font-display font-bold mb-3">Alertas activas (última auditoría por equipo)</h3>
+        {stats.alertas.length===0 ? <div className="text-sm text-gray-400">Sin alertas activas.</div> : (
+          <div className="space-y-1.5 max-h-64 overflow-y-auto">
+            {stats.alertas.map((a,i) => (
+              <div key={i} className="flex items-center justify-between text-sm bg-red-50 rounded-lg px-3 py-2">
+                <span>{a.equipo} · Pos. {a.posicion}</span>
+                <span className="text-red-700 font-semibold">{a.psi}psi / {a.mm}mm</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      <Card>
+        <h3 className="font-display font-bold mb-3">Equipos sin auditar (30+ días)</h3>
+        {stats.sinAuditar.length===0 ? <div className="text-sm text-gray-400">Todos los equipos activos fueron auditados recientemente.</div> : (
+          <div className="flex flex-wrap gap-2">{stats.sinAuditar.map(e => <Badge key={e.id_equipo} color="amber">{e.numero_interno} - {e.patente}</Badge>)}</div>
+        )}
+      </Card>
+
+      <Card>
+        <h3 className="font-display font-bold mb-3">Productividad por mecánico (mes actual)</h3>
+        <div className="space-y-2">
+          {mecanicos.map(m => (
+            <div key={m.id_mecanico} className="flex items-center justify-between text-sm">
+              <span>{m.nombre} {m.apellido}</span>
+              <span className="font-semibold">{stats.prodMap[m.id_mecanico] || 0} formularios</span>
+            </div>
+          ))}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+/* =====================================================================
+   FORMULARIOS HUB (admin)
+===================================================================== */
+function FormulariosHub({ open }) {
+  const [tab, setTab] = useState("auditoria");
+  return (
+    <div>
+      <div className="max-w-3xl mx-auto px-4 pt-4 flex gap-2 flex-wrap">
+        {MECH_TABS.map(t => (
+          <button key={t.id} onClick={()=>setTab(t.id)} className={cx("px-4 h-10 rounded-xl text-sm font-semibold", tab===t.id ? "bg-ink text-white" : "bg-gray-100 text-gray-600")}>{t.icon} {t.label}</button>
+        ))}
+      </div>
+      {tab==="auditoria" && <AuditoriaForm />}
+      {tab==="cambio" && <CambioForm />}
+      {tab==="flash" && <FlashForm />}
+      {tab==="novedad" && <NovedadForm />}
+    </div>
+  );
+}
+
+/* =====================================================================
+   APP PRINCIPAL
+===================================================================== */
+function MecanicoApp() {
+  const [view, setView] = useState("auditoria");
+  const titles = { auditoria:"Auditoría de Equipos", cambio:"Cambio de Neumáticos", flash:"Informe Flash", novedad:"Hoja de Novedades" };
+  return (
+    <div className="min-h-screen">
+      <Header title={titles[view]} />
+      <PendingBar />
+      {view==="auditoria" && <AuditoriaForm />}
+      {view==="cambio" && <CambioForm />}
+      {view==="flash" && <FlashForm />}
+      {view==="novedad" && <NovedadForm />}
+      <BottomNav view={view} setView={setView} />
+    </div>
+  );
+}
+
+function AdminApp() {
+  const [view, setView] = useState("dashboard");
+  const [menuOpen, setMenuOpen] = useState(false);
+  const titles = { dashboard:"Dashboard", formularios:"Formularios", equipos:"Equipos", mecanicos:"Mecánicos", neumaticos:"Neumáticos", historial:"Historial", configuracion:"Configuración" };
+  return (
+    <div className="min-h-screen">
+      <Header title={titles[view]} onMenu={()=>setMenuOpen(true)} />
+      <PendingBar />
+      <div className="max-w-6xl mx-auto lg:flex">
+        <Sidebar view={view} setView={setView} open={menuOpen} setOpen={setMenuOpen} />
+        <main className="flex-1 min-w-0">
+          {view==="dashboard" && <Dashboard />}
+          {view==="formularios" && <FormulariosHub />}
+          {view==="equipos" && <EquiposAdmin />}
+          {view==="mecanicos" && <MecanicosAdmin />}
+          {view==="neumaticos" && <NeumaticosAdmin />}
+          {view==="historial" && <HistorialAdmin />}
+          {view==="configuracion" && <ConfiguracionAdmin />}
+        </main>
+      </div>
+    </div>
+  );
+}
+
+function AppShell() {
+  const [session, setSessionState] = useState(getSession());
+  const [equipos, setEquipos] = useState([]);
+  const [mecanicos, setMecanicos] = useState([]);
+  const [config, setConfig] = useState({});
+  const [ready, setReady] = useState(false);
+
+  async function reloadEquipos() {
+    try { setEquipos(await db.fetchEquipos(session.cliente_id)); }
+    catch(e) { setEquipos(getCache(LS.cacheEquipos(session.cliente_id), [])); }
+  }
+  async function reloadMecanicos() {
+    try { setMecanicos(await db.fetchMecanicos(session.cliente_id)); }
+    catch(e) { setMecanicos(getCache(LS.cacheMecanicos(session.cliente_id), [])); }
+  }
+  async function reloadConfig() {
+    try { setConfig(await db.fetchConfig(session.cliente_id)); }
+    catch(e) { setConfig(getCache(LS.cacheConfig(session.cliente_id), {})); }
+  }
+
+  useEffect(() => {
+    if (!session) { setReady(true); return; }
+    (async () => { await Promise.all([reloadEquipos(), reloadMecanicos(), reloadConfig()]); setReady(true); syncQueue(); })();
+  }, [session]);
+
+  function login(s) { setSession(s); setSessionState(s); }
+  function logout() { clearSession(); setSessionState(null); }
+
+  if (!session) return <Login onLogin={login} />;
+  if (!ready) return <div className="min-h-screen flex items-center justify-center"><span className="spinner"></span></div>;
+
+  const ctx = { session, equipos, mecanicos, config, reloadEquipos, reloadMecanicos, reloadConfig, logout };
+  return (
+    <AppCtx.Provider value={ctx}>
+      {session.role === "admin" ? <AdminApp /> : <MecanicoApp />}
+    </AppCtx.Provider>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<AppShell />);
+</script>
+
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js').catch(err => console.warn('SW registration failed', err));
+    });
+  }
+</script>
+</body>
+</html>
