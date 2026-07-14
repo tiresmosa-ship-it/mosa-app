@@ -1,13 +1,13 @@
 {
-  "name": "MOSA Neumáticos",
-  "short_name": "MOSA",
-  "description": "Gestión de neumáticos para flotas de camiones - MOSA",
+  "name": "MOSA TIRES",
+  "short_name": "MOSA TIRES",
+  "description": "MOSA TIRES - Gestión de neumáticos de flota",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#FAFAF8",
-  "theme_color": "#FAFAF8",
+  "background_color": "#FFFFFF",
+  "theme_color": "#FFFFFF",
   "lang": "es-CL",
   "icons": [
     { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },

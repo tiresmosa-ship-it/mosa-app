@@ -3,16 +3,12 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
-<title>MOSA Neumáticos</title>
-<meta name="description" content="Gestión de neumáticos para flotas de camiones - MOSA" />
-<meta name="theme-color" content="#FAFAF8" />
+<title>MOSA TIRES</title>
+<meta name="description" content="MOSA TIRES - Gestión de neumáticos de flota" />
+<meta name="theme-color" content="#FFFFFF" />
 <link rel="manifest" href="manifest.json" />
 <link rel="apple-touch-icon" href="icon-192.png" />
 <link rel="icon" href="icon-192.png" />
-
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700;800&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 
 <script src="https://cdn.tailwindcss.com"></script>
 <script>
@@ -20,15 +16,18 @@
     theme: {
       extend: {
         colors: {
-          cream: '#FAFAF8',
-          ink: '#1a1a1a',
-          forest: '#2D5016',
-          forestdark: '#1f3a0f'
+          ink: '#0A0A0A',
+          sub: '#6B7280',
+          muted: '#9CA3AF',
+          card: '#FFFFFF',
+          subtlebg: '#F7F7F7',
+          bd: '#EFEFEF',
+          bdstrong: '#E5E7EB'
         },
-        fontFamily: {
-          display: ['"Playfair Display"', 'serif'],
-          sans: ['Inter', 'sans-serif']
-        }
+        boxShadow: {
+          card: '0 1px 2px rgba(0,0,0,0.03), 0 6px 16px rgba(0,0,0,0.04)'
+        },
+        borderRadius: { card: '16px' }
       }
     }
   }
@@ -38,68 +37,122 @@
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/@babel/standalone@7/babel.min.js" crossorigin></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" crossorigin></script>
-<script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js" crossorigin></script>
 
 <style>
-  html, body { font-family: 'Inter', sans-serif; background:#FAFAF8; -webkit-tap-highlight-color: transparent; }
-  .font-display { font-family: 'Playfair Display', serif; }
+  html, body { font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Inter, sans-serif; background:#FFFFFF; -webkit-tap-highlight-color: transparent; }
   * { -webkit-font-smoothing: antialiased; }
-  input, select, textarea { font-family: 'Inter', sans-serif; }
   ::-webkit-scrollbar { height: 8px; width: 8px; }
-  ::-webkit-scrollbar-thumb { background: #d8d4cc; border-radius: 8px; }
+  ::-webkit-scrollbar-thumb { background: #E5E7EB; border-radius: 8px; }
   ::-webkit-scrollbar-track { background: transparent; }
   .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
   .safe-top { padding-top: env(safe-area-inset-top); }
-  @keyframes pulse-soft { 0%,100%{opacity:1} 50%{opacity:.55} }
-  .animate-pulse-soft { animation: pulse-soft 1.8s ease-in-out infinite; }
-  .field-alert { border-color:#dc2626 !important; background:#fef2f2 !important; }
-  .spinner { border: 3px solid #e5e2da; border-top-color: #2D5016; border-radius: 50%; width: 22px; height: 22px; animation: spin 0.7s linear infinite; }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.4} }
+  .anim-blink { animation: blink 1s ease-in-out infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
+  .spinner { border: 3px solid #E5E7EB; border-top-color: #111111; border-radius: 50%; width: 22px; height: 22px; animation: spin 0.7s linear infinite; }
+  .field-alert { border-color:#EF4444 !important; background:#FEE2E2 !important; }
+  .field-warn { border-color:#F59E0B !important; background:#FEF3C7 !important; }
+  input, select, textarea { font-family: inherit; }
+  .strike { text-decoration: line-through; color:#9CA3AF; }
 </style>
 </head>
-<body class="bg-cream text-ink">
+<body class="bg-white text-ink">
 <div id="root"></div>
 
 <script type="text/babel" data-presets="react" data-type="module">
 const { useState, useEffect, useRef, useMemo, useCallback, createContext, useContext } = React;
 
 /* =====================================================================
-   CONFIG & CONSTANTES
+   CONFIG
 ===================================================================== */
 const SUPABASE_URL = "https://dnbrqjenkiwobzfssxlf.supabase.co";
 const SUPABASE_KEY = "sb_publishable_zi1xe8N5H1nx_X6xbb4BjQ_a4eqc6G0";
 const CLIENTE_ID_DEFAULT = "la_portada";
-const ADMIN_USER = "admin";
-const ADMIN_PASS = "mosadmin2026";
-
 const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+const DEFAULT_CFG = {
+  psi_delantero: 115, psi_traccion: 95, psi_tolerancia_pct: 5,
+  psi_auxilio_tracto: 115, psi_auxilio_semi: 95,
+  mm_minimo_tracto: 5, mm_minimo_semi: 3, mm_minimo_auxilio: 5,
+  mm_amarillo_tracto: 6, mm_amarillo_semi: 4, mm_rotacion_pct: 20,
+  numero_auditoria_inicio: 1, numero_cambio_inicio: 1,
+  formula_marca_fuego: "interno+semana+anio+posicion"
+};
 
 const TOOLS_CHECKLIST = [
   "Dado 33","Dado 32","Dado 22","Gata","Medidor PSI","Profundímetro",
-  "Caimán","Sacatapas","Cuñas","Mangueras","Banquillos",
-  "Desmontadora neumática","Extractor de rueda","Conos verdes",
-  "Destalonador","Espejo","Barra para montar","Turbina","Copa",
-  "Rulín","Marcador Elrick","Inflador","Llave punta corona 16",
-  "Atomizador rost off","Sacapepas","Llave punta corona 14",
-  "Limpieza taller","Pata de cabra","Multiplicador","Chita",
-  "Pistola 1\"","Cadenas","Alicate pequeño"
+  "Caimán","Sacatapas","Cuñas","Mangueras","Banquillos","Desmontadora neumática",
+  "Extractor de rueda","Conos verdes","Destalonador","Espejo","Barra para montar",
+  "Turbina","Copa","Rulín","Marcador Elrick","Inflador","Llave punta corona 16",
+  "Atomizador rost off","Sacapepas","Llave punta corona 14","Limpieza taller",
+  "Pata de cabra","Multiplicador","Chita","Pistola 1\"","Cadenas","Alicate pequeño"
 ];
+
+/* Configuraciones de eje: filas visuales + grupos de rotacion permitidos */
+const AXLE_CONFIGS = {
+  "4x2": {
+    total: 6,
+    rows: [
+      { label: "D", type: "D", positions: [1, 2] },
+      { label: "T", type: "M", positions: [3, 4, 5, 6] }
+    ],
+    groups: [[1, 2], [3, 4, 5, 6]]
+  },
+  "6x2": {
+    total: 10,
+    rows: [
+      { label: "D", type: "D", positions: [1, 2] },
+      { label: "M", type: "M", positions: [3, 4, 5, 6] },
+      { label: "T", type: "M", positions: [7, 8, 9, 10] }
+    ],
+    groups: [[1, 2], [3, 4, 5, 6], [7, 8, 9, 10]]
+  },
+  "6x4": {
+    total: 10,
+    rows: [
+      { label: "D", type: "D", positions: [1, 2] },
+      { label: "M", type: "M", positions: [3, 4, 5, 6] },
+      { label: "T", type: "M", positions: [7, 8, 9, 10] }
+    ],
+    groups: [[1, 2], [3, 4, 5, 6, 7, 8, 9, 10]]
+  },
+  "semi": {
+    total: 13,
+    rows: [
+      { label: "Eje 1", type: "M", positions: [1, 2, 3, 4] },
+      { label: "Eje 2", type: "M", positions: [5, 6, 7, 8] },
+      { label: "Eje 3", type: "M", positions: [9, 10, 11, 12] },
+      { label: "Auxilio", type: "auxilio", positions: [13] }
+    ],
+    groups: [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12], [13]]
+  }
+};
+function axleConfigFor(equipo) {
+  if (!equipo) return AXLE_CONFIGS["4x2"];
+  if (equipo.tipo === "SEMI") return AXLE_CONFIGS["semi"];
+  return AXLE_CONFIGS[equipo.configuracion_ejes] || AXLE_CONFIGS["4x2"];
+}
+function posType(cfg, pos) {
+  const row = cfg.rows.find(r => r.positions.includes(pos));
+  return row ? row.type : "M";
+}
 
 /* =====================================================================
    UTILIDADES
 ===================================================================== */
 function cx(...xs) { return xs.filter(Boolean).join(" "); }
-
+function pad2(n) { n = String(n); return n.length < 2 ? "0" + n : n; }
 function todayISO() {
   const d = new Date();
-  return d.getFullYear() + "-" + pad2(d.getMonth()+1) + "-" + pad2(d.getDate());
+  return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate());
 }
-function nowHM() {
-  const d = new Date();
-  return pad2(d.getHours()) + ":" + pad2(d.getMinutes());
+function nowHM() { const d = new Date(); return pad2(d.getHours()) + ":" + pad2(d.getMinutes()) + ":" + pad2(d.getSeconds()); }
+function formatDateLong(iso) {
+  const dias = ["Domingo","Lunes","Martes","Miércoles","Jueves","Viernes","Sábado"];
+  const meses = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
+  const d = iso ? new Date(iso + "T00:00:00") : new Date();
+  return `${dias[d.getDay()]}, ${d.getDate()} de ${meses[d.getMonth()]}`;
 }
-function pad2(n) { n = String(n); return n.length < 2 ? "0"+n : n; }
-
 function isoWeek(date) {
   const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
   const dayNum = d.getUTCDay() || 7;
@@ -107,152 +160,140 @@ function isoWeek(date) {
   const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
   return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
 }
-
 function uuid() {
   if (crypto.randomUUID) return crypto.randomUUID();
   return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, c => {
-    const r = Math.random()*16|0, v = c === "x" ? r : (r&0x3|0x8);
+    const r = Math.random() * 16 | 0, v = c === "x" ? r : (r & 0x3 | 0x8);
     return v.toString(16);
   });
 }
-
 async function sha256Hex(text) {
   const enc = new TextEncoder().encode(text);
   const buf = await crypto.subtle.digest("SHA-256", enc);
-  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,"0")).join("");
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
 }
-
-function formatDateCL(iso) {
-  if (!iso) return "-";
-  const [y,m,d] = iso.split("-");
-  return `${d}-${m}-${y}`;
+function generarFuegoLaPortada(numeroInterno, posicion, fecha) {
+  const d = fecha ? new Date(fecha + "T00:00:00") : new Date();
+  const semana = pad2(isoWeek(d));
+  const anio = pad2(d.getFullYear() % 100);
+  return `${numeroInterno || "0"}${semana}${anio}${posicion}`;
 }
 
 /* =====================================================================
-   ALMACENAMIENTO LOCAL (sesión, cache, cola offline)
+   ALMACENAMIENTO LOCAL (sesion, turno, cola offline)
 ===================================================================== */
 const LS = {
   session: "mosa_session",
+  turno: "mosa_turno",
   queue: "mosa_queue",
-  cacheEquipos: (cid) => `mosa_cache_equipos_${cid}`,
-  cacheMecanicos: (cid) => `mosa_cache_mecanicos_${cid}`,
-  cacheConfig: (cid) => `mosa_cache_config_${cid}`,
+  cfg: (cid) => `mosa_cfg_${cid}`,
+  equipos: (cid) => `mosa_equipos_${cid}`
 };
-
-function getSession() {
-  try { return JSON.parse(localStorage.getItem(LS.session) || "null"); } catch(e) { return null; }
-}
+function getSession() { try { return JSON.parse(localStorage.getItem(LS.session) || "null"); } catch (e) { return null; } }
 function setSession(s) { localStorage.setItem(LS.session, JSON.stringify(s)); }
-function clearSession() { localStorage.removeItem(LS.session); }
+function clearSession() { localStorage.removeItem(LS.session); localStorage.removeItem(LS.turno); }
+function getTurno() { try { return JSON.parse(localStorage.getItem(LS.turno) || "null"); } catch (e) { return null; } }
+function setTurno(t) { localStorage.setItem(LS.turno, JSON.stringify(t)); }
 
-function getQueue() {
-  try { return JSON.parse(localStorage.getItem(LS.queue) || "[]"); } catch(e) { return []; }
-}
+function getQueue() { try { return JSON.parse(localStorage.getItem(LS.queue) || "[]"); } catch (e) { return []; } }
 function setQueue(q) { localStorage.setItem(LS.queue, JSON.stringify(q)); window.dispatchEvent(new Event("mosa-queue-changed")); }
 function pushQueue(item) { const q = getQueue(); q.push(item); setQueue(q); }
 function removeFromQueue(id) { setQueue(getQueue().filter(x => x.id !== id)); }
 
-function getCache(key, fallback) {
-  try { return JSON.parse(localStorage.getItem(key) || "null") || fallback; } catch(e) { return fallback; }
-}
+function getCache(key, fallback) { try { return JSON.parse(localStorage.getItem(key) || "null") || fallback; } catch (e) { return fallback; } }
 function setCache(key, val) { localStorage.setItem(key, JSON.stringify(val)); }
 
 /* =====================================================================
-   CAPA DE DATOS (Supabase)
+   CAPA DE DATOS
 ===================================================================== */
 const db = {
-  async fetchEquipos(clienteId) {
-    const { data, error } = await supabase.from("equipos").select("*").eq("cliente_id", clienteId).order("numero_interno");
+  async login(usuario, passwordHash) {
+    const { data, error } = await supabase.from("usuarios").select("*")
+      .eq("usuario", usuario).eq("password_hash", passwordHash).eq("activo", true).maybeSingle();
     if (error) throw error;
-    setCache(LS.cacheEquipos(clienteId), data);
     return data;
   },
-  async fetchMecanicos(clienteId) {
-    const { data, error } = await supabase.from("mecanicos").select("*").eq("cliente_id", clienteId).order("nombre");
+  async fetchCliente(clienteId) {
+    const { data, error } = await supabase.from("clientes").select("*").eq("id_cliente", clienteId).maybeSingle();
     if (error) throw error;
-    setCache(LS.cacheMecanicos(clienteId), data);
+    return data;
+  },
+  async fetchEquipos(clienteId) {
+    const { data, error } = await supabase.from("equipos").select("*").eq("cliente_id", clienteId).eq("activo", true).order("numero_interno");
+    if (error) throw error;
+    setCache(LS.equipos(clienteId), data);
     return data;
   },
   async fetchConfig(clienteId) {
     const { data, error } = await supabase.from("config_cliente").select("*").eq("cliente_id", clienteId);
     if (error) throw error;
-    const map = {};
-    (data||[]).forEach(r => map[r.clave] = r.valor);
-    setCache(LS.cacheConfig(clienteId), map);
+    const map = { ...DEFAULT_CFG };
+    (data || []).forEach(r => { const n = parseFloat(r.valor); map[r.clave] = isNaN(n) || r.clave === "formula_marca_fuego" ? r.valor : n; });
+    setCache(LS.cfg(clienteId), map);
     return map;
   },
   async setConfigValor(clienteId, clave, valor) {
     const { error } = await supabase.from("config_cliente").upsert(
-      { cliente_id: clienteId, clave, valor: String(valor) },
-      { onConflict: "cliente_id,clave" }
-    );
+      { cliente_id: clienteId, clave, valor: String(valor) }, { onConflict: "cliente_id,clave" });
     if (error) throw error;
   },
-  async fetchNeumaticoPorFuego(clienteId, numeroFuego) {
-    const { data, error } = await supabase.from("neumaticos").select("*")
-      .eq("cliente_id", clienteId).eq("numero_fuego", numeroFuego).maybeSingle();
+  async fetchAlertas(clienteId) {
+    const { data, error } = await supabase.from("alertas").select("*").eq("cliente_id", clienteId).order("id", { ascending: false }).limit(100);
     if (error) throw error;
-    return data;
+    return data || [];
   },
+  async fetchUltimaAuditoria(equipoId) {
+    const { data, error } = await supabase.from("auditorias").select("*").eq("equipo_id", equipoId).order("fecha", { ascending: false }).limit(1);
+    if (error) throw error;
+    return (data && data[0]) || null;
+  },
+  async fetchAuditoriasHoy(clienteId) {
+    const { data, error } = await supabase.from("auditorias").select("equipo_id, fecha").eq("fecha", todayISO());
+    if (error) throw error;
+    return data || [];
+  }
 };
 
-/* =====================================================================
-   CORRELATIVOS (numero_auditoria, numero_cambio, numero_flash, numero_hoja)
-   Se leen/incrementan en config_cliente. Se cachean offline y se
-   compensa con la cantidad de items pendientes en cola del mismo tipo
-   para no repetir numeros mientras no hay conexion.
-===================================================================== */
-async function obtenerSiguienteNumero(clienteId, clave) {
-  let base = 1;
-  const online = navigator.onLine;
-  if (online) {
-    try {
-      const cfg = await db.fetchConfig(clienteId);
-      base = parseInt(cfg[clave] || "1", 10) || 1;
-    } catch(e) {
-      const cached = getCache(LS.cacheConfig(clienteId), {});
-      base = parseInt(cached[clave] || "1", 10) || 1;
-    }
-  } else {
-    const cached = getCache(LS.cacheConfig(clienteId), {});
-    base = parseInt(cached[clave] || "1", 10) || 1;
-  }
-  const pendientes = getQueue().filter(q => q.clienteId === clienteId && q.numeroClave === clave).length;
-  return base + pendientes;
+async function siguienteNumeroAuditoria(clienteId, cfg) {
+  const { data, error } = await supabase.from("auditorias").select("numero_auditoria").order("numero_auditoria", { ascending: false }).limit(1);
+  let base = parseInt(cfg.numero_auditoria_inicio || 1, 10);
+  if (!error && data && data[0] && !isNaN(parseInt(data[0].numero_auditoria, 10))) base = Math.max(base, parseInt(data[0].numero_auditoria, 10) + 1);
+  const pendientes = getQueue().filter(q => q.clienteId === clienteId && q.tipo === "auditoria").length;
+  return String(base + pendientes);
 }
-
-async function confirmarUsoNumero(clienteId, clave, numeroUsado) {
-  if (!navigator.onLine) return;
-  try {
-    const cfg = await db.fetchConfig(clienteId);
-    const actual = parseInt(cfg[clave] || "1", 10) || 1;
-    const siguiente = Math.max(actual, numeroUsado + 1);
-    if (siguiente !== actual) await db.setConfigValor(clienteId, clave, siguiente);
-  } catch(e) { /* si falla, el proximo obtenerSiguienteNumero recalcula */ }
+async function siguienteNumeroCambio(clienteId, cfg) {
+  const { data, error } = await supabase.from("cambios_neumaticos").select("numero_cambio").order("numero_cambio", { ascending: false }).limit(1);
+  let base = parseInt(cfg.numero_cambio_inicio || 1, 10);
+  if (!error && data && data[0] && !isNaN(parseInt(data[0].numero_cambio, 10))) base = Math.max(base, parseInt(data[0].numero_cambio, 10) + 1);
+  const pendientes = getQueue().filter(q => q.clienteId === clienteId && q.tipo === "cambio").length;
+  return String(base + pendientes);
 }
 
 /* =====================================================================
-   MARCA DE FUEGO AUTOMATICA
+   ESTADO DE NEUMATICO (alertas en tiempo real)
 ===================================================================== */
-function generarFuegoLaPortada(numeroInterno, posicion, fecha) {
-  const d = fecha ? new Date(fecha+"T00:00:00") : new Date();
-  const semana = pad2(isoWeek(d));
-  const anio = pad2(d.getFullYear() % 100);
-  return `${numeroInterno}${semana}${anio}${posicion}`;
-}
+function evaluarPosicion(axleCfg, cfg, pos, tipoEquipo, data) {
+  const tipo = posType(axleCfg, pos); // D | M | auxilio
+  const mm = [data.mm_borde_izq, data.mm_centro, data.mm_borde_der].map(v => parseFloat(v)).filter(v => !isNaN(v));
+  const minMM = mm.length ? Math.min(...mm) : null;
+  const esSemi = tipoEquipo === "SEMI";
+  const mmMin = tipo === "auxilio" ? cfg.mm_minimo_auxilio : (esSemi ? cfg.mm_minimo_semi : cfg.mm_minimo_tracto);
+  const mmAmarillo = esSemi ? cfg.mm_amarillo_semi : cfg.mm_amarillo_tracto;
+  const psiObjetivo = tipo === "D" ? cfg.psi_delantero : tipo === "auxilio" ? (esSemi ? cfg.psi_auxilio_semi : cfg.psi_auxilio_tracto) : cfg.psi_traccion;
+  const tol = psiObjetivo * (cfg.psi_tolerancia_pct / 100);
+  const psi = parseFloat(data.psi);
 
-async function generarFuegoSecuencial(clienteId) {
-  const { data, error } = await supabase.from("neumaticos").select("numero_fuego")
-    .eq("cliente_id", clienteId).order("fecha_ingreso", { ascending: false }).limit(1);
-  let base = 1;
-  if (!error && data && data.length) {
-    const n = parseInt(data[0].numero_fuego, 10);
-    if (!isNaN(n)) base = n + 1;
-  } else {
-    const cfg = await db.fetchConfig(clienteId).catch(() => ({}));
-    base = parseInt(cfg["numero_fuego_inicio"] || "1", 10) || 1;
+  let status = "ok";
+  let motivos = [];
+  if (minMM != null) {
+    if (minMM < mmMin) { status = "alerta"; motivos.push(`mm ${minMM} bajo mínimo ${mmMin}`); }
+    else if (minMM < mmAmarillo && status !== "alerta") { status = "atencion"; motivos.push(`mm ${minMM} cerca del mínimo`); }
   }
-  return String(base);
+  if (!isNaN(psi)) {
+    if (Math.abs(psi - psiObjetivo) > tol * 2) { status = "alerta"; motivos.push(`psi ${psi} muy fuera de rango`); }
+    else if (Math.abs(psi - psiObjetivo) > tol && status !== "alerta") { status = "atencion"; motivos.push(`psi ${psi} fuera de tolerancia`); }
+  }
+  return { status, motivos, minMM, psiObjetivo, mmMin, mmAmarillo };
 }
 
 /* =====================================================================
@@ -263,122 +304,109 @@ async function syncQueue(onProgress) {
   if (syncing || !navigator.onLine) return;
   syncing = true;
   try {
-    let queue = getQueue();
-    for (const item of queue.slice().sort((a,b) => a.ts - b.ts)) {
+    let queue = getQueue().slice().sort((a, b) => a.ts - b.ts);
+    for (const item of queue) {
       try {
         await enviarItem(item);
         removeFromQueue(item.id);
-        if (item.numeroClave) await confirmarUsoNumero(item.clienteId, item.numeroClave, item.numeroUsado);
-        if (onProgress) onProgress();
+        if (onProgress) onProgress(item);
       } catch (e) {
-        console.error("Error sincronizando item", item, e);
-        break; // detener FIFO si falla uno (probablemente sin red real)
+        console.error("Error sincronizando", item, e);
+        break;
       }
     }
-  } finally {
-    syncing = false;
-  }
+  } finally { syncing = false; }
 }
-
 async function enviarItem(item) {
   switch (item.tipo) {
+    case "novedad": return enviarNovedad(item.data);
     case "auditoria": return enviarAuditoria(item.data);
     case "cambio": return enviarCambio(item.data);
-    case "flash": return enviarFlash(item.data);
-    case "novedad": return enviarNovedad(item.data);
-    default: throw new Error("Tipo desconocido " + item.tipo);
+    case "cierre": return enviarCierre(item.data);
+    default: throw new Error("tipo desconocido " + item.tipo);
   }
 }
-
-async function enviarAuditoria(data) {
-  const { posiciones, ...cab } = data;
-  const { error: e1 } = await supabase.from("auditorias").insert(cab);
-  if (e1) throw e1;
-  const rows = posiciones.filter(p => p.numero_fuego).map(p => ({ ...p, auditoria_id: cab.id_auditoria }));
-  if (rows.length) {
-    const { error: e2 } = await supabase.from("auditoria_posiciones").insert(rows);
-    if (e2) throw e2;
-  }
-}
-
-async function enviarCambio(data) {
-  const { sale, entra, ...cab } = data;
-  const { error: e1 } = await supabase.from("cambios_neumaticos").insert(cab);
-  if (e1) throw e1;
-  const detalle = [];
-  for (const s of sale) {
-    if (!s.numero_fuego) continue;
-    detalle.push({
-      id: uuid(), cambio_id: cab.id_cambio, tipo: "sale", numero_fuego: s.numero_fuego,
-      posicion: s.posicion || null, milimetros: s.milimetros || null, psi: s.psi || null,
-      estado: null, motivo_salida: s.motivo || null
-    });
-    await actualizarNeumaticoSale(cab.cliente_id, s);
-  }
-  for (const en of entra) {
-    if (!en.numero_fuego) continue;
-    detalle.push({
-      id: uuid(), cambio_id: cab.id_cambio, tipo: "entra", numero_fuego: en.numero_fuego,
-      posicion: en.posicion || null, milimetros: en.milimetros || null, psi: en.psi || null,
-      estado: en.estado || null, motivo_salida: null
-    });
-    await actualizarNeumaticoEntra(cab.cliente_id, cab.equipo_id, en);
-  }
-  if (detalle.length) {
-    const { error: e2 } = await supabase.from("cambio_detalle").insert(detalle);
-    if (e2) throw e2;
-  }
-}
-
-async function actualizarNeumaticoSale(clienteId, s) {
-  const existente = await db.fetchNeumaticoPorFuego(clienteId, s.numero_fuego);
-  const estado = s.motivo === "baja" ? "baja" : "transito";
-  if (existente) {
-    await supabase.from("neumaticos").update({ estado_actual: estado, equipo_actual: null, posicion_actual: null }).eq("id_neumatico", existente.id_neumatico);
-  } else {
-    await supabase.from("neumaticos").insert({ id_neumatico: uuid(), numero_fuego: s.numero_fuego, cliente_id: clienteId, estado_actual: estado, equipo_actual: null, posicion_actual: null, fecha_ingreso: todayISO(), activo: true });
-  }
-}
-
-async function actualizarNeumaticoEntra(clienteId, equipoId, en) {
-  const existente = await db.fetchNeumaticoPorFuego(clienteId, en.numero_fuego);
-  if (existente) {
-    await supabase.from("neumaticos").update({ estado_actual: en.estado || existente.estado_actual, equipo_actual: equipoId, posicion_actual: en.posicion || null }).eq("id_neumatico", existente.id_neumatico);
-  } else {
-    await supabase.from("neumaticos").insert({
-      id_neumatico: uuid(), numero_fuego: en.numero_fuego, cliente_id: clienteId,
-      marca: en.marca || null, modelo: en.modelo || null, medida: en.medida || null,
-      estado_actual: en.estado || "nuevo", equipo_actual: equipoId, posicion_actual: en.posicion || null,
-      fecha_ingreso: todayISO(), activo: true
-    });
-  }
-}
-
-async function enviarFlash(data) {
-  const { error } = await supabase.from("flash_diario").insert(data);
-  if (error) throw error;
-}
-
 async function enviarNovedad(data) {
   const { checklist, ...cab } = data;
   const { error: e1 } = await supabase.from("novedades_diarias").insert(cab);
   if (e1) throw e1;
-  const rows = checklist.filter(c => c.cantidad !== "" && c.cantidad != null).map(c => ({ id: uuid(), novedad_id: cab.id, herramienta: c.herramienta, cantidad: c.cantidad }));
-  if (rows.length) {
-    const { error: e2 } = await supabase.from("novedades_checklist").insert(rows);
-    if (e2) throw e2;
+  const rows = checklist.map(c => ({ id: uuid(), novedad_id: cab.id, herramienta: c.herramienta, cantidad: c.cantidad }));
+  if (rows.length) { const { error: e2 } = await supabase.from("novedades_checklist").insert(rows); if (e2) throw e2; }
+}
+async function enviarAuditoria(data) {
+  const { posiciones, receta, ...cab } = data;
+  const { error: e1 } = await supabase.from("auditorias").insert(cab);
+  if (e1) throw e1;
+  const rows = posiciones.filter(p => p.numero_fuego).map(p => ({ ...p, auditoria_id: cab.id_auditoria }));
+  if (rows.length) { const { error: e2 } = await supabase.from("auditoria_posiciones").insert(rows); if (e2) throw e2; }
+  if (receta) { const { error: e3 } = await supabase.from("auditorias_receta").insert({ ...receta, auditoria_id: cab.id_auditoria }); if (e3) throw e3; }
+  await supabase.from("equipos").update({ kilometros: cab.kilometraje }).eq("id_equipo", cab.equipo_id);
+  for (const p of rows) {
+    if (p.__alerta) await insertAlerta(p.__alerta);
   }
 }
-
+async function enviarCambio(data) {
+  const { sale, entra, intervenciones, alertas, ...cab } = data;
+  const { error: e1 } = await supabase.from("cambios_neumaticos").insert(cab);
+  if (e1) throw e1;
+  const detalle = [];
+  for (const s of sale) {
+    detalle.push({ id: uuid(), cambio_id: cab.id_cambio, tipo: "sale", numero_fuego: s.numero_fuego, posicion: s.posicion || null, milimetros: s.milimetros || null, psi: s.psi || null, estado: null, motivo_salida: s.motivo || null });
+    await actualizarNeumaticoSale(cab.cliente_id, s);
+  }
+  for (const en of entra) {
+    detalle.push({ id: uuid(), cambio_id: cab.id_cambio, tipo: "entra", numero_fuego: en.numero_fuego, posicion: en.posicion || null, milimetros: en.milimetros || null, psi: en.psi || null, estado: en.estado || null, motivo_salida: null });
+    await actualizarNeumaticoEntra(cab.cliente_id, cab.equipo_id, en);
+  }
+  if (detalle.length) { const { error: e2 } = await supabase.from("cambio_detalle").insert(detalle); if (e2) throw e2; }
+  if (intervenciones && intervenciones.length) { const { error: e3 } = await supabase.from("intervenciones").insert(intervenciones); if (e3) throw e3; }
+  await supabase.from("equipos").update({ kilometros: cab.kilometraje }).eq("id_equipo", cab.equipo_id);
+  for (const a of (alertas || [])) await insertAlerta(a);
+}
+async function enviarCierre(data) {
+  const { error } = await supabase.from("cierre_dia").insert(data);
+  if (error) throw error;
+  await insertAlerta({
+    id: uuid(), cliente_id: data.cliente_id, equipo_id: null, mecanico_id: data.mecanico_id,
+    tipo: "cierre_dia", severidad: "info", titulo: "Cierre de jornada",
+    descripcion: `Jornada cerrada: ${data.auditorias_realizadas} auditorías, ${data.cambios_realizados} cambios.`,
+    leida_mecanico: true, leida_admin: false, leida_superadmin: false
+  });
+}
+async function insertAlerta(a) {
+  const { error } = await supabase.from("alertas").insert(a);
+  if (error) console.error("No se pudo registrar alerta", error);
+}
+async function actualizarNeumaticoSale(clienteId, s) {
+  const { data: existente } = await supabase.from("neumaticos").select("*").eq("cliente_id", clienteId).eq("numero_fuego", s.numero_fuego).maybeSingle();
+  const bodega = s.motivo === "baja" ? "salidas" : s.motivo === "reparacion" ? "transito" : "transito";
+  const estado = s.motivo === "baja" ? "baja" : "transito";
+  if (existente) {
+    await supabase.from("neumaticos").update({ estado_actual: estado, bodega, equipo_actual: null, posicion_actual: null }).eq("id_neumatico", existente.id_neumatico);
+  } else {
+    await supabase.from("neumaticos").insert({ id_neumatico: uuid(), numero_fuego: s.numero_fuego, cliente_id: clienteId, estado_actual: estado, bodega, equipo_actual: null, posicion_actual: null, fecha_ingreso: todayISO(), activo: true });
+  }
+}
+async function actualizarNeumaticoEntra(clienteId, equipoId, en) {
+  const { data: existente } = await supabase.from("neumaticos").select("*").eq("cliente_id", clienteId).eq("numero_fuego", en.numero_fuego).maybeSingle();
+  if (existente) {
+    await supabase.from("neumaticos").update({ estado_actual: "en_uso", bodega: null, equipo_actual: equipoId, posicion_actual: en.posicion || null }).eq("id_neumatico", existente.id_neumatico);
+  } else {
+    await supabase.from("neumaticos").insert({
+      id_neumatico: uuid(), numero_fuego: en.numero_fuego, cliente_id: clienteId,
+      marca: en.marca || null, medida: en.medida || null, estado_actual: "en_uso", bodega: null,
+      equipo_actual: equipoId, posicion_actual: en.posicion || null, fecha_ingreso: todayISO(), activo: true
+    });
+  }
+}
 window.addEventListener("online", () => syncQueue());
-setInterval(() => { if (navigator.onLine) syncQueue(); }, 20000);
+setInterval(() => { if (navigator.onLine) syncQueue(); }, 15000);
 
 /* =====================================================================
    CONTEXTO GLOBAL
 ===================================================================== */
 const AppCtx = createContext(null);
 function useApp() { return useContext(AppCtx); }
-
 function useOnline() {
   const [online, setOnline] = useState(navigator.onLine);
   useEffect(() => {
@@ -388,7 +416,6 @@ function useOnline() {
   }, []);
   return online;
 }
-
 function useQueueCount() {
   const [count, setCount] = useState(getQueue().length);
   useEffect(() => {
@@ -401,1252 +428,1358 @@ function useQueueCount() {
 }
 
 /* =====================================================================
-   COMPONENTES UI BASICOS
+   ICONOS (inline SVG, 24px, stroke)
 ===================================================================== */
-function Button({ variant="primary", className="", children, ...props }) {
-  const base = "h-[52px] px-5 rounded-xl font-semibold text-[15px] transition active:scale-[0.98] disabled:opacity-50 disabled:active:scale-100 flex items-center justify-center gap-2";
+const Icon = {
+  home: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg>,
+  audit: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/></svg>,
+  swap: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M17 2l4 4-4 4"/><path d="M3 11V9a4 4 0 014-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>,
+  clipboard: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><rect x="6" y="4" width="12" height="16" rx="2"/><path d="M9 4V3a1 1 0 011-1h4a1 1 0 011 1v1"/><path d="M9 12h6M9 16h6"/></svg>,
+  bell: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M18 8a6 6 0 00-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 01-3.4 0"/></svg>,
+  search: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>,
+  back: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M15 18l-6-6 6-6"/></svg>,
+  truck: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><rect x="1" y="7" width="14" height="10"/><path d="M15 10h4l3 3v4h-7z"/><circle cx="6" cy="19" r="1.6"/><circle cx="17.5" cy="19" r="1.6"/></svg>,
+  trash: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M3 6h18"/><path d="M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2m2 0-1 14a1 1 0 01-1 1H7a1 1 0 01-1-1L5 6"/></svg>,
+  check: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M20 6L9 17l-5-5"/></svg>,
+  pencil: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z"/></svg>,
+  close: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M18 6L6 18M6 6l12 12"/></svg>,
+  user: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>,
+  gauge: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M12 15l3-3"/><circle cx="12" cy="14" r="8"/><path d="M6 8l1.5 1.5M18 8l-1.5 1.5M4 14h2M18 14h2M12 5v2"/></svg>,
+  wrench: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M14.7 6.3a4 4 0 10-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 005.4-5.4l-2.6 2.6-2-2z"/></svg>,
+  bandage: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><rect x="3" y="9" width="18" height="6" rx="3" transform="rotate(45 12 12)"/><circle cx="9.5" cy="9.5" r=".6" fill="currentColor"/><circle cx="14.5" cy="14.5" r=".6" fill="currentColor"/></svg>,
+  eye: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>,
+};
+
+/* =====================================================================
+   UI BASICOS
+===================================================================== */
+function Button({ variant = "primary", className = "", children, ...props }) {
+  const base = "h-14 px-5 rounded-2xl font-bold text-[15px] transition active:scale-[0.98] disabled:opacity-50 disabled:active:scale-100 flex items-center justify-center gap-2";
   const variants = {
-    primary: "bg-forest text-white hover:bg-forestdark",
-    dark: "bg-ink text-white hover:bg-black",
-    ghost: "bg-transparent text-ink border border-gray-300 hover:bg-gray-50",
-    danger: "bg-red-600 text-white hover:bg-red-700",
-    subtle: "bg-gray-100 text-ink hover:bg-gray-200"
+    primary: "bg-ink text-white",
+    ghost: "bg-transparent text-ink border border-bdstrong",
+    danger: "bg-[#FEE2E2] text-[#B91C1C]",
+    subtle: "bg-[#F3F4F6] text-ink"
   };
   return <button className={cx(base, variants[variant], className)} {...props}>{children}</button>;
 }
-
 function Field({ label, required, children, hint }) {
   return (
     <label className="block">
-      <span className="block text-sm font-medium text-gray-700 mb-1.5">{label}{required && <span className="text-red-500"> *</span>}</span>
+      <span className="block text-[13px] font-semibold text-[#374151] mb-1.5">{label}{required && <span className="text-red-500"> *</span>}</span>
       {children}
-      {hint && <span className="block text-xs text-gray-400 mt-1">{hint}</span>}
+      {hint && <span className="block text-xs text-muted mt-1">{hint}</span>}
     </label>
   );
 }
-
-function TextInput({ className="", alert, ...props }) {
-  return <input className={cx("w-full h-[52px] px-4 rounded-xl border border-gray-300 bg-white focus:outline-none focus:ring-2 focus:ring-forest/40 focus:border-forest", alert && "field-alert", className)} {...props} />;
+function TextInput({ className = "", alert, warn, ...props }) {
+  return <input className={cx("w-full h-[52px] px-4 rounded-2xl border bg-[#F3F4F6] border-[#E5E7EB] focus:outline-none focus:ring-2 focus:ring-ink/20 placeholder:text-muted", alert && "field-alert", warn && !alert && "field-warn", className)} {...props} />;
 }
-
-function Select({ className="", children, ...props }) {
-  return <select className={cx("w-full h-[52px] px-4 rounded-xl border border-gray-300 bg-white focus:outline-none focus:ring-2 focus:ring-forest/40 focus:border-forest", className)} {...props}>{children}</select>;
+function Select({ className = "", children, ...props }) {
+  return <select className={cx("w-full h-[52px] px-4 rounded-2xl border bg-[#F3F4F6] border-[#E5E7EB] focus:outline-none focus:ring-2 focus:ring-ink/20", className)} {...props}>{children}</select>;
 }
-
-function TextArea({ className="", ...props }) {
-  return <textarea className={cx("w-full min-h-[90px] px-4 py-3 rounded-xl border border-gray-300 bg-white focus:outline-none focus:ring-2 focus:ring-forest/40 focus:border-forest", className)} {...props} />;
+function TextArea({ className = "", ...props }) {
+  return <textarea className={cx("w-full min-h-[90px] px-4 py-3 rounded-2xl border bg-[#F3F4F6] border-[#E5E7EB] focus:outline-none focus:ring-2 focus:ring-ink/20", className)} {...props} />;
 }
-
-function Card({ className="", children }) {
-  return <div className={cx("bg-white rounded-2xl shadow-sm border border-gray-100 p-5", className)}>{children}</div>;
+function Card({ className = "", children }) {
+  return <div className={cx("bg-white rounded-card shadow-card border border-bd p-5", className)}>{children}</div>;
 }
-
-function Toggle({ checked, onChange, labelOn="Activo", labelOff="Inactivo" }) {
+function Badge({ children, color = "gray" }) {
+  const colors = {
+    gray: "bg-[#F3F4F6] text-[#374151]", green: "bg-[#DCFCE7] text-[#15803D]",
+    red: "bg-[#FEE2E2] text-[#B91C1C]", amber: "bg-[#FEF3C7] text-[#92400E]", black: "bg-ink text-white"
+  };
+  return <span className={cx("px-3 py-1 rounded-full text-[12px] font-bold", colors[color])}>{children}</span>;
+}
+function Modal({ title, onClose, children, wide, footer }) {
   return (
-    <button type="button" onClick={() => onChange(!checked)}
-      className={cx("h-9 px-3 rounded-full text-xs font-semibold transition flex items-center gap-2", checked ? "bg-forest/10 text-forest" : "bg-gray-100 text-gray-500")}>
-      <span className={cx("w-2.5 h-2.5 rounded-full", checked ? "bg-forest" : "bg-gray-400")}></span>
-      {checked ? labelOn : labelOff}
-    </button>
-  );
-}
-
-function Modal({ title, onClose, children, wide }) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 p-0 sm:p-4">
-      <div className={cx("bg-white w-full sm:rounded-2xl rounded-t-2xl max-h-[92vh] overflow-y-auto", wide ? "sm:max-w-2xl" : "sm:max-w-md")}>
-        <div className="sticky top-0 bg-white border-b border-gray-100 px-5 py-4 flex items-center justify-between">
-          <h3 className="font-display text-lg font-bold">{title}</h3>
-          <button onClick={onClose} className="w-9 h-9 rounded-full hover:bg-gray-100 flex items-center justify-center text-gray-500">✕</button>
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 p-0 sm:p-4" onClick={(e) => { if (e.target === e.currentTarget && onClose) onClose(); }}>
+      <div className={cx("bg-white w-full sm:rounded-card rounded-t-[24px] max-h-[92vh] overflow-y-auto", wide ? "sm:max-w-2xl" : "sm:max-w-md")}>
+        <div className="sticky top-0 bg-white border-b border-bd px-5 py-4 flex items-center justify-between z-10">
+          <h3 className="text-lg font-extrabold">{title}</h3>
+          {onClose && <button onClick={onClose} className="w-9 h-9 rounded-full hover:bg-[#F3F4F6] flex items-center justify-center text-sub"><Icon.close width="18" height="18"/></button>}
         </div>
         <div className="p-5">{children}</div>
+        {footer && <div className="sticky bottom-0 bg-white border-t border-bd p-4">{footer}</div>}
       </div>
     </div>
   );
 }
-
-function Badge({ children, color="gray" }) {
-  const colors = {
-    gray: "bg-gray-100 text-gray-600", green: "bg-forest/10 text-forest",
-    red: "bg-red-100 text-red-700", amber: "bg-amber-100 text-amber-700", blue: "bg-blue-100 text-blue-700"
-  };
-  return <span className={cx("px-2.5 py-1 rounded-full text-xs font-semibold", colors[color])}>{children}</span>;
-}
-
-function Toast({ msg, type, onDone }) {
-  useEffect(() => { const t = setTimeout(onDone, 3000); return () => clearTimeout(t); }, []);
+function Toast({ msg, onDone }) {
+  useEffect(() => { const t = setTimeout(onDone, 2000); return () => clearTimeout(t); }, []);
   return (
-    <div className={cx("fixed bottom-24 sm:bottom-6 left-1/2 -translate-x-1/2 z-[70] px-5 py-3 rounded-xl shadow-lg text-white text-sm font-medium",
-      type === "error" ? "bg-red-600" : "bg-ink")}>
-      {msg}
+    <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[80] px-4 py-3 rounded-2xl shadow-lg text-sm font-semibold flex items-center gap-3" style={{ background: "#DCFCE7", color: "#15803D" }}>
+      <span>{msg}</span>
+      <button onClick={onDone} className="opacity-60">✕</button>
     </div>
   );
 }
-
-/* =====================================================================
-   ENCABEZADO / NAVEGACION
-===================================================================== */
+function useToasts() {
+  const [toasts, setToasts] = useState([]);
+  const push = useCallback((msg) => setToasts(t => [...t, { id: uuid(), msg }]), []);
+  const remove = (id) => setToasts(t => t.filter(x => x.id !== id));
+  const node = <div>{toasts.map(t => <Toast key={t.id} msg={t.msg} onDone={() => remove(t.id)} />)}</div>;
+  return [push, node];
+}
+function Confirm({ title, desc, onConfirm, onCancel }) {
+  return (
+    <Modal title={title} onClose={onCancel}>
+      <p className="text-[14px] text-[#374151] mb-5">{desc}</p>
+      <div className="flex gap-3">
+        <Button variant="subtle" className="flex-1" onClick={onCancel}>Cancelar</Button>
+        <Button className="flex-1" onClick={onConfirm}>Confirmar</Button>
+      </div>
+    </Modal>
+  );
+}
 function OfflineBadge() {
   const online = useOnline();
   const pending = useQueueCount();
   if (online && pending === 0) return null;
   return (
-    <div className="flex items-center gap-2">
-      {!online && <span className="flex items-center gap-1.5 bg-red-600 text-white text-xs font-semibold px-2.5 py-1 rounded-full"><span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse-soft"></span>Sin conexión</span>}
-      {pending > 0 && <span className="bg-amber-500 text-white text-xs font-semibold px-2.5 py-1 rounded-full">{pending} pendiente{pending!==1?"s":""}</span>}
+    <div className="px-4">
+      {!online && <div className="mb-2 rounded-xl bg-[#FEE2E2] text-[#B91C1C] text-xs font-bold px-3 py-2 text-center">Sin conexión</div>}
+      {pending > 0 && <div className="mb-2 rounded-xl bg-[#FEF3C7] text-[#92400E] text-xs font-bold px-3 py-2 text-center">{pending} registro{pending !== 1 ? "s" : ""} pendiente{pending !== 1 ? "s" : ""} de sincronizar</div>}
     </div>
-  );
-}
-
-function Header({ title, onMenu }) {
-  const { session, logout } = useApp();
-  return (
-    <header className="safe-top sticky top-0 z-30 bg-white/95 backdrop-blur border-b border-gray-100">
-      <div className="h-16 px-4 flex items-center justify-between max-w-6xl mx-auto w-full">
-        <div className="flex items-center gap-3">
-          {onMenu && <button onClick={onMenu} className="lg:hidden w-9 h-9 flex items-center justify-center rounded-lg hover:bg-gray-100">☰</button>}
-          <div>
-            <div className="font-display text-lg font-bold leading-none">MOSA</div>
-            <div className="text-xs text-gray-400 leading-none mt-0.5">{title}</div>
-          </div>
-        </div>
-        <div className="flex items-center gap-3">
-          <OfflineBadge />
-          <div className="hidden sm:flex flex-col items-end leading-none">
-            <span className="text-sm font-semibold">{session.nombre}</span>
-            <span className="text-[11px] text-gray-400">{session.role === "admin" ? "Administrador" : "Mecánico"}</span>
-          </div>
-          <button onClick={logout} className="w-9 h-9 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-500" title="Cerrar sesión">⏻</button>
-        </div>
-      </div>
-    </header>
-  );
-}
-
-function PendingBar() {
-  const pending = useQueueCount();
-  const online = useOnline();
-  if (pending === 0) return null;
-  return (
-    <div className="bg-amber-50 border-t border-amber-200 text-amber-800 text-xs px-4 py-2 flex items-center justify-between">
-      <span>{pending} registro{pending!==1?"s":""} pendiente{pending!==1?"s":""} de envío{online ? " — sincronizando…" : " — esperando conexión"}</span>
-      {online && <button onClick={() => syncQueue()} className="underline font-semibold">Reintentar</button>}
-    </div>
-  );
-}
-
-const MECH_TABS = [
-  { id: "auditoria", label: "Auditoría", icon: "🔍" },
-  { id: "cambio", label: "Cambios", icon: "🔄" },
-  { id: "flash", label: "Flash", icon: "⚡" },
-  { id: "novedad", label: "Novedades", icon: "📋" },
-];
-
-function BottomNav({ view, setView }) {
-  return (
-    <nav className="safe-bottom fixed bottom-0 left-0 right-0 bg-white border-t border-gray-100 z-30 lg:hidden">
-      <div className="grid grid-cols-4">
-        {MECH_TABS.map(t => (
-          <button key={t.id} onClick={() => setView(t.id)}
-            className={cx("flex flex-col items-center justify-center py-2.5 gap-0.5 text-xs font-medium", view===t.id ? "text-forest" : "text-gray-400")}>
-            <span className="text-xl leading-none">{t.icon}</span>
-            {t.label}
-          </button>
-        ))}
-      </div>
-    </nav>
-  );
-}
-
-const ADMIN_SECTIONS = [
-  { id: "dashboard", label: "Dashboard", icon: "📊" },
-  { id: "formularios", label: "Formularios", icon: "🔧" },
-  { id: "equipos", label: "Equipos", icon: "🚛" },
-  { id: "mecanicos", label: "Mecánicos", icon: "👷" },
-  { id: "neumaticos", label: "Neumáticos", icon: "🛞" },
-  { id: "historial", label: "Historial", icon: "📋" },
-  { id: "configuracion", label: "Configuración", icon: "⚙️" },
-];
-
-function Sidebar({ view, setView, open, setOpen }) {
-  return (
-    <>
-      {open && <div className="fixed inset-0 bg-black/40 z-40 lg:hidden" onClick={() => setOpen(false)}></div>}
-      <aside className={cx("fixed lg:sticky top-0 lg:top-16 left-0 h-full lg:h-[calc(100vh-4rem)] w-64 bg-white border-r border-gray-100 z-50 lg:z-0 transition-transform lg:translate-x-0",
-        open ? "translate-x-0" : "-translate-x-full")}>
-        <div className="p-4 border-b border-gray-100 lg:hidden flex items-center justify-between">
-          <span className="font-display font-bold">Menú</span>
-          <button onClick={() => setOpen(false)} className="w-8 h-8 rounded-lg hover:bg-gray-100">✕</button>
-        </div>
-        <nav className="p-3 space-y-1">
-          {ADMIN_SECTIONS.map(s => (
-            <button key={s.id} onClick={() => { setView(s.id); setOpen(false); }}
-              className={cx("w-full flex items-center gap-3 px-3 h-12 rounded-xl text-sm font-medium transition",
-                view===s.id ? "bg-forest/10 text-forest" : "text-gray-600 hover:bg-gray-50")}>
-              <span className="text-lg">{s.icon}</span>{s.label}
-            </button>
-          ))}
-        </nav>
-      </aside>
-    </>
   );
 }
 
 /* =====================================================================
-   SELECTOR DE EQUIPO (agrupado TRACTO / SEMI)
+   NAV
 ===================================================================== */
-function EquipoSelector({ equipos, value, onChange, required }) {
-  const tractos = equipos.filter(e => e.tipo === "TRACTO" && e.activo !== false);
-  const semis = equipos.filter(e => e.tipo === "SEMI" && e.activo !== false);
+function BottomNav({ view, setView }) {
+  const items = [
+    { id: "inicio", label: "Inicio", icon: Icon.home },
+    { id: "auditoria", label: "Auditoría", icon: Icon.audit },
+    { id: "cambio", label: "Cambio", icon: Icon.swap },
+    { id: "cierre", label: "Cierre", icon: Icon.clipboard },
+    { id: "alertas", label: "Alertas", icon: Icon.bell }
+  ];
   return (
-    <Select value={value||""} onChange={e => onChange(e.target.value)} required={required}>
-      <option value="">Seleccionar equipo…</option>
-      {tractos.length > 0 && <optgroup label="TRACTOS">
-        {tractos.map(e => <option key={e.id_equipo} value={e.id_equipo}>{e.numero_interno} - {e.patente}</option>)}
-      </optgroup>}
-      {semis.length > 0 && <optgroup label="SEMIS">
-        {semis.map(e => <option key={e.id_equipo} value={e.id_equipo}>{e.numero_interno} - {e.patente}</option>)}
-      </optgroup>}
-    </Select>
+    <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-bd safe-bottom z-30">
+      <div className="flex">
+        {items.map(it => {
+          const active = view === it.id;
+          return (
+            <button key={it.id} onClick={() => setView(it.id)} className="flex-1 flex flex-col items-center gap-1 py-2.5">
+              <it.icon width="24" height="24" className={active ? "text-ink" : "text-[#B0B3B8]"} />
+              <span className={cx("text-[10.5px] font-semibold", active ? "text-ink" : "text-[#B0B3B8]")}>{it.label}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
 /* =====================================================================
-   LOGIN
+   PANTALLA 1 - LOGIN
 ===================================================================== */
 function Login({ onLogin }) {
   const [usuario, setUsuario] = useState("");
   const [password, setPassword] = useState("");
+  const [showPw, setShowPw] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
   async function submit(e) {
     e.preventDefault();
-    setError(""); setLoading(true);
+    if (!usuario || !password) { setError("Completa usuario y contraseña"); return; }
+    setLoading(true); setError("");
     try {
-      if (usuario.trim().toLowerCase() === ADMIN_USER && password === ADMIN_PASS) {
-        onLogin({ role: "admin", nombre: "Administrador", cliente_id: CLIENTE_ID_DEFAULT, usuario: ADMIN_USER });
-        return;
-      }
-      if (!navigator.onLine) { setError("Sin conexión: solo el administrador puede ingresar sin conexión."); return; }
-      const { data, error: err } = await supabase.from("mecanicos").select("*").eq("usuario", usuario.trim()).eq("activo", true).maybeSingle();
-      if (err) throw err;
-      if (!data) { setError("Usuario o contraseña incorrectos."); return; }
       const hash = await sha256Hex(password);
-      if (hash !== data.password_hash) { setError("Usuario o contraseña incorrectos."); return; }
-      onLogin({
-        role: "mecanico", id_mecanico: data.id_mecanico, nombre: `${data.nombre} ${data.apellido||""}`.trim(),
-        cliente_id: data.cliente_id || CLIENTE_ID_DEFAULT, usuario: data.usuario
-      });
-    } catch (e) {
-      setError("Error al iniciar sesión: " + e.message);
-    } finally { setLoading(false); }
+      const user = await db.login(usuario.trim(), hash);
+      if (!user) { setError("Usuario o contraseña incorrectos"); setLoading(false); return; }
+      onLogin(user);
+    } catch (err) {
+      setError("No se pudo conectar. Intenta de nuevo.");
+      setLoading(false);
+    }
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center px-4">
-      <div className="w-full max-w-sm">
-        <div className="text-center mb-8">
-          <div className="font-display text-4xl font-extrabold tracking-tight">MOSA</div>
-          <div className="text-gray-400 text-sm mt-1">Gestión de neumáticos</div>
+    <div className="min-h-screen flex flex-col px-6 pt-16 safe-top">
+      <div className="w-14 h-14 rounded-2xl bg-ink flex items-center justify-center mb-6">
+        <Icon.gauge width="28" height="28" className="text-white" />
+      </div>
+      <h1 className="text-[34px] font-extrabold tracking-tight leading-none">MOSA TIRES</h1>
+      <p className="text-[15px] font-medium text-sub mt-2 mb-10">Gestión de neumáticos de flota</p>
+
+      <form onSubmit={submit} className="space-y-4">
+        <Field label="Usuario">
+          <TextInput placeholder="Ingresa tu usuario" value={usuario} onChange={e => setUsuario(e.target.value)} autoCapitalize="none" />
+        </Field>
+        <Field label="Contraseña">
+          <div className="relative">
+            <TextInput type={showPw ? "text" : "password"} placeholder="Ingresa tu contraseña" value={password} onChange={e => setPassword(e.target.value)} />
+            <button type="button" onClick={() => setShowPw(v => !v)} className="absolute right-4 top-1/2 -translate-y-1/2 text-muted">
+              <Icon.eye width="20" height="20" />
+            </button>
+          </div>
+        </Field>
+        {error && <div className="text-[13px] font-semibold text-[#B91C1C] bg-[#FEE2E2] rounded-xl px-3 py-2">{error}</div>}
+        <Button type="submit" className="w-full mt-2" disabled={loading}>
+          {loading ? <span className="spinner" /> : "Iniciar sesión"}
+        </Button>
+      </form>
+
+      <div className="flex-1" />
+      <p className="text-[12px] text-[#B0B3B8] text-center pb-8">MOSA TIRES v1.0 · Soporte técnico</p>
+    </div>
+  );
+}
+
+/* =====================================================================
+   SELECCION DE EMPRESA
+===================================================================== */
+function SeleccionEmpresa({ user, onConfirm }) {
+  const [cliente, setCliente] = useState(null);
+  useEffect(() => { db.fetchCliente(user.cliente_id).then(setCliente).catch(() => setCliente({ nombre: user.cliente_id })); }, []);
+  return (
+    <div className="min-h-screen flex flex-col px-6 pt-16 safe-top">
+      <p className="text-[14px] text-muted mb-2">Antes de comenzar</p>
+      <h1 className="text-[28px] font-extrabold leading-tight mb-8">¿En qué empresa vas a trabajar hoy?</h1>
+      <Card className="mb-4">
+        <div className="flex items-center gap-3">
+          <div className="w-12 h-12 rounded-2xl bg-[#F3F4F6] flex items-center justify-center"><Icon.truck width="24" height="24" /></div>
+          <div>
+            <p className="font-extrabold text-[16px]">{cliente ? cliente.nombre : "Cargando..."}</p>
+            <p className="text-[12.5px] text-muted">Empresa asignada</p>
+          </div>
         </div>
-        <form onSubmit={submit} className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 space-y-4">
-          <Field label="Usuario"><TextInput value={usuario} onChange={e=>setUsuario(e.target.value)} autoCapitalize="none" autoCorrect="off" required /></Field>
-          <Field label="Contraseña"><TextInput type="password" value={password} onChange={e=>setPassword(e.target.value)} required /></Field>
-          {error && <div className="text-sm text-red-600 bg-red-50 rounded-xl px-3 py-2">{error}</div>}
-          <Button type="submit" disabled={loading} className="w-full">{loading ? <span className="spinner"></span> : "Ingresar"}</Button>
-        </form>
+      </Card>
+      <div className="flex-1" />
+      <Button className="w-full mb-8" disabled={!cliente} onClick={() => onConfirm(user.cliente_id)}>Confirmar y continuar</Button>
+    </div>
+  );
+}
+
+/* =====================================================================
+   PANTALLA 2 - BIENVENIDA + CHECK DIARIO
+===================================================================== */
+const STOCK_FIELDS = [
+  { key: "nuevos", label: "Nuevos" }, { key: "transito", label: "Tránsito" },
+  { key: "reparar", label: "Por reparar" }, { key: "recauchados", label: "Recauchados" }
+];
+const PATIO_FIELDS = [
+  { key: "llantas_am_aluminio", label: "Americana aluminio" }, { key: "llantas_am_fierro", label: "Americana fierro" },
+  { key: "llantas_eu_aluminio", label: "Europea aluminio" }, { key: "llantas_eu_fierro", label: "Europea fierro" }
+];
+
+function Stepper({ value, onChange }) {
+  const [editing, setEditing] = useState(false);
+  const [tmp, setTmp] = useState(String(value));
+  if (editing) {
+    return (
+      <input autoFocus inputMode="numeric" pattern="[0-9]*" value={tmp}
+        onChange={e => setTmp(e.target.value.replace(/[^0-9]/g, ""))}
+        onBlur={() => { setEditing(false); onChange(Math.max(0, parseInt(tmp || "0", 10))); }}
+        onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
+        className="w-14 h-9 text-center rounded-lg border border-bdstrong font-bold" />
+    );
+  }
+  return (
+    <div className="flex items-center gap-2">
+      <button type="button" onClick={() => onChange(Math.max(0, value - 1))} className="w-9 h-9 rounded-lg bg-[#F3F4F6] font-bold text-lg">−</button>
+      <button type="button" onClick={() => { setTmp(String(value)); setEditing(true); }} className="w-10 text-center font-bold">{value}</button>
+      <button type="button" onClick={() => onChange(value + 1)} className="w-9 h-9 rounded-lg bg-[#F3F4F6] font-bold text-lg">+</button>
+    </div>
+  );
+}
+
+function CheckDiario({ user, clienteId, onDone }) {
+  const [stock, setStock] = useState(() => Object.fromEntries([...STOCK_FIELDS, ...PATIO_FIELDS].map(f => [f.key, 0])));
+  const [tools, setTools] = useState(() => Object.fromEntries(TOOLS_CHECKLIST.map(t => [t, null])));
+  const [saving, setSaving] = useState(false);
+  const toolsFilled = TOOLS_CHECKLIST.filter(t => tools[t] !== null).length;
+  const progress = Math.round((toolsFilled / TOOLS_CHECKLIST.length) * 100);
+  const complete = toolsFilled === TOOLS_CHECKLIST.length;
+
+  async function continuar() {
+    setSaving(true);
+    const id = uuid();
+    const data = {
+      id, cliente_id: clienteId, bultero_id: user.id, fecha: todayISO(), hora_inicio: nowHM(),
+      numero_hoja: uuid().slice(0, 8),
+      ...stock,
+      checklist: TOOLS_CHECKLIST.map(t => ({ herramienta: t, cantidad: tools[t] }))
+    };
+    const item = { id: uuid(), tipo: "novedad", clienteId, ts: Date.now(), data };
+    pushQueue(item);
+    syncQueue();
+    setTurno({ clienteId, fecha: todayISO(), checkDone: true });
+    setSaving(false);
+    onDone();
+  }
+
+  return (
+    <div className="min-h-screen pb-28 px-5 pt-14 safe-top">
+      <p className="text-[14px] text-muted mb-1">{formatDateLong()}</p>
+      <h1 className="text-[30px] font-extrabold leading-none">Hola, {user.nombre}</h1>
+      <p className="text-[14px] text-sub mt-2 mb-6">Check diario antes de comenzar el turno</p>
+
+      <div className="bg-[#F9FAFB] rounded-[20px] p-5 mb-6">
+        <div className="flex items-center justify-between mb-2">
+          <span className="font-bold text-[16px]">Herramientas</span>
+          <span className="text-[13px] font-bold">{toolsFilled}/{TOOLS_CHECKLIST.length}</span>
+        </div>
+        <div className="h-2 rounded-full bg-[#E5E7EB] overflow-hidden">
+          <div className="h-full bg-ink transition-all" style={{ width: progress + "%" }} />
+        </div>
+      </div>
+
+      <p className="font-bold text-[15px] mb-2">Stock de neumáticos</p>
+      <Card className="mb-4 space-y-3">
+        {STOCK_FIELDS.map(f => (
+          <div key={f.key} className="flex items-center justify-between">
+            <span className="text-[14px] font-semibold text-[#1F2937]">{f.label}</span>
+            <Stepper value={stock[f.key]} onChange={v => setStock(s => ({ ...s, [f.key]: v }))} />
+          </div>
+        ))}
+      </Card>
+
+      <p className="font-bold text-[15px] mb-2">Llantas en patio</p>
+      <Card className="mb-4 space-y-3">
+        {PATIO_FIELDS.map(f => (
+          <div key={f.key} className="flex items-center justify-between">
+            <span className="text-[14px] font-semibold text-[#1F2937]">{f.label}</span>
+            <Stepper value={stock[f.key]} onChange={v => setStock(s => ({ ...s, [f.key]: v }))} />
+          </div>
+        ))}
+      </Card>
+
+      <p className="font-bold text-[15px] mb-2">Checklist de herramientas</p>
+      <div className="space-y-2 mb-6">
+        {TOOLS_CHECKLIST.map(t => (
+          <div key={t} className="bg-white rounded-2xl border border-bd shadow-card px-4 py-3 flex items-center justify-between">
+            <span className="text-[14px] font-semibold text-[#1F2937]">{t}</span>
+            <Stepper value={tools[t] || 0} onChange={v => setTools(s => ({ ...s, [t]: v }))} />
+          </div>
+        ))}
+      </div>
+
+      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-bd p-4 safe-bottom">
+        <Button className="w-full" disabled={!complete || saving} onClick={continuar}>
+          {saving ? <span className="spinner" /> : "Continuar a mis equipos"}
+        </Button>
+        {!complete && <p className="text-center text-[12px] text-muted mt-2">Completa la cantidad de todas las herramientas (puede ser 0)</p>}
       </div>
     </div>
   );
 }
 
 /* =====================================================================
-   FORMULARIO 1 — AUDITORIA
+   PANTALLA 3 - SELECCION DE EQUIPO
 ===================================================================== */
-function AuditoriaForm() {
-  const { session, equipos, config } = useApp();
-  const [equipoId, setEquipoId] = useState("");
-  const [fecha, setFecha] = useState(todayISO());
-  const [km, setKm] = useState("");
-  const [numero, setNumero] = useState(null);
-  const [posiciones, setPosiciones] = useState(Array.from({length:13}, (_,i) => ({ posicion:i+1, milimetros:"", psi:"", numero_fuego:"" })));
-  const [toast, setToast] = useState(null);
-  const [saving, setSaving] = useState(false);
+function statusColor(s) { return s === "alerta" ? "red" : s === "atencion" ? "amber" : "green"; }
+function statusLabel(s) { return s === "alerta" ? "Con alertas" : s === "atencion" ? "Atención" : "Al día"; }
 
-  const equipoSel = equipos.find(e => e.id_equipo === equipoId);
-  const psiMin = parseFloat(config.psi_minimo || 85);
-  const mmMin = parseFloat(config.mm_minimo || 4);
+function SeleccionEquipo({ clienteId, onPick }) {
+  const [equipos, setEquipos] = useState(() => getCache(LS.equipos(clienteId), []));
+  const [alertasByEquipo, setAlertasByEquipo] = useState({});
+  const [auditadosHoy, setAuditadosHoy] = useState({});
+  const [filter, setFilter] = useState("todos");
+  const [search, setSearch] = useState("");
+  const [loading, setLoading] = useState(true);
 
-  useEffect(() => { obtenerSiguienteNumero(session.cliente_id, "numero_auditoria_inicio").then(setNumero); }, []);
+  useEffect(() => {
+    let cancel = false;
+    (async () => {
+      try {
+        const eqs = await db.fetchEquipos(clienteId);
+        if (cancel) return;
+        setEquipos(eqs);
+        const alertas = await db.fetchAlertas(clienteId);
+        const map = {};
+        alertas.filter(a => !a.leida_mecanico && a.equipo_id).forEach(a => { map[a.equipo_id] = map[a.equipo_id] === "alerta" ? "alerta" : (a.severidad === "rojo" ? "alerta" : "atencion"); });
+        setAlertasByEquipo(map);
+        const hoy = await db.fetchAuditoriasHoy(clienteId);
+        const hm = {}; hoy.forEach(h => hm[h.equipo_id] = true);
+        setAuditadosHoy(hm);
+      } catch (e) { console.error(e); } finally { if (!cancel) setLoading(false); }
+    })();
+    return () => { cancel = true; };
+  }, [clienteId]);
 
-  function updatePos(idx, field, val) {
-    setPosiciones(ps => ps.map((p,i) => i===idx ? { ...p, [field]: val } : p));
-  }
-
-  function sugerenciaFuego(pos) {
-    if (!equipoSel || config.formula_marca_fuego === "secuencial") return "";
-    return generarFuegoLaPortada(equipoSel.numero_interno, pos, fecha);
-  }
-
-  async function guardar(e) {
-    e.preventDefault();
-    if (!equipoId) { setToast({ type:"error", msg:"Seleccioná un equipo." }); return; }
-    setSaving(true);
-    const id_auditoria = uuid();
-    const data = {
-      id_auditoria, equipo_id: equipoId, bultero_id: session.role==="mecanico" ? session.id_mecanico : session.id_mecanico || null,
-      fecha, kilometraje: km ? parseInt(km,10) : null, numero_auditoria: String(numero),
-      posiciones: posiciones.filter(p=>p.numero_fuego || p.milimetros || p.psi).map(p => ({
-        id: uuid(), posicion: p.posicion, numero_fuego: p.numero_fuego || sugerenciaFuego(p.posicion),
-        milimetros: p.milimetros ? parseFloat(p.milimetros) : null, psi: p.psi ? parseInt(p.psi,10) : null
-      }))
-    };
-    const item = { id: uuid(), tipo: "auditoria", data, ts: Date.now(), clienteId: session.cliente_id, numeroClave: "numero_auditoria_inicio", numeroUsado: numero };
-    try {
-      if (navigator.onLine) { await enviarAuditoria(data); await confirmarUsoNumero(session.cliente_id, "numero_auditoria_inicio", numero); }
-      else pushQueue(item);
-      setToast({ type:"ok", msg: navigator.onLine ? "Auditoría guardada." : "Guardada localmente. Se enviará al recuperar conexión." });
-      setEquipoId(""); setKm(""); setPosiciones(Array.from({length:13}, (_,i) => ({ posicion:i+1, milimetros:"", psi:"", numero_fuego:"" })));
-      obtenerSiguienteNumero(session.cliente_id, "numero_auditoria_inicio").then(setNumero);
-    } catch (err) {
-      pushQueue(item);
-      setToast({ type:"ok", msg:"Sin conexión al servidor. Guardada localmente." });
-      setEquipoId(""); setKm(""); setPosiciones(Array.from({length:13}, (_,i) => ({ posicion:i+1, milimetros:"", psi:"", numero_fuego:"" })));
-    } finally { setSaving(false); }
-  }
+  const filtered = equipos.filter(eq => {
+    if (filter === "alertas" && !alertasByEquipo[eq.id_equipo]) return false;
+    if (filter === "hoy" && !auditadosHoy[eq.id_equipo]) return false;
+    if (search) {
+      const s = search.toLowerCase();
+      if (!(eq.patente || "").toLowerCase().includes(s) && !(eq.numero_interno || "").toLowerCase().includes(s)) return false;
+    }
+    return true;
+  });
 
   return (
-    <form onSubmit={guardar} className="max-w-3xl mx-auto p-4 space-y-4 pb-28 lg:pb-8">
-      {toast && <Toast {...toast} onDone={()=>setToast(null)} />}
-      <Card className="space-y-4">
-        <h2 className="font-display text-xl font-bold">Auditoría de Equipos</h2>
-        <div className="grid sm:grid-cols-2 gap-4">
-          <Field label="Equipo" required><EquipoSelector equipos={equipos} value={equipoId} onChange={setEquipoId} required /></Field>
-          <Field label="Fecha" required><TextInput type="date" value={fecha} onChange={e=>setFecha(e.target.value)} required /></Field>
-          <Field label="Kilometraje" required><TextInput inputMode="numeric" value={km} onChange={e=>setKm(e.target.value.replace(/\D/g,""))} required /></Field>
-          <Field label="N° Auditoría"><TextInput value={numero ?? "…"} disabled className="bg-gray-50 text-gray-500 font-semibold" /></Field>
-        </div>
-        <div className="text-sm text-gray-500">Atendido por: <span className="font-semibold text-ink">{session.nombre}</span></div>
-      </Card>
-
-      <div className="grid sm:grid-cols-2 gap-3">
-        {posiciones.map((p, idx) => {
-          const psiAlert = p.psi !== "" && parseFloat(p.psi) < psiMin;
-          const mmAlert = p.milimetros !== "" && parseFloat(p.milimetros) < mmMin;
+    <div className="min-h-screen pb-24 px-5 pt-14 safe-top">
+      <div className="flex items-center justify-between mb-4">
+        <h1 className="text-[30px] font-extrabold">Equipos</h1>
+        <div className="w-10 h-10 rounded-full bg-[#F3F4F6] flex items-center justify-center"><Icon.search width="18" height="18" /></div>
+      </div>
+      <TextInput placeholder="Buscar por patente o número interno" value={search} onChange={e => setSearch(e.target.value)} className="mb-4" />
+      <div className="flex gap-2 mb-5 overflow-x-auto">
+        {[["todos", "Todos"], ["alertas", "Con alertas"], ["hoy", "Auditados hoy"]].map(([k, l]) => (
+          <button key={k} onClick={() => setFilter(k)} className={cx("px-4 py-2 rounded-full text-[13px] font-bold whitespace-nowrap", filter === k ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{l}</button>
+        ))}
+      </div>
+      {loading && <div className="flex justify-center py-10"><span className="spinner" /></div>}
+      <div className="space-y-3">
+        {filtered.map(eq => {
+          const st = alertasByEquipo[eq.id_equipo] || "ok";
           return (
-            <Card key={p.posicion} className="space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="font-display font-bold text-lg">Posición {p.posicion}</span>
-                {(psiAlert || mmAlert) && <span className="text-red-600 text-sm font-semibold">⚠ Revisar</span>}
+            <button key={eq.id_equipo} onClick={() => onPick(eq)} className="w-full text-left bg-white rounded-[20px] border border-bd shadow-card p-4 flex items-center gap-3">
+              <div className="w-[52px] h-[52px] rounded-2xl bg-[#F3F4F6] flex items-center justify-center shrink-0"><Icon.truck width="26" height="26" /></div>
+              <div className="flex-1 min-w-0">
+                <p className="font-bold text-[15.5px] truncate">{eq.numero_interno ? `${eq.numero_interno} · ` : ""}{eq.patente}</p>
+                <p className="text-[12.5px] text-muted truncate">{eq.tipo === "SEMI" ? "Semirremolque" : `Tracto ${eq.configuracion_ejes || ""}`} · {eq.modelo || ""}</p>
               </div>
-              <div className="grid grid-cols-3 gap-2">
-                <Field label="MM"><TextInput inputMode="decimal" alert={mmAlert} value={p.milimetros} onChange={e=>updatePos(idx,"milimetros",e.target.value.replace(/[^0-9.]/g,""))} className="!h-12 !px-2 text-center" /></Field>
-                <Field label="PSI"><TextInput inputMode="numeric" alert={psiAlert} value={p.psi} onChange={e=>updatePos(idx,"psi",e.target.value.replace(/\D/g,""))} className="!h-12 !px-2 text-center" /></Field>
-                <Field label="N° Fuego"><TextInput inputMode="numeric" placeholder={sugerenciaFuego(p.posicion)} value={p.numero_fuego} onChange={e=>updatePos(idx,"numero_fuego",e.target.value)} className="!h-12 !px-2 text-center" /></Field>
-              </div>
-              {mmAlert && <div className="text-xs text-red-600 font-medium">Revisar — desgaste bajo</div>}
-              {psiAlert && <div className="text-xs text-red-600 font-medium">Revisar — PSI bajo</div>}
-            </Card>
+              <Badge color={statusColor(st)}>{statusLabel(st)}</Badge>
+            </button>
           );
         })}
+        {!loading && filtered.length === 0 && <p className="text-center text-muted py-10 text-sm">No hay equipos que coincidan.</p>}
       </div>
-      <Button type="submit" disabled={saving} className="w-full">{saving ? <span className="spinner"></span> : "Guardar auditoría"}</Button>
-    </form>
+    </div>
+  );
+}
+
+function AccionEquipo({ equipo, onClose, onAuditoria, onCambio }) {
+  return (
+    <Modal title={`${equipo.numero_interno || ""} · ${equipo.patente}`} onClose={onClose}>
+      <div className="space-y-3">
+        <Button className="w-full" onClick={onAuditoria}><Icon.audit width="20" height="20" /> Auditoría</Button>
+        <Button variant="subtle" className="w-full" onClick={onCambio}><Icon.swap width="20" height="20" /> Hoja de cambio</Button>
+      </div>
+    </Modal>
   );
 }
 
 /* =====================================================================
-   FORMULARIO 2 — CAMBIO DE NEUMATICOS
+   MAPA DE NEUMATICOS (compartido entre Auditoria / Instructivo / Cambio)
 ===================================================================== */
-function filaVacia() { return { posicion:"", numero_fuego:"", milimetros:"", psi:"", motivo:"transito", estado:"nuevo", marca:"", modelo:"" }; }
-
-function CambioForm() {
-  const { session, equipos } = useApp();
-  const [equipoId, setEquipoId] = useState("");
-  const [fecha, setFecha] = useState(todayISO());
-  const [km, setKm] = useState("");
-  const [horaIngreso, setHoraIngreso] = useState(nowHM());
-  const [horaSalida, setHoraSalida] = useState("");
-  const [numero, setNumero] = useState(null);
-  const [psiReg, setPsiReg] = useState(false);
-  const [ruedasTorq, setRuedasTorq] = useState("");
-  const [obs, setObs] = useState("");
-  const [sale, setSale] = useState([filaVacia(), filaVacia(), filaVacia()]);
-  const [entra, setEntra] = useState([filaVacia(), filaVacia(), filaVacia()]);
-  const [toast, setToast] = useState(null);
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => { obtenerSiguienteNumero(session.cliente_id, "numero_cambio_inicio").then(setNumero); }, []);
-
-  function upd(setter, idx, field, val) { setter(rows => rows.map((r,i) => i===idx ? {...r,[field]:val} : r)); }
-
-  async function buscarFuego(idx) {
-    const nf = entra[idx].numero_fuego;
-    if (!nf || !navigator.onLine) return;
-    try {
-      const n = await db.fetchNeumaticoPorFuego(session.cliente_id, nf);
-      if (n) upd(setEntra, idx, "marca", n.marca || "");
-    } catch(e) {}
-  }
-
-  async function guardar(e) {
-    e.preventDefault();
-    if (!equipoId) { setToast({type:"error", msg:"Seleccioná un equipo."}); return; }
-    setSaving(true);
-    const id_cambio = uuid();
-    const data = {
-      id_cambio, equipo_id: equipoId, bultero_id: session.id_mecanico || null, fecha,
-      kilometraje: km ? parseInt(km,10) : null, hora_ingreso: horaIngreso || null, hora_salida: horaSalida || null,
-      psi_regulados: psiReg, ruedas_torqueadas: ruedasTorq ? parseInt(ruedasTorq,10) : null,
-      observaciones: obs, numero_cambio: String(numero), cliente_id: session.cliente_id,
-      sale: sale.filter(s=>s.numero_fuego).map(s => ({ ...s, posicion: s.posicion?parseInt(s.posicion,10):null, milimetros: s.milimetros?parseFloat(s.milimetros):null, psi: s.psi?parseInt(s.psi,10):null })),
-      entra: entra.filter(s=>s.numero_fuego).map(s => ({ ...s, posicion: s.posicion?parseInt(s.posicion,10):null, milimetros: s.milimetros?parseFloat(s.milimetros):null, psi: s.psi?parseInt(s.psi,10):null }))
-    };
-    const item = { id: uuid(), tipo:"cambio", data, ts: Date.now(), clienteId: session.cliente_id, numeroClave:"numero_cambio_inicio", numeroUsado: numero };
-    try {
-      if (navigator.onLine) { await enviarCambio(data); await confirmarUsoNumero(session.cliente_id, "numero_cambio_inicio", numero); }
-      else pushQueue(item);
-      setToast({type:"ok", msg: navigator.onLine ? "Cambio guardado." : "Guardado localmente."});
-      setEquipoId(""); setKm(""); setRuedasTorq(""); setObs(""); setPsiReg(false);
-      setSale([filaVacia(),filaVacia(),filaVacia()]); setEntra([filaVacia(),filaVacia(),filaVacia()]);
-      obtenerSiguienteNumero(session.cliente_id, "numero_cambio_inicio").then(setNumero);
-    } catch (err) {
-      pushQueue(item);
-      setToast({type:"ok", msg:"Sin conexión. Guardado localmente."});
-      setEquipoId("");
-    } finally { setSaving(false); }
-  }
-
-  function TablaFilas({ rows, setRows, tipo }) {
-    return (
-      <div className="overflow-x-auto -mx-1">
-        <table className="w-full text-sm min-w-[560px]">
-          <thead><tr className="text-left text-gray-400 text-xs">
-            <th className="px-1 py-1">Pos.</th><th className="px-1 py-1">N° Fuego</th><th className="px-1 py-1">MM</th><th className="px-1 py-1">PSI</th>
-            <th className="px-1 py-1">{tipo==="sale"?"Motivo":"Estado"}</th>
-          </tr></thead>
-          <tbody>
-            {rows.map((r, idx) => (
-              <tr key={idx}>
-                <td className="p-1"><TextInput inputMode="numeric" value={r.posicion} onChange={e=>upd(setRows,idx,"posicion",e.target.value.replace(/\D/g,""))} className="!h-11 !px-2 w-16 text-center" /></td>
-                <td className="p-1"><TextInput inputMode="numeric" value={r.numero_fuego} onChange={e=>upd(setRows,idx,"numero_fuego",e.target.value)} onBlur={() => tipo==="entra" && buscarFuego(idx)} className="!h-11 !px-2 min-w-[110px]" /></td>
-                <td className="p-1"><TextInput inputMode="decimal" value={r.milimetros} onChange={e=>upd(setRows,idx,"milimetros",e.target.value.replace(/[^0-9.]/g,""))} className="!h-11 !px-2 w-20 text-center" /></td>
-                <td className="p-1"><TextInput inputMode="numeric" value={r.psi} onChange={e=>upd(setRows,idx,"psi",e.target.value.replace(/\D/g,""))} className="!h-11 !px-2 w-20 text-center" /></td>
-                <td className="p-1">
-                  {tipo==="sale" ? (
-                    <Select value={r.motivo} onChange={e=>upd(setRows,idx,"motivo",e.target.value)} className="!h-11 min-w-[130px]">
-                      <option value="transito">Tránsito</option><option value="baja">Baja</option><option value="reparacion">Reparación</option>
-                    </Select>
-                  ) : (
-                    <Select value={r.estado} onChange={e=>upd(setRows,idx,"estado",e.target.value)} className="!h-11 min-w-[130px]">
-                      <option value="nuevo">Nuevo</option><option value="transito">Tránsito</option><option value="recauchado">Recauchado</option>
-                    </Select>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        <button type="button" onClick={()=>setRows(r=>[...r, filaVacia()])} className="mt-2 text-sm font-semibold text-forest">+ Agregar fila</button>
-      </div>
-    );
-  }
-
+function TireCircle({ pos, filled, status, mm, psi, fuego, selected, onTap }) {
+  const styles = {
+    empty: "border-2 border-dashed border-[#D1D5DB] bg-[#F9FAFB] text-muted",
+    ok: "border-2 border-[#D1D5DB] bg-white text-ink",
+    atencion: "border-2 border-[#F59E0B] bg-[#FEF3C7] text-[#92400E]",
+    alerta: "border-2 border-[#EF4444] bg-[#FEE2E2] text-[#B91C1C]"
+  };
+  const key = !filled ? "empty" : (status || "ok");
   return (
-    <form onSubmit={guardar} className="max-w-3xl mx-auto p-4 space-y-4 pb-28 lg:pb-8">
-      {toast && <Toast {...toast} onDone={()=>setToast(null)} />}
-      <Card className="space-y-4">
-        <h2 className="font-display text-xl font-bold">Cambio de Neumáticos</h2>
-        <div className="grid sm:grid-cols-2 gap-4">
-          <Field label="Equipo" required><EquipoSelector equipos={equipos} value={equipoId} onChange={setEquipoId} required /></Field>
-          <Field label="N° Cambio"><TextInput value={numero ?? "…"} disabled className="bg-gray-50 text-gray-500 font-semibold" /></Field>
-          <Field label="Fecha" required><TextInput type="date" value={fecha} onChange={e=>setFecha(e.target.value)} required /></Field>
-          <Field label="Kilometraje"><TextInput inputMode="numeric" value={km} onChange={e=>setKm(e.target.value.replace(/\D/g,""))} /></Field>
-          <Field label="Hora ingreso"><TextInput type="time" value={horaIngreso} onChange={e=>setHoraIngreso(e.target.value)} /></Field>
-          <Field label="Hora salida"><TextInput type="time" value={horaSalida} onChange={e=>setHoraSalida(e.target.value)} /></Field>
-          <Field label="Ruedas torqueadas"><TextInput inputMode="numeric" value={ruedasTorq} onChange={e=>setRuedasTorq(e.target.value.replace(/\D/g,""))} /></Field>
-          <Field label="PSI regulados"><Toggle checked={psiReg} onChange={setPsiReg} labelOn="Sí" labelOff="No" /></Field>
+    <button type="button" onClick={onTap}
+      className={cx("w-[54px] h-[54px] rounded-full flex flex-col items-center justify-center shrink-0 shadow-sm transition",
+        styles[key], selected && "ring-2 ring-ink anim-blink")}>
+      <span className="text-[9.5px] font-bold opacity-70 leading-none">P{pos}</span>
+      {filled ? (
+        <>
+          <span className="text-[13px] font-extrabold leading-none mt-0.5">{mm != null ? mm : "—"}</span>
+          <span className="text-[8.5px] font-semibold opacity-70 leading-none">{psi ? psi + "psi" : ""}</span>
+        </>
+      ) : <span className="text-[11px] font-bold text-[#D1D5DB] mt-0.5">— —</span>}
+    </button>
+  );
+}
+
+function AxleMap({ cfg, posData, selectedPos, onTap }) {
+  return (
+    <div className="space-y-6">
+      {cfg.rows.map(row => (
+        <div key={row.label} className={cx("relative", row.type === "auxilio" && "mt-4 pt-4 border-t border-dashed border-bdstrong")}>
+          <div className="flex items-center gap-3">
+            <span className="text-[12px] font-bold text-muted w-6 shrink-0">{row.label}</span>
+            <div className="flex-1 relative flex items-center justify-around">
+              <div className="absolute left-0 right-0 h-[1.5px] bg-[#E5E7EB]" />
+              {row.positions.map(p => {
+                const d = posData[p] || {};
+                return (
+                  <div key={p} className="relative z-10">
+                    <TireCircle pos={p} filled={!!d.numero_fuego} status={d.status} mm={d.minMM} psi={d.psi} fuego={d.numero_fuego}
+                      selected={selectedPos === p} onTap={() => onTap(p)} />
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         </div>
-        <Field label="Observaciones"><TextArea value={obs} onChange={e=>setObs(e.target.value)} /></Field>
-      </Card>
-      <Card><h3 className="font-display font-bold mb-3">Neumáticos que SALEN</h3><TablaFilas rows={sale} setRows={setSale} tipo="sale" /></Card>
-      <Card><h3 className="font-display font-bold mb-3">Neumáticos que ENTRAN</h3><TablaFilas rows={entra} setRows={setEntra} tipo="entra" /></Card>
-      <Button type="submit" disabled={saving} className="w-full">{saving ? <span className="spinner"></span> : "Guardar cambio"}</Button>
-    </form>
-  );
-}
-
-/* =====================================================================
-   FORMULARIO 3 — FLASH DIARIO
-===================================================================== */
-const FLASH_INV = [["direccionales","Direccionales"],["traccionales","Traccionales"],["eje_libre","Eje Libre"],["transito","Tránsito"],["bajas","Bajas"],["recauchados","Recauchados"]];
-const FLASH_PATIO = [["llantas_am_aluminio","Americanas aluminio"],["llantas_am_fierro","Americanas fierro"],["llantas_eu_aluminio","Europeas aluminio"],["llantas_eu_fierro","Europeas fierro"],["reparacion_patio","Reparación"]];
-const FLASH_TRABAJOS = [["montajes","Montajes"],["marcajes","Marcajes"],["rotaciones","Rotaciones"],["reparaciones","Reparaciones"],["regulacion_psi","Regulación PSI"],["retorqueo","Retorqueo"]];
-
-function NumGrid({ fields, values, onChange }) {
-  return (
-    <div className="grid grid-cols-2 gap-3">
-      {fields.map(([key,label]) => (
-        <Field key={key} label={label}><TextInput inputMode="numeric" value={values[key]||""} onChange={e=>onChange(key, e.target.value.replace(/\D/g,""))} /></Field>
       ))}
     </div>
   );
 }
 
-function FlashForm() {
-  const { session } = useApp();
-  const [fecha, setFecha] = useState(todayISO());
-  const [hora, setHora] = useState(nowHM());
-  const [numero, setNumero] = useState(null);
-  const [vals, setVals] = useState({});
-  const [tractos, setTractos] = useState(""); const [semis, setSemis] = useState("");
-  const [otros, setOtros] = useState("");
-  const [toast, setToast] = useState(null); const [saving, setSaving] = useState(false);
+/* =====================================================================
+   PANTALLA 4 - AUDITORIA
+===================================================================== */
+function AuditoriaForm({ user, clienteId, equipo, cfg, onCancel, onGenerarInstructivo }) {
+  const [frioConfirmado, setFrioConfirmado] = useState(false);
+  const [km, setKm] = useState(equipo.kilometros || "");
+  const [kmSet, setKmSet] = useState(false);
+  const axleCfg = axleConfigFor(equipo);
+  const allPositions = axleCfg.rows.flatMap(r => r.positions);
+  const [posData, setPosData] = useState({});
+  const [editingPos, setEditingPos] = useState(null);
+  const startedAt = useRef(Date.now());
 
-  useEffect(() => { obtenerSiguienteNumero(session.cliente_id, "numero_flash_inicio").then(setNumero); }, []);
-  function setVal(k,v) { setVals(o => ({...o,[k]:v})); }
+  function abrirPosicion(p) { setEditingPos(p); }
 
-  async function guardar(e) {
-    e.preventDefault(); setSaving(true);
-    const id = uuid();
-    const data = {
-      id, cliente_id: session.cliente_id, bultero_id: session.id_mecanico || null, fecha, hora, numero_flash: String(numero),
-      direccionales: n(vals.direccionales), traccionales: n(vals.traccionales), eje_libre: n(vals.eje_libre),
-      transito: n(vals.transito), bajas: n(vals.bajas), recauchados: n(vals.recauchados),
-      llantas_am_aluminio: n(vals.llantas_am_aluminio), llantas_am_fierro: n(vals.llantas_am_fierro),
-      llantas_eu_aluminio: n(vals.llantas_eu_aluminio), llantas_eu_fierro: n(vals.llantas_eu_fierro),
-      reparacion_patio: n(vals.reparacion_patio), tractos_intervenidos: n(tractos), semis_intervenidos: n(semis),
-      montajes: n(vals.montajes), marcajes: n(vals.marcajes), rotaciones: n(vals.rotaciones),
-      reparaciones: n(vals.reparaciones), regulacion_psi: n(vals.regulacion_psi), retorqueo: n(vals.retorqueo), otros
-    };
-    const item = { id: uuid(), tipo:"flash", data, ts: Date.now(), clienteId: session.cliente_id, numeroClave:"numero_flash_inicio", numeroUsado: numero };
-    try {
-      if (navigator.onLine) { await enviarFlash(data); await confirmarUsoNumero(session.cliente_id, "numero_flash_inicio", numero); }
-      else pushQueue(item);
-      setToast({type:"ok", msg: navigator.onLine ? "Flash guardado." : "Guardado localmente."});
-      setVals({}); setTractos(""); setSemis(""); setOtros("");
-      obtenerSiguienteNumero(session.cliente_id, "numero_flash_inicio").then(setNumero);
-    } catch (err) { pushQueue(item); setToast({type:"ok", msg:"Sin conexión. Guardado localmente."}); }
-    finally { setSaving(false); }
+  function guardarPosicion(p, data) {
+    const ev = evaluarPosicion(axleCfg, cfg, p, equipo.tipo, data);
+    setPosData(s => ({ ...s, [p]: { ...data, posicion: p, status: ev.status, minMM: ev.minMM, motivos: ev.motivos } }));
+    setEditingPos(null);
   }
-  function n(v) { return v === "" || v == null ? null : parseInt(v,10); }
+
+  const completas = allPositions.filter(p => posData[p] && posData[p].numero_fuego).length;
+  const todasCompletas = completas === allPositions.length;
+
+  if (!frioConfirmado) {
+    return (
+      <Modal title="Antes de empezar">
+        <p className="text-[14px] text-[#374151] mb-5">Las presiones de aire deben controlarse en frío. ¿Confirmás que los neumáticos están fríos?</p>
+        <div className="flex gap-3">
+          <Button variant="subtle" className="flex-1" onClick={onCancel}>Cancelar</Button>
+          <Button className="flex-1" onClick={() => setFrioConfirmado(true)}>Confirmar</Button>
+        </div>
+      </Modal>
+    );
+  }
+  if (!kmSet) {
+    return (
+      <Modal title="Kilometraje actual">
+        <Field label="Kilómetros" required>
+          <TextInput type="number" inputMode="numeric" value={km} onChange={e => setKm(e.target.value)} placeholder="Ej: 154200" />
+        </Field>
+        <Button className="w-full mt-5" disabled={!km} onClick={() => setKmSet(true)}>Continuar</Button>
+      </Modal>
+    );
+  }
 
   return (
-    <form onSubmit={guardar} className="max-w-2xl mx-auto p-4 space-y-4 pb-28 lg:pb-8">
-      {toast && <Toast {...toast} onDone={()=>setToast(null)} />}
-      <Card className="space-y-4">
-        <h2 className="font-display text-xl font-bold">Informe Flash — La Portada</h2>
-        <div className="grid grid-cols-3 gap-3">
-          <Field label="Fecha"><TextInput type="date" value={fecha} onChange={e=>setFecha(e.target.value)} /></Field>
-          <Field label="Hora"><TextInput type="time" value={hora} onChange={e=>setHora(e.target.value)} /></Field>
-          <Field label="N° Flash"><TextInput value={numero ?? "…"} disabled className="bg-gray-50 text-gray-500 font-semibold" /></Field>
+    <div className="min-h-screen pb-40 px-5 pt-14 safe-top">
+      <div className="flex items-center gap-3 mb-1">
+        <button onClick={onCancel} className="w-9 h-9 rounded-full bg-[#F3F4F6] flex items-center justify-center"><Icon.back width="18" height="18" /></button>
+        <div>
+          <h1 className="text-[20px] font-extrabold">Auditoría · {equipo.patente}</h1>
+          <p className="text-[12.5px] text-muted">{equipo.tipo === "SEMI" ? "Semirremolque" : `Tracto ${equipo.configuracion_ejes}`} · {axleCfg.total} posiciones</p>
         </div>
+      </div>
+
+      <Card className="mt-6 mb-4">
+        <p className="text-[13px] mb-4"><span className="font-bold">{equipo.numero_interno ? equipo.numero_interno + " · " : ""}{equipo.patente}</span> <span className="text-muted">· {equipo.configuracion_ejes || "semi"} · Interno {equipo.numero_interno || "-"}</span></p>
+        <AxleMap cfg={axleCfg} posData={posData} selectedPos={editingPos} onTap={abrirPosicion} />
       </Card>
-      <Card><h3 className="font-display font-bold mb-3">Inventario</h3><NumGrid fields={FLASH_INV} values={vals} onChange={setVal} /></Card>
-      <Card><h3 className="font-display font-bold mb-3">Llantas en patio</h3><NumGrid fields={FLASH_PATIO} values={vals} onChange={setVal} /></Card>
-      <Card><h3 className="font-display font-bold mb-3">Equipos intervenidos</h3>
+
+      <p className="text-[12.5px] text-muted px-1">{completas}/{allPositions.length} posiciones cargadas</p>
+
+      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-bd p-4 safe-bottom">
+        <Button className="w-full" disabled={!todasCompletas} onClick={() => onGenerarInstructivo(posData, axleCfg, km, startedAt.current)}>
+          Generar Instructivo
+        </Button>
+      </div>
+
+      {editingPos != null && (
+        <PosicionModal
+          pos={editingPos} equipo={equipo} cfg={cfg} axleCfg={axleCfg}
+          existing={posData[editingPos]}
+          onClose={() => setEditingPos(null)}
+          onSave={(data) => guardarPosicion(editingPos, data)}
+        />
+      )}
+    </div>
+  );
+}
+
+function PosicionModal({ pos, equipo, cfg, axleCfg, existing, onClose, onSave }) {
+  const sugerido = generarFuegoLaPortada(equipo.numero_interno, pos, todayISO());
+  const [form, setForm] = useState(() => existing || { numero_fuego: sugerido, marca: "", medida: "", psi: "", mm_borde_izq: "", mm_centro: "", mm_borde_der: "" });
+  const ev = evaluarPosicion(axleCfg, cfg, pos, equipo.tipo, form);
+  const mmAlert = ["mm_borde_izq", "mm_centro", "mm_borde_der"].some(k => form[k] !== "" && parseFloat(form[k]) < ev.mmMin);
+  const mmWarn = ["mm_borde_izq", "mm_centro", "mm_borde_der"].some(k => form[k] !== "" && parseFloat(form[k]) < ev.mmAmarillo);
+  const psiVal = parseFloat(form.psi);
+  const psiAlert = form.psi !== "" && Math.abs(psiVal - ev.psiObjetivo) > (ev.psiObjetivo * cfg.psi_tolerancia_pct / 100) * 2;
+  const psiWarn = form.psi !== "" && Math.abs(psiVal - ev.psiObjetivo) > (ev.psiObjetivo * cfg.psi_tolerancia_pct / 100);
+
+  return (
+    <Modal title={`Posición P${pos}`} onClose={onClose}>
+      <div className="space-y-4">
+        <Field label="N° de fuego" required hint="Sugerido automáticamente, podés modificarlo">
+          <TextInput value={form.numero_fuego} onChange={e => setForm(f => ({ ...f, numero_fuego: e.target.value }))} className="font-extrabold" />
+        </Field>
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Tractos"><TextInput inputMode="numeric" value={tractos} onChange={e=>setTractos(e.target.value.replace(/\D/g,""))} /></Field>
-          <Field label="Semis"><TextInput inputMode="numeric" value={semis} onChange={e=>setSemis(e.target.value.replace(/\D/g,""))} /></Field>
+          <Field label="Marca"><TextInput value={form.marca} onChange={e => setForm(f => ({ ...f, marca: e.target.value }))} /></Field>
+          <Field label="Medida"><TextInput placeholder="295/80R22.5" value={form.medida} onChange={e => setForm(f => ({ ...f, medida: e.target.value }))} /></Field>
         </div>
-      </Card>
-      <Card><h3 className="font-display font-bold mb-3">Trabajos realizados</h3><NumGrid fields={FLASH_TRABAJOS} values={vals} onChange={setVal} /></Card>
-      <Card><Field label="Otros"><TextArea value={otros} onChange={e=>setOtros(e.target.value)} /></Field></Card>
-      <Button type="submit" disabled={saving} className="w-full">{saving ? <span className="spinner"></span> : "Guardar flash"}</Button>
-    </form>
+        <Field label="PSI" required>
+          <TextInput type="number" inputMode="numeric" value={form.psi} alert={psiAlert} warn={psiWarn}
+            onChange={e => setForm(f => ({ ...f, psi: e.target.value }))} placeholder={`Objetivo ${ev.psiObjetivo}`} />
+        </Field>
+        <div className="grid grid-cols-3 gap-2">
+          <Field label="MM izq" required><TextInput type="number" step="0.1" value={form.mm_borde_izq} alert={form.mm_borde_izq !== "" && parseFloat(form.mm_borde_izq) < ev.mmMin} warn={form.mm_borde_izq !== "" && parseFloat(form.mm_borde_izq) < ev.mmAmarillo} onChange={e => setForm(f => ({ ...f, mm_borde_izq: e.target.value }))} /></Field>
+          <Field label="MM centro" required><TextInput type="number" step="0.1" value={form.mm_centro} alert={form.mm_centro !== "" && parseFloat(form.mm_centro) < ev.mmMin} warn={form.mm_centro !== "" && parseFloat(form.mm_centro) < ev.mmAmarillo} onChange={e => setForm(f => ({ ...f, mm_centro: e.target.value }))} /></Field>
+          <Field label="MM der" required><TextInput type="number" step="0.1" value={form.mm_borde_der} alert={form.mm_borde_der !== "" && parseFloat(form.mm_borde_der) < ev.mmMin} warn={form.mm_borde_der !== "" && parseFloat(form.mm_borde_der) < ev.mmAmarillo} onChange={e => setForm(f => ({ ...f, mm_borde_der: e.target.value }))} /></Field>
+        </div>
+        {(mmAlert || psiAlert) && <p className="text-[12.5px] font-bold text-[#B91C1C]">⚠ Valor por debajo del mínimo permitido</p>}
+        {!mmAlert && !psiAlert && (mmWarn || psiWarn) && <p className="text-[12.5px] font-bold text-[#92400E]">⚠ Cerca del límite recomendado</p>}
+        <Button className="w-full" disabled={!form.numero_fuego || form.psi === "" || form.mm_borde_izq === "" || form.mm_centro === "" || form.mm_borde_der === ""}
+          onClick={() => onSave(form)}>Guardar posición</Button>
+      </div>
+    </Modal>
   );
 }
 
 /* =====================================================================
-   FORMULARIO 4 — NOVEDADES DIARIAS
+   GENERADOR DE RECOMENDACIONES (receta)
 ===================================================================== */
-const NOVEDAD_STOCK = [["nuevos","Nuevos"],["transito","Tránsito"],["reparar","Reparar"],["recauchados","Recauchados"],["llantas_am_aluminio","Llantas AM aluminio"],["llantas_am_fierro","Llantas AM fierro"],["llantas_eu_aluminio","Llantas EU aluminio"],["llantas_eu_fierro","Llantas EU fierro"]];
+function generarRecomendaciones(posData, axleCfg, equipoTipo, cfg) {
+  const recs = [];
+  const posicionesAlerta = [];
+  Object.values(posData).forEach(d => {
+    if (d.status === "alerta" || d.status === "atencion") posicionesAlerta.push({ posicion: d.posicion, status: d.status, motivos: d.motivos });
+  });
 
-function NovedadForm() {
-  const { session } = useApp();
-  const [fecha, setFecha] = useState(todayISO());
-  const [horaInicio, setHoraInicio] = useState(nowHM());
-  const [numero, setNumero] = useState(null);
-  const [vals, setVals] = useState({});
-  const [checklist, setChecklist] = useState(TOOLS_CHECKLIST.map(h => ({ herramienta:h, cantidad:"" })));
-  const [toast, setToast] = useState(null); const [saving, setSaving] = useState(false);
+  const psiFuera = Object.values(posData).some(d => (d.motivos || []).some(m => m.startsWith("psi")));
+  if (psiFuera) recs.push({ id: "psi", key: "rec_calibrar_psi", texto: "Calibrar presión de aire en las posiciones marcadas" });
 
-  useEffect(() => { obtenerSiguienteNumero(session.cliente_id, "numero_hoja_inicio").then(setNumero); }, []);
-  function setVal(k,v) { setVals(o => ({...o,[k]:v})); }
-  function setCant(idx, v) { setChecklist(cl => cl.map((c,i) => i===idx ? {...c, cantidad: v} : c)); }
-  function n(v) { return v === "" || v == null ? null : parseInt(v,10); }
+  const criticos = Object.values(posData).filter(d => d.status === "alerta" && (d.motivos || []).some(m => m.startsWith("mm")));
+  if (criticos.length) recs.push({ id: "cambiar", key: "rec_cambiar_neumaticos", texto: `Cambiar neumáticos en posiciones: ${criticos.map(c => "P" + c.posicion).join(", ")}` });
 
-  async function guardar(e) {
-    e.preventDefault(); setSaving(true);
-    const id = uuid();
-    const data = {
-      id, cliente_id: session.cliente_id, bultero_id: session.id_mecanico || null, fecha, hora_inicio: horaInicio, numero_hoja: String(numero),
-      nuevos: n(vals.nuevos), transito: n(vals.transito), reparar: n(vals.reparar), recauchados: n(vals.recauchados),
-      llantas_am_aluminio: n(vals.llantas_am_aluminio), llantas_am_fierro: n(vals.llantas_am_fierro),
-      llantas_eu_aluminio: n(vals.llantas_eu_aluminio), llantas_eu_fierro: n(vals.llantas_eu_fierro),
-      checklist: checklist.map(c => ({ herramienta: c.herramienta, cantidad: c.cantidad===""?null:parseInt(c.cantidad,10) }))
-    };
-    const item = { id: uuid(), tipo:"novedad", data, ts: Date.now(), clienteId: session.cliente_id, numeroClave:"numero_hoja_inicio", numeroUsado: numero };
-    try {
-      if (navigator.onLine) { await enviarNovedad(data); await confirmarUsoNumero(session.cliente_id, "numero_hoja_inicio", numero); }
-      else pushQueue(item);
-      setToast({type:"ok", msg: navigator.onLine ? "Novedad guardada." : "Guardada localmente."});
-      setVals({}); setChecklist(TOOLS_CHECKLIST.map(h => ({ herramienta:h, cantidad:"" })));
-      obtenerSiguienteNumero(session.cliente_id, "numero_hoja_inicio").then(setNumero);
-    } catch (err) { pushQueue(item); setToast({type:"ok", msg:"Sin conexión. Guardada localmente."}); }
-    finally { setSaving(false); }
+  axleCfg.groups.forEach((grupo, i) => {
+    const mms = grupo.map(p => posData[p] && posData[p].minMM).filter(v => v != null);
+    if (mms.length < 2) return;
+    const max = Math.max(...mms), min = Math.min(...mms);
+    if (max > 0 && ((max - min) / max) * 100 >= cfg.mm_rotacion_pct) {
+      const row = axleCfg.rows[i];
+      const label = row ? row.label : `Eje ${i + 1}`;
+      if (row && row.type === "D") recs.push({ id: "rot_" + i, key: "rec_rotar_delanteros", texto: `Rotar neumáticos delanteros (desgaste desparejo, eje ${label})` });
+      else recs.push({ id: "rot_" + i, key: equipoTipo === "SEMI" ? `rec_rotar_semi_e${i + 1}` : "rec_rotar_traccionales", texto: `Rotar neumáticos del eje ${label} (desgaste desparejo)` });
+    }
+  });
+
+  if (!recs.length) recs.push({ id: "ok", key: null, texto: "Todo en orden, sin tareas pendientes" });
+  return { recs, posicionesAlerta };
+}
+
+/* =====================================================================
+   PANTALLA 5 - INSTRUCTIVO
+===================================================================== */
+function Instructivo({ equipo, axleCfg, posData, recsInfo, checklist, setChecklist, onContinuar, onCerrar }) {
+  const [nuevaTarea, setNuevaTarea] = useState("");
+  const sistemaTotal = checklist.filter(c => !c.extra).length;
+  const cumplidas = checklist.filter(c => !c.extra && c.done).length;
+  const extra = checklist.filter(c => c.extra).length;
+  const pct = sistemaTotal ? Math.round((cumplidas / sistemaTotal) * 100) : 100;
+
+  function toggle(id) { setChecklist(cs => cs.map(c => c.id === id ? { ...c, done: !c.done } : c)); }
+  function agregar() {
+    if (!nuevaTarea.trim()) return;
+    setChecklist(cs => [...cs, { id: uuid(), texto: nuevaTarea.trim(), done: false, extra: true }]);
+    setNuevaTarea("");
   }
 
   return (
-    <form onSubmit={guardar} className="max-w-2xl mx-auto p-4 space-y-4 pb-28 lg:pb-8">
-      {toast && <Toast {...toast} onDone={()=>setToast(null)} />}
-      <Card className="space-y-4">
-        <h2 className="font-display text-xl font-bold">Hoja de Novedades — La Portada</h2>
-        <div className="grid grid-cols-3 gap-3">
-          <Field label="Fecha"><TextInput type="date" value={fecha} onChange={e=>setFecha(e.target.value)} /></Field>
-          <Field label="Hora inicio"><TextInput type="time" value={horaInicio} onChange={e=>setHoraInicio(e.target.value)} /></Field>
-          <Field label="N° Hoja"><TextInput value={numero ?? "…"} disabled className="bg-gray-50 text-gray-500 font-semibold" /></Field>
-        </div>
-      </Card>
-      <Card><h3 className="font-display font-bold mb-3">Stock de neumáticos</h3><NumGrid fields={NOVEDAD_STOCK} values={vals} onChange={setVal} /></Card>
-      <Card>
-        <h3 className="font-display font-bold mb-3">Checklist de herramientas</h3>
-        <div className="grid sm:grid-cols-2 gap-2">
-          {checklist.map((c, idx) => (
-            <div key={c.herramienta} className="flex items-center justify-between gap-3 bg-gray-50 rounded-xl px-3 py-1.5">
-              <span className="text-sm">{c.herramienta}</span>
-              <TextInput inputMode="numeric" value={c.cantidad} onChange={e=>setCant(idx, e.target.value.replace(/\D/g,""))} className="!h-10 !w-20 !px-2 text-center" />
-            </div>
+    <div className="min-h-screen pb-8 px-5 pt-14 safe-top">
+      <h1 className="text-[20px] font-extrabold mb-1">Instructivo · {equipo.patente}</h1>
+      <p className="text-[12.5px] text-muted mb-5">Revisá el mapa y marcá las tareas cumplidas</p>
+
+      <Card className="mb-4">
+        <AxleMap cfg={axleCfg} posData={posData} selectedPos={null} onTap={() => {}} />
+        <div className="flex items-center gap-4 mt-5 pt-4 border-t border-bd">
+          {[["#D1D5DB", "OK"], ["#F59E0B", "Atención"], ["#EF4444", "Alerta"]].map(([c, l]) => (
+            <div key={l} className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full" style={{ border: `2px solid ${c}` }} /><span className="text-[11.5px] text-sub">{l}</span></div>
           ))}
         </div>
       </Card>
-      <Button type="submit" disabled={saving} className="w-full">{saving ? <span className="spinner"></span> : "Guardar novedad"}</Button>
-    </form>
+
+      <div className="flex items-center justify-between mb-2">
+        <p className="font-bold text-[15px]">Recomendaciones</p>
+        <span className="text-[12.5px] font-bold text-muted">{pct}% cumplido</span>
+      </div>
+      <div className="space-y-2 mb-3">
+        {checklist.map(c => (
+          <button key={c.id} onClick={() => toggle(c.id)} className="w-full text-left bg-white rounded-2xl border border-bd shadow-card px-4 py-3 flex items-center gap-3">
+            <span className={cx("w-6 h-6 rounded-lg flex items-center justify-center shrink-0", c.done ? "bg-ink" : "bg-white border border-[#D1D5DB]")}>
+              {c.done && <Icon.check width="14" height="14" className="text-white" />}
+            </span>
+            <span className={cx("text-[14px] font-semibold flex-1", c.done && "strike")}>{c.texto}</span>
+            {c.extra && <Icon.pencil width="15" height="15" className="text-muted shrink-0" />}
+          </button>
+        ))}
+      </div>
+      <div className="flex gap-2 mb-6">
+        <TextInput placeholder="Agregar tarea personalizada" value={nuevaTarea} onChange={e => setNuevaTarea(e.target.value)} onKeyDown={e => { if (e.key === "Enter") agregar(); }} />
+        <Button variant="subtle" onClick={agregar}>+ Agregar</Button>
+      </div>
+
+      <p className="text-[12.5px] text-muted mb-6">Recomendadas: {sistemaTotal} · Cumplidas: {cumplidas} · Extra agregadas: {extra}</p>
+
+      <div className="space-y-3">
+        <Button className="w-full" onClick={() => onContinuar({ pct, cumplidas, sistemaTotal, extra })}>Continuar a hoja de cambio</Button>
+        <Button variant="ghost" className="w-full" onClick={() => onCerrar({ pct, cumplidas, sistemaTotal, extra })}>Cerrar sin cambios</Button>
+      </div>
+    </div>
   );
 }
 
 /* =====================================================================
-   ADMIN — EQUIPOS
+   PANTALLAS 6-7 - HOJA DE CAMBIO
+   Nota de alcance: en lugar de arrastre físico con "ghost" con forma de
+   neumático, la rotación se hace con dos toques (seleccionar origen,
+   tocar destino) validando los mismos grupos de rotación permitidos.
+   El resto del flujo (confirmación obligatoria, toast, montajes,
+   restricciones, guardado en Supabase) sigue la especificación.
 ===================================================================== */
-function EquiposAdmin() {
-  const { session, equipos, reloadEquipos } = useApp();
-  const [q, setQ] = useState("");
-  const [modal, setModal] = useState(null); // null | {} (nuevo) | equipo (editar)
+async function fetchNeumaticosBodega(clienteId, bodega) {
+  const { data, error } = await supabase.from("neumaticos").select("*").eq("cliente_id", clienteId).eq("bodega", bodega).eq("activo", true).limit(200);
+  if (error) throw error;
+  return data || [];
+}
+
+function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, checklistInicial, onFinish, onCancel }) {
+  const [km, setKm] = useState(equipo.kilometros || "");
+  const [kmSet, setKmSet] = useState(false);
+  const [posData, setPosData] = useState(() => ({ ...posDataInicial }));
+  const [checklist, setChecklist] = useState(checklistInicial);
+  const [activePos, setActivePos] = useState(null);
+  const [infoPos, setInfoPos] = useState(null);
+  const [montaje, setMontaje] = useState(null); // { tipo, pos }
+  const [confirmDlg, setConfirmDlg] = useState(null); // { title, desc, onConfirm }
+  const [rotatingFrom, setRotatingFrom] = useState(null);
+  const [pushToast, toastNode] = useToasts();
+  const startedAt = useRef(Date.now());
+  const entra = useRef([]);
+  const sale = useRef([]);
+  const intervenciones = useRef([]);
+  const alertasAcc = useRef([]);
   const [saving, setSaving] = useState(false);
 
-  const filtrados = equipos.filter(e => !q || e.patente.toLowerCase().includes(q.toLowerCase()) || String(e.numero_interno).includes(q));
+  const allPositions = axleCfg.rows.flatMap(r => r.positions);
 
-  async function guardar(form) {
-    setSaving(true);
-    try {
-      if (form.id_equipo) {
-        const { error } = await supabase.from("equipos").update({ patente: form.patente, numero_interno: form.numero_interno, tipo: form.tipo, anio: form.anio||null, modelo: form.modelo||null }).eq("id_equipo", form.id_equipo);
-        if (error) throw error;
-      } else {
-        const { error } = await supabase.from("equipos").insert({ id_equipo: uuid(), cliente_id: session.cliente_id, patente: form.patente, numero_interno: form.numero_interno, tipo: form.tipo, anio: form.anio||null, modelo: form.modelo||null, activo: true });
-        if (error) throw error;
+  function tap(p) {
+    if (rotatingFrom != null) {
+      if (rotatingFrom === p) { setRotatingFrom(null); return; }
+      const grupo = axleCfg.groups.find(g => g.includes(rotatingFrom));
+      if (!grupo || !grupo.includes(p)) {
+        if (navigator.vibrate) navigator.vibrate(150);
+        pushToast("✕ Movimiento no permitido entre esos ejes");
+        setRotatingFrom(null);
+        return;
       }
-      await reloadEquipos(); setModal(null);
-    } catch(e) { alert("Error: " + e.message); } finally { setSaving(false); }
-  }
-  async function toggleActivo(eq) {
-    await supabase.from("equipos").update({ activo: !eq.activo }).eq("id_equipo", eq.id_equipo);
-    reloadEquipos();
-  }
-
-  return (
-    <div className="p-4 max-w-5xl mx-auto space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="font-display text-2xl font-bold">Equipos</h2>
-        <Button onClick={()=>setModal({})}>+ Nuevo equipo</Button>
-      </div>
-      <TextInput placeholder="Buscar por patente o número interno…" value={q} onChange={e=>setQ(e.target.value)} className="max-w-sm" />
-      <Card className="!p-0 overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead><tr className="text-left text-gray-400 border-b border-gray-100"><th className="p-3">Interno</th><th className="p-3">Patente</th><th className="p-3">Tipo</th><th className="p-3">Modelo</th><th className="p-3">Año</th><th className="p-3">Estado</th><th className="p-3"></th></tr></thead>
-          <tbody>
-            {filtrados.map(e => (
-              <tr key={e.id_equipo} className="border-b border-gray-50 last:border-0">
-                <td className="p-3 font-semibold">{e.numero_interno}</td><td className="p-3">{e.patente}</td>
-                <td className="p-3"><Badge color={e.tipo==="TRACTO"?"blue":"amber"}>{e.tipo}</Badge></td>
-                <td className="p-3">{e.modelo||"-"}</td><td className="p-3">{e.anio||"-"}</td>
-                <td className="p-3"><Toggle checked={e.activo!==false} onChange={()=>toggleActivo(e)} /></td>
-                <td className="p-3"><button onClick={()=>setModal(e)} className="text-forest font-semibold">Editar</button></td>
-              </tr>
-            ))}
-            {filtrados.length===0 && <tr><td colSpan={7} className="p-6 text-center text-gray-400">Sin resultados</td></tr>}
-          </tbody>
-        </table>
-      </Card>
-      {modal && <EquipoModal equipo={modal} onClose={()=>setModal(null)} onSave={guardar} saving={saving} />}
-    </div>
-  );
-}
-
-function EquipoModal({ equipo, onClose, onSave, saving }) {
-  const [form, setForm] = useState({ id_equipo: equipo.id_equipo, patente: equipo.patente||"", numero_interno: equipo.numero_interno||"", tipo: equipo.tipo||"TRACTO", anio: equipo.anio||"", modelo: equipo.modelo||"" });
-  return (
-    <Modal title={equipo.id_equipo ? "Editar equipo" : "Nuevo equipo"} onClose={onClose}>
-      <form onSubmit={e=>{e.preventDefault(); onSave(form);}} className="space-y-3">
-        <Field label="Número interno" required><TextInput value={form.numero_interno} onChange={e=>setForm(f=>({...f,numero_interno:e.target.value}))} required /></Field>
-        <Field label="Patente" required><TextInput value={form.patente} onChange={e=>setForm(f=>({...f,patente:e.target.value.toUpperCase()}))} required /></Field>
-        <Field label="Tipo" required><Select value={form.tipo} onChange={e=>setForm(f=>({...f,tipo:e.target.value}))}><option value="TRACTO">TRACTO</option><option value="SEMI">SEMI</option></Select></Field>
-        <Field label="Modelo"><TextInput value={form.modelo} onChange={e=>setForm(f=>({...f,modelo:e.target.value}))} /></Field>
-        <Field label="Año"><TextInput inputMode="numeric" value={form.anio} onChange={e=>setForm(f=>({...f,anio:e.target.value.replace(/\D/g,"")}))} /></Field>
-        <Button type="submit" disabled={saving} className="w-full">{saving ? <span className="spinner"></span> : "Guardar"}</Button>
-      </form>
-    </Modal>
-  );
-}
-
-/* =====================================================================
-   ADMIN — MECANICOS
-===================================================================== */
-function MecanicosAdmin() {
-  const { session, mecanicos, reloadMecanicos } = useApp();
-  const [modal, setModal] = useState(null);
-  const [saving, setSaving] = useState(false);
-
-  async function guardar(form) {
-    setSaving(true);
-    try {
-      const payload = { nombre: form.nombre, apellido: form.apellido, telefono: form.telefono||null, usuario: form.usuario.trim() };
-      if (form.password) payload.password_hash = await sha256Hex(form.password);
-      if (form.id_mecanico) {
-        const { error } = await supabase.from("mecanicos").update(payload).eq("id_mecanico", form.id_mecanico);
-        if (error) throw error;
-      } else {
-        if (!form.password) throw new Error("La contraseña es obligatoria para un mecánico nuevo.");
-        const { error } = await supabase.from("mecanicos").insert({ id_mecanico: uuid(), cliente_id: session.cliente_id, activo: true, ...payload });
-        if (error) throw error;
-      }
-      await reloadMecanicos(); setModal(null);
-    } catch(e) { alert("Error: " + e.message); } finally { setSaving(false); }
-  }
-  async function toggleActivo(m) { await supabase.from("mecanicos").update({ activo: !m.activo }).eq("id_mecanico", m.id_mecanico); reloadMecanicos(); }
-
-  return (
-    <div className="p-4 max-w-5xl mx-auto space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="font-display text-2xl font-bold">Mecánicos</h2>
-        <Button onClick={()=>setModal({})}>+ Nuevo mecánico</Button>
-      </div>
-      <Card className="!p-0 overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead><tr className="text-left text-gray-400 border-b border-gray-100"><th className="p-3">Nombre</th><th className="p-3">Apellido</th><th className="p-3">Usuario</th><th className="p-3">Teléfono</th><th className="p-3">Estado</th><th className="p-3"></th></tr></thead>
-          <tbody>
-            {mecanicos.map(m => (
-              <tr key={m.id_mecanico} className="border-b border-gray-50 last:border-0">
-                <td className="p-3 font-semibold">{m.nombre}</td><td className="p-3">{m.apellido}</td><td className="p-3">{m.usuario}</td><td className="p-3">{m.telefono||"-"}</td>
-                <td className="p-3"><Toggle checked={m.activo!==false} onChange={()=>toggleActivo(m)} /></td>
-                <td className="p-3"><button onClick={()=>setModal(m)} className="text-forest font-semibold">Editar</button></td>
-              </tr>
-            ))}
-            {mecanicos.length===0 && <tr><td colSpan={6} className="p-6 text-center text-gray-400">Sin mecánicos</td></tr>}
-          </tbody>
-        </table>
-      </Card>
-      {modal && <MecanicoModal mecanico={modal} onClose={()=>setModal(null)} onSave={guardar} saving={saving} />}
-    </div>
-  );
-}
-
-function MecanicoModal({ mecanico, onClose, onSave, saving }) {
-  const [form, setForm] = useState({ id_mecanico: mecanico.id_mecanico, nombre: mecanico.nombre||"", apellido: mecanico.apellido||"", telefono: mecanico.telefono||"", usuario: mecanico.usuario||"", password:"" });
-  return (
-    <Modal title={mecanico.id_mecanico ? "Editar mecánico" : "Nuevo mecánico"} onClose={onClose}>
-      <form onSubmit={e=>{e.preventDefault(); onSave(form);}} className="space-y-3">
-        <Field label="Nombre" required><TextInput value={form.nombre} onChange={e=>setForm(f=>({...f,nombre:e.target.value}))} required /></Field>
-        <Field label="Apellido"><TextInput value={form.apellido} onChange={e=>setForm(f=>({...f,apellido:e.target.value}))} /></Field>
-        <Field label="Teléfono"><TextInput value={form.telefono} onChange={e=>setForm(f=>({...f,telefono:e.target.value}))} /></Field>
-        <Field label="Usuario" required><TextInput value={form.usuario} onChange={e=>setForm(f=>({...f,usuario:e.target.value}))} autoCapitalize="none" required /></Field>
-        <Field label="Contraseña" hint={mecanico.id_mecanico ? "Dejar vacío para no cambiarla" : ""}><TextInput type="password" value={form.password} onChange={e=>setForm(f=>({...f,password:e.target.value}))} /></Field>
-        <Button type="submit" disabled={saving} className="w-full">{saving ? <span className="spinner"></span> : "Guardar"}</Button>
-      </form>
-    </Modal>
-  );
-}
-
-/* =====================================================================
-   ADMIN — NEUMATICOS
-===================================================================== */
-function NeumaticosAdmin() {
-  const { session, equipos } = useApp();
-  const [rows, setRows] = useState([]);
-  const [q, setQ] = useState("");
-  const [estadoF, setEstadoF] = useState("");
-  const [equipoF, setEquipoF] = useState("");
-  const [modal, setModal] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-
-  async function load() {
-    setLoading(true);
-    let query = supabase.from("neumaticos").select("*").eq("cliente_id", session.cliente_id).order("numero_fuego");
-    const { data, error } = await query;
-    if (!error) setRows(data||[]);
-    setLoading(false);
-  }
-  useEffect(() => { load(); }, []);
-
-  const filtrados = rows.filter(r =>
-    (!q || r.numero_fuego.toLowerCase().includes(q.toLowerCase())) &&
-    (!estadoF || r.estado_actual === estadoF) &&
-    (!equipoF || r.equipo_actual === equipoF)
-  );
-  function equipoLabel(id) { const e = equipos.find(x=>x.id_equipo===id); return e ? `${e.numero_interno} - ${e.patente}` : "-"; }
-
-  async function guardar(form) {
-    setSaving(true);
-    try {
-      const payload = { marca: form.marca||null, modelo: form.modelo||null, medida: form.medida||null, tipo: form.tipo||null, estado_actual: form.estado_actual, equipo_actual: form.equipo_actual||null, posicion_actual: form.posicion_actual?parseInt(form.posicion_actual,10):null };
-      const { error } = await supabase.from("neumaticos").update(payload).eq("id_neumatico", form.id_neumatico);
-      if (error) throw error;
-      await load(); setModal(null);
-    } catch(e) { alert("Error: " + e.message); } finally { setSaving(false); }
-  }
-  async function toggleActivo(r) { await supabase.from("neumaticos").update({ activo: !r.activo }).eq("id_neumatico", r.id_neumatico); load(); }
-
-  const estadoColor = { nuevo:"green", transito:"amber", recauchado:"blue", baja:"red" };
-
-  return (
-    <div className="p-4 max-w-5xl mx-auto space-y-4">
-      <h2 className="font-display text-2xl font-bold">Neumáticos</h2>
-      <div className="flex flex-wrap gap-3">
-        <TextInput placeholder="Buscar N° fuego…" value={q} onChange={e=>setQ(e.target.value)} className="max-w-xs" />
-        <Select value={estadoF} onChange={e=>setEstadoF(e.target.value)} className="max-w-[160px]"><option value="">Todos los estados</option><option value="nuevo">Nuevo</option><option value="transito">Tránsito</option><option value="recauchado">Recauchado</option><option value="baja">Baja</option></Select>
-        <Select value={equipoF} onChange={e=>setEquipoF(e.target.value)} className="max-w-[200px]"><option value="">Todos los equipos</option>{equipos.map(e=><option key={e.id_equipo} value={e.id_equipo}>{e.numero_interno} - {e.patente}</option>)}</Select>
-      </div>
-      <Card className="!p-0 overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead><tr className="text-left text-gray-400 border-b border-gray-100"><th className="p-3">N° Fuego</th><th className="p-3">Marca</th><th className="p-3">Modelo</th><th className="p-3">Estado</th><th className="p-3">Equipo actual</th><th className="p-3">Posición</th><th className="p-3">Activo</th><th className="p-3"></th></tr></thead>
-          <tbody>
-            {loading && <tr><td colSpan={8} className="p-6 text-center text-gray-400">Cargando…</td></tr>}
-            {!loading && filtrados.map(r => (
-              <tr key={r.id_neumatico} className="border-b border-gray-50 last:border-0">
-                <td className="p-3 font-semibold">{r.numero_fuego}</td><td className="p-3">{r.marca||"-"}</td><td className="p-3">{r.modelo||"-"}</td>
-                <td className="p-3"><Badge color={estadoColor[r.estado_actual]||"gray"}>{r.estado_actual}</Badge></td>
-                <td className="p-3">{equipoLabel(r.equipo_actual)}</td><td className="p-3">{r.posicion_actual||"-"}</td>
-                <td className="p-3"><Toggle checked={r.activo!==false} onChange={()=>toggleActivo(r)} /></td>
-                <td className="p-3"><button onClick={()=>setModal(r)} className="text-forest font-semibold">Editar</button></td>
-              </tr>
-            ))}
-            {!loading && filtrados.length===0 && <tr><td colSpan={8} className="p-6 text-center text-gray-400">Sin resultados</td></tr>}
-          </tbody>
-        </table>
-      </Card>
-      {modal && <NeumaticoModal neumatico={modal} equipos={equipos} onClose={()=>setModal(null)} onSave={guardar} saving={saving} />}
-    </div>
-  );
-}
-
-function NeumaticoModal({ neumatico, equipos, onClose, onSave, saving }) {
-  const [form, setForm] = useState({ id_neumatico: neumatico.id_neumatico, marca: neumatico.marca||"", modelo: neumatico.modelo||"", medida: neumatico.medida||"", tipo: neumatico.tipo||"", estado_actual: neumatico.estado_actual||"nuevo", equipo_actual: neumatico.equipo_actual||"", posicion_actual: neumatico.posicion_actual||"" });
-  return (
-    <Modal title={`Neumático ${neumatico.numero_fuego}`} onClose={onClose}>
-      <form onSubmit={e=>{e.preventDefault(); onSave(form);}} className="space-y-3">
-        <Field label="Marca"><TextInput value={form.marca} onChange={e=>setForm(f=>({...f,marca:e.target.value}))} /></Field>
-        <Field label="Modelo"><TextInput value={form.modelo} onChange={e=>setForm(f=>({...f,modelo:e.target.value}))} /></Field>
-        <Field label="Medida"><TextInput value={form.medida} onChange={e=>setForm(f=>({...f,medida:e.target.value}))} /></Field>
-        <Field label="Tipo"><TextInput value={form.tipo} onChange={e=>setForm(f=>({...f,tipo:e.target.value}))} /></Field>
-        <Field label="Estado"><Select value={form.estado_actual} onChange={e=>setForm(f=>({...f,estado_actual:e.target.value}))}><option value="nuevo">Nuevo</option><option value="transito">Tránsito</option><option value="recauchado">Recauchado</option><option value="baja">Baja</option></Select></Field>
-        <Field label="Equipo actual"><EquipoSelector equipos={equipos} value={form.equipo_actual} onChange={v=>setForm(f=>({...f,equipo_actual:v}))} /></Field>
-        <Field label="Posición actual"><TextInput inputMode="numeric" value={form.posicion_actual} onChange={e=>setForm(f=>({...f,posicion_actual:e.target.value.replace(/\D/g,"")}))} /></Field>
-        <Button type="submit" disabled={saving} className="w-full">{saving ? <span className="spinner"></span> : "Guardar"}</Button>
-      </form>
-    </Modal>
-  );
-}
-
-/* =====================================================================
-   ADMIN — HISTORIAL
-===================================================================== */
-function HistorialAdmin() {
-  const { equipos, config } = useApp();
-  const [equipoId, setEquipoId] = useState("");
-  const [eventos, setEventos] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const psiMin = parseFloat(config.psi_minimo || 85), mmMin = parseFloat(config.mm_minimo || 4);
-
-  async function cargar(id) {
-    setEquipoId(id); if (!id) { setEventos(null); return; }
-    setLoading(true);
-    const [{ data: auds }, { data: cambios }] = await Promise.all([
-      supabase.from("auditorias").select("*, auditoria_posiciones(*)").eq("equipo_id", id).order("fecha", { ascending: false }),
-      supabase.from("cambios_neumaticos").select("*, cambio_detalle(*)").eq("equipo_id", id).order("fecha", { ascending: false })
-    ]);
-    const evs = [
-      ...(auds||[]).map(a => ({ tipo:"auditoria", fecha:a.fecha, ...a })),
-      ...(cambios||[]).map(c => ({ tipo:"cambio", fecha:c.fecha, ...c }))
-    ].sort((a,b) => new Date(b.fecha) - new Date(a.fecha));
-    setEventos(evs); setLoading(false);
+      const destFuego = posData[p] ? posData[p].numero_fuego : null;
+      setConfirmDlg({
+        title: "Confirmar rotación",
+        desc: destFuego ? `¿Intercambiar el neumático de P${rotatingFrom} con el de P${p}?` : `¿Mover el neumático de P${rotatingFrom} a la posición P${p}?`,
+        onConfirm: () => {
+          setPosData(s => {
+            const next = { ...s };
+            const a = next[rotatingFrom], b = next[p];
+            if (b) next[rotatingFrom] = { ...b, posicion: rotatingFrom }; else delete next[rotatingFrom];
+            next[p] = { ...a, posicion: p };
+            return next;
+          });
+          pushToast("✓ Rotación registrada");
+          setConfirmDlg(null); setRotatingFrom(null);
+        }
+      });
+      return;
+    }
+    setActivePos(p);
+    if (posData[p] && posData[p].numero_fuego) setInfoPos(p);
   }
 
-  function exportar() {
-    const equipo = equipos.find(e=>e.id_equipo===equipoId);
-    const rows = [];
-    (eventos||[]).forEach(ev => {
-      if (ev.tipo === "auditoria") {
-        (ev.auditoria_posiciones||[]).forEach(p => rows.push({ Fecha: ev.fecha, Tipo:"Auditoría", "N° Doc": ev.numero_auditoria, Km: ev.kilometraje, Posición: p.posicion, "N° Fuego": p.numero_fuego, MM: p.milimetros, PSI: p.psi, Alerta: (p.psi<psiMin||p.milimetros<mmMin) ? "SI" : "" }));
-      } else {
-        (ev.cambio_detalle||[]).forEach(d => rows.push({ Fecha: ev.fecha, Tipo:`Cambio (${d.tipo})`, "N° Doc": ev.numero_cambio, Km: ev.kilometraje, Posición: d.posicion, "N° Fuego": d.numero_fuego, MM: d.milimetros, PSI: d.psi, Estado: d.estado||d.motivo_salida||"" }));
+  function registrarIntervencion(tipo, pos, extra) {
+    intervenciones.current.push({
+      id: uuid(), equipo_id: equipo.id_equipo, mecanico_id: user.id, cliente_id: clienteId,
+      fecha: todayISO(), tipo, posicion: pos, numero_fuego: posData[pos] ? posData[pos].numero_fuego : null,
+      psi_nuevo: extra && extra.psi_nuevo != null ? extra.psi_nuevo : null,
+      observaciones: (extra && extra.observaciones) || null, foto_url: (extra && extra.foto) ? "checkpoint-confirmado" : null
+    });
+  }
+
+  function accionEntrada(tipo) {
+    if (activePos == null || posData[activePos]) return;
+    setMontaje({ tipo, pos: activePos });
+  }
+  function accionSalida(motivo) {
+    if (activePos == null || !posData[activePos]) return;
+    const d = posData[activePos];
+    const label = motivo === "transito" ? "tránsito" : motivo === "reparacion" ? "reparación" : "baja definitiva";
+    setConfirmDlg({
+      title: "Confirmar salida",
+      desc: `¿Enviar el neumático ${d.numero_fuego} (P${activePos}) a ${label}?`,
+      onConfirm: () => {
+        sale.current.push({ numero_fuego: d.numero_fuego, posicion: activePos, milimetros: d.minMM || null, psi: d.psi || null, motivo });
+        setPosData(s => { const n = { ...s }; delete n[activePos]; return n; });
+        pushToast(motivo === "baja" ? "✓ Baja registrada" : "✓ Salida registrada");
+        setConfirmDlg(null); setActivePos(null);
       }
     });
-    const ws = XLSX.utils.json_to_sheet(rows);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Historial");
-    XLSX.writeFile(wb, `historial_${equipo?.numero_interno||"equipo"}.xlsx`);
+  }
+
+  function montarNeumatico(pos, data, tipo) {
+    setPosData(s => ({ ...s, [pos]: { ...data, posicion: pos, status: "ok", minMM: data.mm ? parseFloat(data.mm) : null } }));
+    entra.current.push({ numero_fuego: data.numero_fuego, posicion: pos, milimetros: data.mm ? parseFloat(data.mm) : null, psi: data.psi ? parseInt(data.psi, 10) : null, estado: tipo });
+    if (tipo === "nuevo") registrarIntervencion("checkpoint", pos, { foto: true, observaciones: "Montaje de neumático nuevo, torqueado y checkpoint confirmado" });
+    pushToast(tipo === "nuevo" ? "✓ Montaje registrado" : "✓ Montaje registrado");
+    setMontaje(null); setActivePos(null);
+  }
+
+  async function finalizar() {
+    setSaving(true);
+    const numero_cambio = await siguienteNumeroCambio(clienteId, cfg).catch(() => String(Date.now()).slice(-6));
+    const sistemaTotal = checklist.filter(c => !c.extra).length;
+    const cumplidas = checklist.filter(c => !c.extra && c.done).length;
+    const cab = {
+      id_cambio: uuid(), equipo_id: equipo.id_equipo, bultero_id: user.id, cliente_id: clienteId,
+      fecha: todayISO(), kilometraje: parseInt(km, 10) || equipo.kilometros,
+      hora_ingreso: new Date(startedAt.current).toTimeString().slice(0, 8), hora_salida: nowHM(),
+      psi_regulados: intervenciones.current.some(i => i.tipo === "regulacion_psi"),
+      ruedas_torqueadas: intervenciones.current.filter(i => i.tipo === "retorqueo" || i.tipo === "checkpoint").length,
+      observaciones: `Instructivo seguido: ${sistemaTotal ? Math.round((cumplidas / sistemaTotal) * 100) : 100}%`,
+      numero_cambio,
+      sale: sale.current, entra: entra.current, intervenciones: intervenciones.current, alertas: alertasAcc.current
+    };
+    pushQueue({ id: uuid(), tipo: "cambio", clienteId, ts: Date.now(), data: cab });
+    syncQueue();
+    setSaving(false);
+    onFinish();
+  }
+
+  if (!kmSet) {
+    return (
+      <Modal title="Kilometraje actual">
+        <Field label="Kilómetros" required>
+          <TextInput type="number" inputMode="numeric" value={km} onChange={e => setKm(e.target.value)} placeholder="Ej: 154200" />
+        </Field>
+        <Button className="w-full mt-5" disabled={!km} onClick={() => setKmSet(true)}>Continuar</Button>
+      </Modal>
+    );
+  }
+
+  const entradaEnabled = activePos != null && !posData[activePos];
+  const salidaEnabled = activePos != null && !!posData[activePos];
+
+  return (
+    <div className="min-h-screen pb-[300px] px-5 pt-14 safe-top">
+      {toastNode}
+      <div className="flex items-center gap-3 mb-4">
+        <button onClick={onCancel} className="w-9 h-9 rounded-full bg-[#F3F4F6] flex items-center justify-center"><Icon.back width="18" height="18" /></button>
+        <div>
+          <h1 className="text-[20px] font-extrabold">Hoja de cambio · {equipo.patente}</h1>
+          <p className="text-[12.5px] text-muted">{rotatingFrom != null ? `Rotando P${rotatingFrom} · tocá el destino` : activePos != null ? `P${activePos} seleccionada` : "Tocá una posición"}</p>
+        </div>
+      </div>
+
+      <Card className="mb-4">
+        <AxleMap cfg={axleCfg} posData={posData} selectedPos={rotatingFrom != null ? rotatingFrom : activePos} onTap={tap} />
+      </Card>
+
+      <p className="font-bold text-[15px] mb-2">Instructivo</p>
+      <div className="space-y-2 mb-4">
+        {checklist.map(c => (
+          <button key={c.id} onClick={() => setChecklist(cs => cs.map(x => x.id === c.id ? { ...x, done: !x.done } : x))} className="w-full text-left bg-white rounded-2xl border border-bd shadow-card px-4 py-3 flex items-center gap-3">
+            <span className={cx("w-6 h-6 rounded-lg flex items-center justify-center shrink-0", c.done ? "bg-ink" : "bg-white border border-[#D1D5DB]")}>
+              {c.done && <Icon.check width="14" height="14" className="text-white" />}
+            </span>
+            <span className={cx("text-[14px] font-semibold flex-1", c.done && "strike")}>{c.texto}</span>
+            {c.extra && <Icon.pencil width="15" height="15" className="text-muted shrink-0" />}
+          </button>
+        ))}
+      </div>
+
+      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-bd p-4 safe-bottom space-y-3">
+        <Button className="w-full" disabled={saving} onClick={finalizar}>{saving ? <span className="spinner" /> : "Finalizar hoja de cambio"}</Button>
+        <div>
+          <p className="text-[11.5px] font-bold text-muted tracking-wide uppercase mb-1.5">Entrada</p>
+          <div className="grid grid-cols-3 gap-2">
+            <button disabled={!entradaEnabled} onClick={() => accionEntrada("nuevo")} className="h-12 rounded-2xl text-[13.5px] font-bold bg-ink text-white disabled:opacity-30">Nuevo</button>
+            <button disabled={!entradaEnabled} onClick={() => accionEntrada("transito")} className="h-12 rounded-2xl text-[13.5px] font-bold bg-[#F3F4F6] disabled:opacity-30">Tránsito</button>
+            <button disabled={!entradaEnabled} onClick={() => accionEntrada("recauchado")} className="h-12 rounded-2xl text-[13.5px] font-bold bg-[#F3F4F6] disabled:opacity-30">Recauchado</button>
+          </div>
+        </div>
+        <div>
+          <p className="text-[11.5px] font-bold text-muted tracking-wide uppercase mb-1.5">Salida</p>
+          <div className="grid grid-cols-3 gap-2">
+            <button disabled={!salidaEnabled} onClick={() => accionSalida("transito")} className="h-12 rounded-2xl text-[13.5px] font-bold bg-[#F3F4F6] disabled:opacity-30">Tránsito</button>
+            <button disabled={!salidaEnabled} onClick={() => accionSalida("reparacion")} className="h-12 rounded-2xl text-[13.5px] font-bold bg-[#F3F4F6] disabled:opacity-30">Reparación</button>
+            <button disabled={!salidaEnabled} onClick={() => accionSalida("baja")} className="h-12 rounded-2xl text-[13.5px] font-bold bg-[#FEE2E2] text-[#B91C1C] disabled:opacity-30 flex items-center justify-center gap-1"><Icon.trash width="14" height="14" />Baja</button>
+          </div>
+        </div>
+      </div>
+
+      {infoPos != null && posData[infoPos] && (
+        <TireInfoModal pos={infoPos} data={posData[infoPos]} cfg={cfg} equipo={equipo}
+          onClose={() => setInfoPos(null)}
+          onRotar={() => { setInfoPos(null); setRotatingFrom(infoPos); }}
+          onRegularPsi={(nuevoPsi) => {
+            setConfirmDlg({
+              title: "Confirmar regulación de PSI",
+              desc: `Ajustar P${infoPos} (${posData[infoPos].numero_fuego}) a ${nuevoPsi} psi.`,
+              onConfirm: () => {
+                setPosData(s => ({ ...s, [infoPos]: { ...s[infoPos], psi: nuevoPsi } }));
+                registrarIntervencion("regulacion_psi", infoPos, { psi_nuevo: parseInt(nuevoPsi, 10) });
+                const ev = evaluarPosicion(axleCfg, cfg, infoPos, equipo.tipo, { ...posData[infoPos], psi: nuevoPsi });
+                if (ev.status !== "ok") alertasAcc.current.push({ id: uuid(), cliente_id: clienteId, equipo_id: equipo.id_equipo, mecanico_id: user.id, tipo: parseInt(nuevoPsi, 10) < ev.psiObjetivo ? "psi_bajo" : "psi_alto", severidad: ev.status === "alerta" ? "rojo" : "amarillo", titulo: "PSI fuera de rango tras regulación", descripcion: `P${infoPos} quedó en ${nuevoPsi} psi (objetivo ${ev.psiObjetivo})`, posicion: infoPos, numero_fuego: posData[infoPos].numero_fuego, leida_mecanico: true, leida_admin: false, leida_superadmin: false });
+                pushToast("✓ Regulación guardada");
+                setConfirmDlg(null); setInfoPos(null);
+              }
+            });
+          }}
+          onRetorqueo={() => {
+            setConfirmDlg({
+              title: "Confirmar retorqueo",
+              desc: `¿Registrar retorqueo en P${infoPos} (${posData[infoPos].numero_fuego})? Se confirma que se tomó la foto de checkpoint.`,
+              onConfirm: () => { registrarIntervencion("retorqueo", infoPos, { foto: true }); pushToast("✓ Retorqueo registrado"); setConfirmDlg(null); setInfoPos(null); }
+            });
+          }}
+          onReparacion={() => {
+            setConfirmDlg({
+              title: "Confirmar reparación",
+              desc: `¿Registrar una reparación en P${infoPos} (${posData[infoPos].numero_fuego})?`,
+              onConfirm: () => { registrarIntervencion("reparacion", infoPos, {}); pushToast("✓ Reparación registrada"); setConfirmDlg(null); setInfoPos(null); }
+            });
+          }}
+        />
+      )}
+
+      {montaje && (
+        <MontajeModal tipo={montaje.tipo} pos={montaje.pos} equipo={equipo} clienteId={clienteId}
+          onClose={() => setMontaje(null)}
+          onConfirm={(data) => setConfirmDlg({
+            title: "Confirmar montaje",
+            desc: `¿Montar el neumático ${data.numero_fuego} en la posición P${montaje.pos}?`,
+            onConfirm: () => { montarNeumatico(montaje.pos, data, montaje.tipo); setConfirmDlg(null); }
+          })}
+        />
+      )}
+
+      {confirmDlg && <Confirm title={confirmDlg.title} desc={confirmDlg.desc} onConfirm={confirmDlg.onConfirm} onCancel={() => setConfirmDlg(null)} />}
+    </div>
+  );
+}
+
+function TireInfoModal({ pos, data, cfg, equipo, onClose, onRotar, onRegularPsi, onRetorqueo, onReparacion }) {
+  const [psiField, setPsiField] = useState(String(data.psi || ""));
+  const [showPsi, setShowPsi] = useState(false);
+  return (
+    <Modal title={`Posición P${pos}`} onClose={onClose}>
+      <div className="mb-4">
+        <p className="text-[22px] font-extrabold leading-none">{data.numero_fuego}</p>
+        <p className="text-[13px] text-muted mt-1">{data.marca || "Sin marca"} · {data.medida || "-"}</p>
+        <div className="flex gap-4 mt-3">
+          <div><p className="text-[11px] text-muted font-semibold">PSI actual</p><p className="font-extrabold text-[16px]">{data.psi || "-"}</p></div>
+          <div><p className="text-[11px] text-muted font-semibold">MM</p><p className="font-extrabold text-[16px]">{data.minMM != null ? data.minMM : "-"}</p></div>
+          <div><p className="text-[11px] text-muted font-semibold">Estado</p><Badge color={statusColor(data.status)}>{statusLabel(data.status)}</Badge></div>
+        </div>
+      </div>
+      {showPsi ? (
+        <div className="space-y-3 mb-2">
+          <Field label="Nuevo valor de PSI" required><TextInput type="number" inputMode="numeric" value={psiField} onChange={e => setPsiField(e.target.value)} /></Field>
+          <Button className="w-full" disabled={!psiField} onClick={() => onRegularPsi(parseInt(psiField, 10))}>Guardar regulación</Button>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 gap-2">
+          <Button variant="subtle" onClick={() => setShowPsi(true)}><Icon.gauge width="18" height="18" /> Regulación PSI</Button>
+          <Button variant="subtle" onClick={onRetorqueo}><Icon.wrench width="18" height="18" /> Retorqueo</Button>
+          <Button variant="subtle" onClick={onReparacion}><Icon.bandage width="18" height="18" /> Reparación</Button>
+          <Button variant="ghost" onClick={onRotar}><Icon.swap width="18" height="18" /> Rotar a otra posición</Button>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+function MontajeModal({ tipo, pos, equipo, clienteId, onClose, onConfirm }) {
+  const sugerido = tipo === "nuevo" ? generarFuegoLaPortada(equipo.numero_interno, pos, todayISO()) : "";
+  const [fuego, setFuego] = useState(sugerido);
+  const [marca, setMarca] = useState("");
+  const [medida, setMedida] = useState("");
+  const [psi, setPsi] = useState("");
+  const [mm, setMm] = useState("");
+  const [torqueado, setTorqueado] = useState(false);
+  const [foto, setFoto] = useState(false);
+  const [search, setSearch] = useState("");
+  const [buscando, setBuscando] = useState(tipo === "transito");
+  const [opciones, setOpciones] = useState([]);
+  const [seleccion, setSeleccion] = useState(null);
+
+  useEffect(() => {
+    if (tipo === "transito") fetchNeumaticosBodega(clienteId, "transito").then(setOpciones).catch(() => setOpciones([]));
+  }, [tipo]);
+
+  const filtradas = opciones.filter(o => {
+    if (!search) return true;
+    const s = search.toLowerCase();
+    return (o.numero_fuego || "").toLowerCase().includes(s) || (o.marca || "").toLowerCase().includes(s) || (o.modelo || "").toLowerCase().includes(s);
+  });
+
+  if (tipo === "transito" && buscando) {
+    return (
+      <Modal title="Montar desde tránsito" onClose={onClose}>
+        <TextInput placeholder="Buscar por N° fuego, marca o modelo" value={search} onChange={e => setSearch(e.target.value)} className="mb-3" />
+        <div className="space-y-2 max-h-72 overflow-y-auto">
+          {filtradas.map(o => (
+            <button key={o.id_neumatico} onClick={() => { setSeleccion(o); setFuego(o.numero_fuego); setMarca(o.marca || ""); setMedida(o.medida || ""); setBuscando(false); }}
+              className="w-full text-left bg-[#F9FAFB] rounded-xl px-3 py-2.5 flex items-center justify-between">
+              <div><p className="font-bold text-[14px]">{o.numero_fuego}</p><p className="text-[12px] text-muted">{o.marca} {o.modelo}</p></div>
+              <span className="text-[12px] text-muted">P{o.posicion_actual || "-"}</span>
+            </button>
+          ))}
+          {filtradas.length === 0 && <p className="text-center text-muted text-sm py-6">No hay neumáticos en tránsito que coincidan.</p>}
+        </div>
+      </Modal>
+    );
+  }
+
+  const titulo = tipo === "nuevo" ? "Montar neumático nuevo" : tipo === "transito" ? "Confirmar montaje" : "Montar recauchado";
+  const disabled = !fuego || psi === "" || mm === "" || (tipo === "nuevo" && (!torqueado || !foto));
+
+  return (
+    <Modal title={titulo} onClose={onClose}>
+      <div className="space-y-4">
+        <Field label="N° de fuego" required hint={tipo === "nuevo" ? "Sugerido automáticamente, podés modificarlo" : null}>
+          <TextInput value={fuego} onChange={e => setFuego(e.target.value)} className="font-extrabold" disabled={tipo === "transito"} />
+        </Field>
+        {tipo !== "transito" && (
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Marca"><TextInput value={marca} onChange={e => setMarca(e.target.value)} /></Field>
+            <Field label="Medida"><TextInput value={medida} onChange={e => setMedida(e.target.value)} /></Field>
+          </div>
+        )}
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="PSI actual" required><TextInput type="number" inputMode="numeric" value={psi} onChange={e => setPsi(e.target.value)} /></Field>
+          <Field label="MM actual" required><TextInput type="number" step="0.1" value={mm} onChange={e => setMm(e.target.value)} /></Field>
+        </div>
+        {tipo === "nuevo" && (
+          <div className="space-y-2">
+            <label className="flex items-center gap-2 text-[13.5px] font-semibold"><input type="checkbox" checked={torqueado} onChange={e => setTorqueado(e.target.checked)} /> Ruedas torqueadas</label>
+            <label className="flex items-center gap-2 text-[13.5px] font-semibold"><input type="checkbox" checked={foto} onChange={e => setFoto(e.target.checked)} /> Foto de checkpoint tomada (obligatoria)</label>
+          </div>
+        )}
+        <Button className="w-full" disabled={disabled} onClick={() => onConfirm({ numero_fuego: fuego, marca, medida, psi, mm })}>Continuar</Button>
+      </div>
+    </Modal>
+  );
+}
+
+/* =====================================================================
+   PANTALLA 8 - CIERRE DEL DIA
+===================================================================== */
+function CierreDelDia({ user, clienteId }) {
+  const [resumen, setResumen] = useState(null);
+  const [cerrando, setCerrando] = useState(false);
+  const [cerrado, setCerrado] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      const queue = getQueue().filter(q => q.clienteId === clienteId);
+      let auditorias = 0, cambios = 0, regulaciones = 0, retorqueos = 0, rotaciones = 0, reparaciones = 0, pctSum = 0, pctN = 0;
+      queue.forEach(q => {
+        if (q.tipo === "auditoria") { auditorias++; if (q.data.receta) { pctSum += q.data.receta.pct_receta_seguida || 0; pctN++; } }
+        if (q.tipo === "cambio") {
+          cambios++;
+          (q.data.intervenciones || []).forEach(i => { if (i.tipo === "regulacion_psi") regulaciones++; if (i.tipo === "retorqueo") retorqueos++; if (i.tipo === "reparacion") reparaciones++; });
+        }
+      });
+      try {
+        const { data: remAud } = await supabase.from("auditorias").select("id_auditoria").eq("bultero_id", user.id).eq("fecha", todayISO());
+        const { data: remCam } = await supabase.from("cambios_neumaticos").select("id_cambio").eq("bultero_id", user.id).eq("fecha", todayISO());
+        auditorias += (remAud || []).length; cambios += (remCam || []).length;
+      } catch (e) {}
+      setResumen({ auditorias, cambios, regulaciones, retorqueos, rotaciones, reparaciones, pct: pctN ? Math.round(pctSum / pctN) : null });
+    })();
+  }, [clienteId]);
+
+  async function cerrarJornada() {
+    setCerrando(true);
+    const data = {
+      id: uuid(), cliente_id: clienteId, mecanico_id: user.id, fecha: todayISO(),
+      auditorias_realizadas: resumen.auditorias, cambios_realizados: resumen.cambios,
+      regulaciones_psi: resumen.regulaciones, retorqueos: resumen.retorqueos, rotaciones: resumen.rotaciones, reparaciones: resumen.reparaciones,
+      pct_receta_promedio: resumen.pct, alertas_generadas: 0, cerrado: true,
+      hora_cierre: nowHM(), observaciones: null
+    };
+    pushQueue({ id: uuid(), tipo: "cierre", clienteId, ts: Date.now(), data });
+    syncQueue();
+    setCerrando(false);
+    setCerrado(true);
   }
 
   return (
-    <div className="p-4 max-w-4xl mx-auto space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="font-display text-2xl font-bold">Historial por Equipo</h2>
-        {eventos && eventos.length>0 && <Button variant="ghost" onClick={exportar}>⬇ Exportar Excel</Button>}
-      </div>
-      <EquipoSelector equipos={equipos} value={equipoId} onChange={cargar} />
-      {loading && <div className="text-center py-10"><span className="spinner mx-auto"></span></div>}
-      {!loading && eventos && eventos.length===0 && <div className="text-center text-gray-400 py-10">Sin eventos registrados para este equipo.</div>}
-      {!loading && eventos && eventos.length>0 && (
-        <div className="relative pl-6 space-y-6 border-l-2 border-gray-100">
-          {eventos.map((ev, i) => (
-            <div key={i} className="relative">
-              <div className={cx("absolute -left-[29px] top-1 w-3.5 h-3.5 rounded-full border-2 border-white", ev.tipo==="auditoria"?"bg-blue-500":"bg-forest")}></div>
-              <Card>
-                <div className="flex items-center justify-between mb-2">
-                  <span className="font-display font-bold">{ev.tipo==="auditoria" ? `Auditoría N° ${ev.numero_auditoria}` : `Cambio N° ${ev.numero_cambio}`}</span>
-                  <span className="text-xs text-gray-400">{formatDateCL(ev.fecha)} · {ev.kilometraje ? ev.kilometraje.toLocaleString("es-CL")+" km" : ""}</span>
-                </div>
-                {ev.tipo === "auditoria" ? (
-                  <div className="flex flex-wrap gap-1.5">
-                    {(ev.auditoria_posiciones||[]).sort((a,b)=>a.posicion-b.posicion).map(p => {
-                      const alerta = (p.psi!=null && p.psi<psiMin) || (p.milimetros!=null && p.milimetros<mmMin);
-                      return <span key={p.id} className={cx("text-xs px-2 py-1 rounded-lg", alerta ? "bg-red-100 text-red-700 font-semibold" : "bg-gray-50 text-gray-600")}>P{p.posicion}: {p.numero_fuego} · {p.milimetros}mm · {p.psi}psi</span>;
-                    })}
-                  </div>
-                ) : (
-                  <div className="grid sm:grid-cols-2 gap-2 text-xs">
-                    <div>
-                      <div className="text-gray-400 font-semibold mb-1">Salen</div>
-                      {(ev.cambio_detalle||[]).filter(d=>d.tipo==="sale").map(d => <div key={d.id} className="text-gray-600">P{d.posicion}: {d.numero_fuego} ({d.motivo_salida})</div>)}
-                    </div>
-                    <div>
-                      <div className="text-gray-400 font-semibold mb-1">Entran</div>
-                      {(ev.cambio_detalle||[]).filter(d=>d.tipo==="entra").map(d => <div key={d.id} className="text-gray-600">P{d.posicion}: {d.numero_fuego} ({d.estado})</div>)}
-                    </div>
-                  </div>
-                )}
-              </Card>
-            </div>
-          ))}
-        </div>
+    <div className="min-h-screen pb-24 px-5 pt-14 safe-top">
+      <h1 className="text-[30px] font-extrabold mb-6">Cierre del día</h1>
+      {!resumen ? <div className="flex justify-center py-10"><span className="spinner" /></div> : (
+        <>
+          <div className="grid grid-cols-2 gap-3 mb-4">
+            {[["Auditorías", resumen.auditorias], ["Cambios", resumen.cambios], ["Regulaciones PSI", resumen.regulaciones], ["Retorqueos", resumen.retorqueos]].map(([l, v]) => (
+              <div key={l} className="bg-[#F9FAFB] rounded-[18px] p-4">
+                <p className="text-[11.5px] font-semibold text-muted mb-1">{l}</p>
+                <p className="text-[22px] font-extrabold">{v}</p>
+              </div>
+            ))}
+          </div>
+          {resumen.pct != null && (
+            <Card className="mb-6">
+              <p className="text-[13px] font-semibold text-sub mb-1">% promedio de instructivo seguido</p>
+              <p className="text-[26px] font-extrabold">{resumen.pct}%</p>
+            </Card>
+          )}
+          {cerrado ? (
+            <div className="bg-[#DCFCE7] text-[#15803D] rounded-2xl px-4 py-3 text-center font-bold">Jornada cerrada correctamente</div>
+          ) : (
+            <Button className="w-full" disabled={cerrando} onClick={cerrarJornada}>{cerrando ? <span className="spinner" /> : "Cerrar jornada"}</Button>
+          )}
+        </>
       )}
     </div>
   );
 }
 
 /* =====================================================================
-   ADMIN — CONFIGURACION
+   ALERTAS
 ===================================================================== */
-const CONFIG_FIELDS = [
-  { clave:"numero_auditoria_inicio", label:"N° inicio auditoría", hint:"Próximo correlativo a usar" },
-  { clave:"numero_cambio_inicio", label:"N° inicio cambio" },
-  { clave:"numero_flash_inicio", label:"N° inicio flash" },
-  { clave:"numero_hoja_inicio", label:"N° inicio hoja de novedades" },
-  { clave:"numero_fuego_inicio", label:"N° inicio fuego (secuencial)", hint:"Solo para clientes con fórmula secuencial" },
-  { clave:"psi_minimo", label:"PSI mínimo (alerta)" },
-  { clave:"mm_minimo", label:"MM mínimo (alerta)" },
-];
-
-function ConfiguracionAdmin() {
-  const { session, config, reloadConfig } = useApp();
-  const [vals, setVals] = useState(config);
-  const [formula, setFormula] = useState(config.formula_marca_fuego || "interno_semana_anio_posicion");
-  const [saving, setSaving] = useState(false);
-  const [toast, setToast] = useState(null);
-
-  useEffect(() => { setVals(config); setFormula(config.formula_marca_fuego || "interno_semana_anio_posicion"); }, [config]);
-
-  async function guardar() {
-    setSaving(true);
-    try {
-      for (const f of CONFIG_FIELDS) await db.setConfigValor(session.cliente_id, f.clave, vals[f.clave] ?? "");
-      await db.setConfigValor(session.cliente_id, "formula_marca_fuego", formula);
-      await reloadConfig();
-      setToast({ type:"ok", msg:"Configuración guardada." });
-    } catch(e) { setToast({ type:"error", msg:"Error: " + e.message }); } finally { setSaving(false); }
-  }
-
-  return (
-    <div className="p-4 max-w-2xl mx-auto space-y-4">
-      {toast && <Toast {...toast} onDone={()=>setToast(null)} />}
-      <h2 className="font-display text-2xl font-bold">Configuración</h2>
-      <Card className="space-y-4">
-        <div className="grid sm:grid-cols-2 gap-4">
-          {CONFIG_FIELDS.map(f => (
-            <Field key={f.clave} label={f.label} hint={f.hint}>
-              <TextInput inputMode="numeric" value={vals[f.clave]||""} onChange={e=>setVals(v=>({...v,[f.clave]:e.target.value.replace(/\D/g,"")}))} />
-            </Field>
-          ))}
-        </div>
-        <Field label="Fórmula de marca de fuego">
-          <Select value={formula} onChange={e=>setFormula(e.target.value)}>
-            <option value="interno_semana_anio_posicion">La Portada (interno+semana+año+posición)</option>
-            <option value="secuencial">Secuencial</option>
-          </Select>
-        </Field>
-        <Button onClick={guardar} disabled={saving} className="w-full">{saving ? <span className="spinner"></span> : "Guardar configuración"}</Button>
-      </Card>
-    </div>
-  );
-}
-
-/* =====================================================================
-   ADMIN — DASHBOARD
-===================================================================== */
-function Dashboard() {
-  const { session, equipos, mecanicos, config } = useApp();
-  const [stats, setStats] = useState(null);
+function AlertasScreen({ user, clienteId }) {
+  const [alertas, setAlertas] = useState([]);
   const [loading, setLoading] = useState(true);
-  const psiMin = parseFloat(config.psi_minimo || 85), mmMin = parseFloat(config.mm_minimo || 4);
-
-  async function load() {
-    setLoading(true);
-    const hoy = todayISO();
-    const inicioMes = hoy.slice(0,8) + "01";
-    const hace30 = new Date(Date.now() - 30*86400000).toISOString().slice(0,10);
-
-    const [{ data: audsHoy }, { data: cambiosHoy }, { data: flashHoy }, { data: neumaticos }, { data: audsMes }, { data: cambiosMes }, { data: ultimasAuds }] = await Promise.all([
-      supabase.from("auditorias").select("*").eq("fecha", hoy),
-      supabase.from("cambios_neumaticos").select("*").eq("fecha", hoy),
-      supabase.from("flash_diario").select("*").eq("fecha", hoy).eq("cliente_id", session.cliente_id),
-      supabase.from("neumaticos").select("estado_actual").eq("cliente_id", session.cliente_id).eq("activo", true),
-      supabase.from("auditorias").select("bultero_id").gte("fecha", inicioMes),
-      supabase.from("cambios_neumaticos").select("bultero_id").gte("fecha", inicioMes),
-      supabase.from("auditorias").select("*, auditoria_posiciones(*)").order("fecha", { ascending:false }).limit(500)
-    ]);
-
-    const stock = { nuevo:0, transito:0, recauchado:0, baja:0 };
-    (neumaticos||[]).forEach(n => { if (stock[n.estado_actual] != null) stock[n.estado_actual]++; });
-
-    const prodMap = {};
-    [...(audsMes||[]), ...(cambiosMes||[])].forEach(r => { if (r.bultero_id) prodMap[r.bultero_id] = (prodMap[r.bultero_id]||0)+1; });
-
-    const ultimaPorEquipo = {};
-    (ultimasAuds||[]).forEach(a => { if (!ultimaPorEquipo[a.equipo_id] || a.fecha > ultimaPorEquipo[a.equipo_id].fecha) ultimaPorEquipo[a.equipo_id] = a; });
-    const sinAuditar = equipos.filter(e => e.activo !== false && (!ultimaPorEquipo[e.id_equipo] || ultimaPorEquipo[e.id_equipo].fecha < hace30));
-
-    const alertas = [];
-    Object.values(ultimaPorEquipo).forEach(a => {
-      (a.auditoria_posiciones||[]).forEach(p => {
-        if ((p.psi!=null && p.psi<psiMin) || (p.milimetros!=null && p.milimetros<mmMin)) {
-          const eq = equipos.find(e=>e.id_equipo===a.equipo_id);
-          alertas.push({ equipo: eq ? `${eq.numero_interno} - ${eq.patente}` : a.equipo_id, posicion:p.posicion, psi:p.psi, mm:p.milimetros, fecha:a.fecha });
-        }
-      });
-    });
-
-    setStats({
-      auditoriasHoy: (audsHoy||[]).length, cambiosHoy: (cambiosHoy||[]).length,
-      regulacionesPsi: (flashHoy||[]).reduce((s,f)=>s+(f.regulacion_psi||0),0),
-      retorqueos: (flashHoy||[]).reduce((s,f)=>s+(f.retorqueo||0),0),
-      stock, alertas, sinAuditar, prodMap
-    });
-    setLoading(false);
-  }
-  useEffect(() => { load(); }, []);
-
-  function exportarDia() {
-    const hoy = todayISO();
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([{
-      Fecha: hoy, "Auditorías": stats.auditoriasHoy, "Cambios": stats.cambiosHoy,
-      "Regulaciones PSI": stats.regulacionesPsi, "Retorqueos": stats.retorqueos,
-      "Stock Nuevo": stats.stock.nuevo, "Stock Tránsito": stats.stock.transito, "Stock Recauchado": stats.stock.recauchado, "Stock Baja": stats.stock.baja
-    }]), "Resumen del día");
-    XLSX.writeFile(wb, `mosa_dashboard_${hoy}.xlsx`);
-  }
-
-  if (loading || !stats) return <div className="p-10 text-center"><span className="spinner mx-auto"></span></div>;
-
-  const Kpi = ({label, value, color="ink"}) => (
-    <Card className="text-center">
-      <div className={`text-3xl font-display font-extrabold text-${color==="ink"?"ink":color}`}>{value}</div>
-      <div className="text-xs text-gray-400 mt-1">{label}</div>
-    </Card>
-  );
-
-  return (
-    <div className="p-4 max-w-5xl mx-auto space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="font-display text-2xl font-bold">Dashboard</h2>
-        <Button variant="ghost" onClick={exportarDia}>⬇ Exportar día a Excel</Button>
-      </div>
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <Kpi label="Auditorías hoy" value={stats.auditoriasHoy} />
-        <Kpi label="Cambios hoy" value={stats.cambiosHoy} />
-        <Kpi label="Regulaciones PSI" value={stats.regulacionesPsi} />
-        <Kpi label="Retorqueos" value={stats.retorqueos} />
-      </div>
-
-      <Card>
-        <h3 className="font-display font-bold mb-3">Stock actual de neumáticos</h3>
-        <div className="grid grid-cols-4 gap-3 text-center">
-          <div><div className="text-2xl font-bold text-forest">{stats.stock.nuevo}</div><div className="text-xs text-gray-400">Nuevo</div></div>
-          <div><div className="text-2xl font-bold text-amber-600">{stats.stock.transito}</div><div className="text-xs text-gray-400">Tránsito</div></div>
-          <div><div className="text-2xl font-bold text-blue-600">{stats.stock.recauchado}</div><div className="text-xs text-gray-400">Recauchado</div></div>
-          <div><div className="text-2xl font-bold text-red-600">{stats.stock.baja}</div><div className="text-xs text-gray-400">Baja</div></div>
-        </div>
-      </Card>
-
-      <Card>
-        <h3 className="font-display font-bold mb-3">Alertas activas (última auditoría por equipo)</h3>
-        {stats.alertas.length===0 ? <div className="text-sm text-gray-400">Sin alertas activas.</div> : (
-          <div className="space-y-1.5 max-h-64 overflow-y-auto">
-            {stats.alertas.map((a,i) => (
-              <div key={i} className="flex items-center justify-between text-sm bg-red-50 rounded-lg px-3 py-2">
-                <span>{a.equipo} · Pos. {a.posicion}</span>
-                <span className="text-red-700 font-semibold">{a.psi}psi / {a.mm}mm</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </Card>
-
-      <Card>
-        <h3 className="font-display font-bold mb-3">Equipos sin auditar (30+ días)</h3>
-        {stats.sinAuditar.length===0 ? <div className="text-sm text-gray-400">Todos los equipos activos fueron auditados recientemente.</div> : (
-          <div className="flex flex-wrap gap-2">{stats.sinAuditar.map(e => <Badge key={e.id_equipo} color="amber">{e.numero_interno} - {e.patente}</Badge>)}</div>
-        )}
-      </Card>
-
-      <Card>
-        <h3 className="font-display font-bold mb-3">Productividad por mecánico (mes actual)</h3>
-        <div className="space-y-2">
-          {mecanicos.map(m => (
-            <div key={m.id_mecanico} className="flex items-center justify-between text-sm">
-              <span>{m.nombre} {m.apellido}</span>
-              <span className="font-semibold">{stats.prodMap[m.id_mecanico] || 0} formularios</span>
-            </div>
-          ))}
-        </div>
-      </Card>
-    </div>
-  );
-}
-
-/* =====================================================================
-   FORMULARIOS HUB (admin)
-===================================================================== */
-function FormulariosHub({ open }) {
-  const [tab, setTab] = useState("auditoria");
-  return (
-    <div>
-      <div className="max-w-3xl mx-auto px-4 pt-4 flex gap-2 flex-wrap">
-        {MECH_TABS.map(t => (
-          <button key={t.id} onClick={()=>setTab(t.id)} className={cx("px-4 h-10 rounded-xl text-sm font-semibold", tab===t.id ? "bg-ink text-white" : "bg-gray-100 text-gray-600")}>{t.icon} {t.label}</button>
-        ))}
-      </div>
-      {tab==="auditoria" && <AuditoriaForm />}
-      {tab==="cambio" && <CambioForm />}
-      {tab==="flash" && <FlashForm />}
-      {tab==="novedad" && <NovedadForm />}
-    </div>
-  );
-}
-
-/* =====================================================================
-   APP PRINCIPAL
-===================================================================== */
-function MecanicoApp() {
-  const [view, setView] = useState("auditoria");
-  const titles = { auditoria:"Auditoría de Equipos", cambio:"Cambio de Neumáticos", flash:"Informe Flash", novedad:"Hoja de Novedades" };
-  return (
-    <div className="min-h-screen">
-      <Header title={titles[view]} />
-      <PendingBar />
-      {view==="auditoria" && <AuditoriaForm />}
-      {view==="cambio" && <CambioForm />}
-      {view==="flash" && <FlashForm />}
-      {view==="novedad" && <NovedadForm />}
-      <BottomNav view={view} setView={setView} />
-    </div>
-  );
-}
-
-function AdminApp() {
-  const [view, setView] = useState("dashboard");
-  const [menuOpen, setMenuOpen] = useState(false);
-  const titles = { dashboard:"Dashboard", formularios:"Formularios", equipos:"Equipos", mecanicos:"Mecánicos", neumaticos:"Neumáticos", historial:"Historial", configuracion:"Configuración" };
-  return (
-    <div className="min-h-screen">
-      <Header title={titles[view]} onMenu={()=>setMenuOpen(true)} />
-      <PendingBar />
-      <div className="max-w-6xl mx-auto lg:flex">
-        <Sidebar view={view} setView={setView} open={menuOpen} setOpen={setMenuOpen} />
-        <main className="flex-1 min-w-0">
-          {view==="dashboard" && <Dashboard />}
-          {view==="formularios" && <FormulariosHub />}
-          {view==="equipos" && <EquiposAdmin />}
-          {view==="mecanicos" && <MecanicosAdmin />}
-          {view==="neumaticos" && <NeumaticosAdmin />}
-          {view==="historial" && <HistorialAdmin />}
-          {view==="configuracion" && <ConfiguracionAdmin />}
-        </main>
-      </div>
-    </div>
-  );
-}
-
-function AppShell() {
-  const [session, setSessionState] = useState(getSession());
-  const [equipos, setEquipos] = useState([]);
-  const [mecanicos, setMecanicos] = useState([]);
-  const [config, setConfig] = useState({});
-  const [ready, setReady] = useState(false);
-
-  async function reloadEquipos() {
-    try { setEquipos(await db.fetchEquipos(session.cliente_id)); }
-    catch(e) { setEquipos(getCache(LS.cacheEquipos(session.cliente_id), [])); }
-  }
-  async function reloadMecanicos() {
-    try { setMecanicos(await db.fetchMecanicos(session.cliente_id)); }
-    catch(e) { setMecanicos(getCache(LS.cacheMecanicos(session.cliente_id), [])); }
-  }
-  async function reloadConfig() {
-    try { setConfig(await db.fetchConfig(session.cliente_id)); }
-    catch(e) { setConfig(getCache(LS.cacheConfig(session.cliente_id), {})); }
-  }
+  const [filter, setFilter] = useState("todas");
 
   useEffect(() => {
-    if (!session) { setReady(true); return; }
-    (async () => { await Promise.all([reloadEquipos(), reloadMecanicos(), reloadConfig()]); setReady(true); syncQueue(); })();
-  }, [session]);
+    db.fetchAlertas(clienteId).then(setAlertas).catch(() => {}).finally(() => setLoading(false));
+  }, [clienteId]);
 
-  function login(s) { setSession(s); setSessionState(s); }
-  function logout() { clearSession(); setSessionState(null); }
+  async function marcarLeida(a) {
+    setAlertas(as => as.map(x => x.id === a.id ? { ...x, leida_mecanico: true } : x));
+    await supabase.from("alertas").update({ leida_mecanico: true }).eq("id", a.id);
+  }
 
-  if (!session) return <Login onLogin={login} />;
-  if (!ready) return <div className="min-h-screen flex items-center justify-center"><span className="spinner"></span></div>;
+  const filtradas = alertas.filter(a => filter === "todas" ? true : filter === "noleidas" ? !a.leida_mecanico : true);
 
-  const ctx = { session, equipos, mecanicos, config, reloadEquipos, reloadMecanicos, reloadConfig, logout };
   return (
-    <AppCtx.Provider value={ctx}>
-      {session.role === "admin" ? <AdminApp /> : <MecanicoApp />}
-    </AppCtx.Provider>
+    <div className="min-h-screen pb-24 px-5 pt-14 safe-top">
+      <h1 className="text-[30px] font-extrabold mb-4">Alertas</h1>
+      <div className="flex gap-2 mb-5">
+        {[["todas", "Todas"], ["noleidas", "No leídas"]].map(([k, l]) => (
+          <button key={k} onClick={() => setFilter(k)} className={cx("px-4 py-2 rounded-full text-[13px] font-bold", filter === k ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{l}</button>
+        ))}
+      </div>
+      {loading && <div className="flex justify-center py-10"><span className="spinner" /></div>}
+      <div className="space-y-3">
+        {filtradas.map(a => (
+          <button key={a.id} onClick={() => marcarLeida(a)} className="w-full text-left bg-white rounded-2xl border border-bd shadow-card p-4">
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex-1">
+                <p className="font-bold text-[14.5px]">{a.titulo}</p>
+                <p className="text-[12.5px] text-muted mt-0.5">{a.descripcion}</p>
+              </div>
+              <Badge color={a.severidad === "rojo" ? "red" : a.severidad === "amarillo" ? "amber" : "gray"}>{a.severidad === "rojo" ? "Alerta" : a.severidad === "amarillo" ? "Atención" : "Info"}</Badge>
+            </div>
+            {!a.leida_mecanico && <span className="inline-block mt-2 text-[11px] font-bold text-ink">● No leída</span>}
+          </button>
+        ))}
+        {!loading && filtradas.length === 0 && <p className="text-center text-muted py-10 text-sm">Sin alertas.</p>}
+      </div>
+    </div>
   );
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(<AppShell />);
-</script>
+/* =====================================================================
+   GUARDADO DE AUDITORIA (encabezado + posiciones + receta)
+===================================================================== */
+async function construirYGuardarAuditoria({ user, clienteId, equipo, cfg, posData, axleCfg, km, checklist, recsInfo }) {
+  const numero_auditoria = await siguienteNumeroAuditoria(clienteId, cfg).catch(() => String(Date.now()).slice(-6));
+  const sistemaTotal = checklist.filter(c => !c.extra).length;
+  const cumplidas = checklist.filter(c => !c.extra && c.done).length;
+  const pct = sistemaTotal ? Math.round((cumplidas / sistemaTotal) * 100) : 100;
+  const flags = {};
+  recsInfo.recs.forEach(r => { if (r.key) flags[r.key] = checklist.find(c => c.id === r.id) ? true : false; });
 
-<script>
-  if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => {
-      navigator.serviceWorker.register('sw.js').catch(err => console.warn('SW registration failed', err));
-    });
+  const posiciones = Object.values(posData).map(d => {
+    const alerta = d.status !== "ok" ? {
+      id: uuid(), cliente_id: clienteId, equipo_id: equipo.id_equipo, mecanico_id: user.id,
+      tipo: (d.motivos || []).some(m => m.startsWith("mm")) ? (d.status === "alerta" ? "mm_critico" : "mm_bajo") : (d.status === "alerta" ? "psi_bajo" : "psi_alto"),
+      severidad: d.status === "alerta" ? "rojo" : "amarillo", titulo: `Posición P${d.posicion} en ${statusLabel(d.status).toLowerCase()}`,
+      descripcion: (d.motivos || []).join("; "), posicion: d.posicion, numero_fuego: d.numero_fuego,
+      leida_mecanico: true, leida_admin: false, leida_superadmin: false
+    } : null;
+    return {
+      id: uuid(), posicion: d.posicion, numero_fuego: d.numero_fuego,
+      milimetros: d.minMM != null ? d.minMM : null, psi: d.psi ? parseInt(d.psi, 10) : null,
+      mm_borde_izq: d.mm_borde_izq !== "" ? parseFloat(d.mm_borde_izq) : null,
+      mm_centro: d.mm_centro !== "" ? parseFloat(d.mm_centro) : null,
+      mm_borde_der: d.mm_borde_der !== "" ? parseFloat(d.mm_borde_der) : null,
+      __alerta: alerta
+    };
+  });
+
+  const cab = {
+    id_auditoria: uuid(), equipo_id: equipo.id_equipo, bultero_id: user.id, cliente_id: clienteId,
+    fecha: todayISO(), kilometraje: parseInt(km, 10) || equipo.kilometros, numero_auditoria,
+    posiciones,
+    receta: {
+      id: uuid(), cliente_id: clienteId,
+      rec_calibrar_psi: !!flags.rec_calibrar_psi, rec_cambiar_neumaticos: !!flags.rec_cambiar_neumaticos,
+      rec_rotar_delanteros: !!flags.rec_rotar_delanteros, rec_rotar_traccionales: !!flags.rec_rotar_traccionales,
+      rec_rotar_eje_libre: !!flags.rec_rotar_eje_libre, rec_rotar_semi_e1: !!flags.rec_rotar_semi_e1,
+      rec_rotar_semi_e2: !!flags.rec_rotar_semi_e2, rec_rotar_semi_e3: !!flags.rec_rotar_semi_e3,
+      posiciones_alerta: recsInfo.posicionesAlerta, seguio_receta: pct === 100, pct_receta_seguida: pct,
+      tareas_extra: checklist.filter(c => c.extra).map(c => ({ texto: c.texto, done: c.done })),
+      observaciones_mecanico: null
+    }
+  };
+  pushQueue({ id: uuid(), tipo: "auditoria", clienteId, ts: Date.now(), data: cab });
+  syncQueue();
+}
+
+async function construirPosDataDesdeEquipo(equipoId) {
+  const { data, error } = await supabase.from("neumaticos").select("*").eq("equipo_actual", equipoId).eq("activo", true);
+  if (error || !data) return {};
+  const map = {};
+  data.forEach(n => {
+    if (!n.posicion_actual) return;
+    map[n.posicion_actual] = { posicion: n.posicion_actual, numero_fuego: n.numero_fuego, marca: n.marca, medida: n.medida, psi: null, status: "ok", minMM: null };
+  });
+  return map;
+}
+
+/* =====================================================================
+   APP DEL MECANICO
+===================================================================== */
+function MecanicoApp({ user }) {
+  const [clienteId, setClienteId] = useState(null);
+  const [empresaConfirmada, setEmpresaConfirmada] = useState(false);
+  const [checkDone, setCheckDone] = useState(false);
+  const [cfg, setCfg] = useState(DEFAULT_CFG);
+  const [tab, setTab] = useState("inicio");
+  const [flow, setFlow] = useState(null);
+
+  useEffect(() => {
+    const turno = getTurno();
+    if (turno && turno.fecha === todayISO()) {
+      setClienteId(turno.clienteId); setEmpresaConfirmada(true); setCheckDone(!!turno.checkDone);
+    }
+  }, []);
+  useEffect(() => { if (clienteId) db.fetchConfig(clienteId).then(setCfg).catch(() => setCfg(getCache(LS.cfg(clienteId), DEFAULT_CFG))); }, [clienteId]);
+
+  if (!empresaConfirmada) {
+    return <SeleccionEmpresa user={user} onConfirm={(cid) => { setClienteId(cid); setEmpresaConfirmada(true); setTurno({ clienteId: cid, fecha: todayISO(), checkDone: false }); }} />;
   }
+  if (!checkDone) {
+    return <CheckDiario user={user} clienteId={clienteId} onDone={() => setCheckDone(true)} />;
+  }
+
+  function abrirEquipo(equipo, modo) {
+    if (modo === "auditoria") setFlow({ stage: "auditoria", equipo });
+    else if (modo === "cambio") {
+      construirPosDataDesdeEquipo(equipo.id_equipo).then(pd => setFlow({ stage: "cambio", equipo, axleCfg: axleConfigFor(equipo), posData: pd, checklist: [] }));
+    } else setFlow({ stage: "accion", equipo });
+  }
+
+  let body;
+  if (flow && flow.stage === "accion") {
+    body = (
+      <>
+        <SeleccionEquipo clienteId={clienteId} onPick={(eq) => setFlow({ stage: "accion", equipo: eq })} />
+        <AccionEquipo equipo={flow.equipo} onClose={() => setFlow(null)}
+          onAuditoria={() => setFlow({ stage: "auditoria", equipo: flow.equipo })}
+          onCambio={() => construirPosDataDesdeEquipo(flow.equipo.id_equipo).then(pd => setFlow({ stage: "cambio", equipo: flow.equipo, axleCfg: axleConfigFor(flow.equipo), posData: pd, checklist: [] }))} />
+      </>
+    );
+  } else if (flow && flow.stage === "auditoria") {
+    body = (
+      <AuditoriaForm user={user} clienteId={clienteId} equipo={flow.equipo} cfg={cfg}
+        onCancel={() => setFlow(null)}
+        onGenerarInstructivo={(posData, axleCfg, km, startedAt) => {
+          const recsInfo = generarRecomendaciones(posData, axleCfg, flow.equipo.tipo, cfg);
+          const checklist = recsInfo.recs.map(r => ({ id: r.id, texto: r.texto, done: false, extra: false }));
+          setFlow({ stage: "instructivo", equipo: flow.equipo, posData, axleCfg, km, recsInfo, checklist });
+        }} />
+    );
+  } else if (flow && flow.stage === "instructivo") {
+    body = (
+      <Instructivo equipo={flow.equipo} axleCfg={flow.axleCfg} posData={flow.posData} recsInfo={flow.recsInfo}
+        checklist={flow.checklist} setChecklist={(fn) => setFlow(f => ({ ...f, checklist: typeof fn === "function" ? fn(f.checklist) : fn }))}
+        onContinuar={async () => {
+          await construirYGuardarAuditoria({ user, clienteId, equipo: flow.equipo, cfg, posData: flow.posData, axleCfg: flow.axleCfg, km: flow.km, checklist: flow.checklist, recsInfo: flow.recsInfo });
+          setFlow({ stage: "cambio", equipo: flow.equipo, axleCfg: flow.axleCfg, posData: flow.posData, checklist: flow.checklist });
+        }}
+        onCerrar={async () => {
+          await construirYGuardarAuditoria({ user, clienteId, equipo: flow.equipo, cfg, posData: flow.posData, axleCfg: flow.axleCfg, km: flow.km, checklist: flow.checklist, recsInfo: flow.recsInfo });
+          setFlow(null);
+        }} />
+    );
+  } else if (flow && flow.stage === "cambio") {
+    body = (
+      <CambioForm user={user} clienteId={clienteId} equipo={flow.equipo} cfg={cfg} axleCfg={flow.axleCfg}
+        posDataInicial={flow.posData} checklistInicial={flow.checklist}
+        onCancel={() => setFlow(null)} onFinish={() => setFlow(null)} />
+    );
+  } else if (tab === "inicio") {
+    body = <SeleccionEquipo clienteId={clienteId} onPick={(eq) => setFlow({ stage: "accion", equipo: eq })} />;
+  } else if (tab === "auditoria") {
+    body = <SeleccionEquipo clienteId={clienteId} onPick={(eq) => abrirEquipo(eq, "auditoria")} />;
+  } else if (tab === "cambio") {
+    body = <SeleccionEquipo clienteId={clienteId} onPick={(eq) => abrirEquipo(eq, "cambio")} />;
+  } else if (tab === "cierre") {
+    body = <CierreDelDia user={user} clienteId={clienteId} />;
+  } else if (tab === "alertas") {
+    body = <AlertasScreen user={user} clienteId={clienteId} />;
+  }
+
+  const showBottomNav = !flow || flow.stage === "accion";
+
+  return (
+    <div>
+      <div className="fixed top-2 left-0 right-0 z-40"><OfflineBadge /></div>
+      {body}
+      {showBottomNav && <BottomNav view={tab} setView={(t) => { setTab(t); setFlow(null); }} />}
+    </div>
+  );
+}
+
+/* =====================================================================
+   APP ADMIN / SUPERADMIN / CLIENTE (placeholder de esta primera etapa)
+===================================================================== */
+function AdminApp({ user, onLogout }) {
+  return (
+    <div className="min-h-screen px-6 pt-16 safe-top">
+      <div className="flex items-center justify-between mb-8">
+        <div>
+          <p className="text-[14px] text-muted">Panel de flota</p>
+          <h1 className="text-[28px] font-extrabold">Hola, {user.nombre}</h1>
+        </div>
+        <button onClick={onLogout} className="w-10 h-10 rounded-full bg-[#F3F4F6] flex items-center justify-center"><Icon.user width="18" height="18" /></button>
+      </div>
+      <Card>
+        <p className="font-bold text-[16px] mb-2">Panel de administración en construcción</p>
+        <p className="text-[14px] text-sub">
+          Tu rol es <b>{user.rol}</b>. El dashboard, maestros (clientes, equipos, mecánicos, neumáticos, inventario),
+          historial, configuración y usuarios &amp; permisos llegan en la siguiente etapa del proyecto.
+          Por ahora podés usar esta sesión para verificar el flujo del mecánico con otro usuario.
+        </p>
+      </Card>
+    </div>
+  );
+}
+
+/* =====================================================================
+   APP RAIZ
+===================================================================== */
+function App() {
+  const [user, setUser] = useState(() => getSession());
+
+  function handleLogin(u) { setSession(u); setUser(u); }
+  function handleLogout() { clearSession(); setUser(null); }
+
+  if (!user) return <Login onLogin={handleLogin} />;
+  if (user.rol === "mecanico") return <MecanicoApp user={user} key={user.id} />;
+  return <AdminApp user={user} onLogout={handleLogout} />;
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App />);
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => { navigator.serviceWorker.register("./sw.js").catch(e => console.error("SW registration failed", e)); });
+}
 </script>
 </body>
 </html>
+
