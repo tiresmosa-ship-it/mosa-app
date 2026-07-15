@@ -93,6 +93,16 @@ BEGIN
 END $$;
 
 -- =====================================================================
+-- 6b) Columnas para separar stock traccional en el check diario
+-- (las columnas nuevos/transito/reparar/recauchados ya existentes pasan
+-- a representar los direccionales; estas nuevas son las traccionales)
+-- =====================================================================
+ALTER TABLE novedades_diarias ADD COLUMN IF NOT EXISTS tra_nuevos INT;
+ALTER TABLE novedades_diarias ADD COLUMN IF NOT EXISTS tra_transito INT;
+ALTER TABLE novedades_diarias ADD COLUMN IF NOT EXISTS tra_reparar INT;
+ALTER TABLE novedades_diarias ADD COLUMN IF NOT EXISTS tra_recauchados INT;
+
+-- =====================================================================
 -- 7) Usuarios iniciales (password_hash = SHA-256 de la clave en texto plano)
 --   admin  / mosadmin2026  -> superadmin
 --   andrei / mosaadmin2026 -> admin
@@ -107,3 +117,44 @@ INSERT INTO usuarios (cliente_id, nombre, apellido, usuario, password_hash, rol,
   ('la_portada', 'Pedro',   '',       'pedro',  'af50d8fd1c8f238c6b0e7ecc557173053611d254e4cbc792f3e4f7e84893973c', 'mecanico',   true),
   ('la_portada', 'Miguel',  '',       'miguel', 'af50d8fd1c8f238c6b0e7ecc557173053611d254e4cbc792f3e4f7e84893973c', 'mecanico',   true)
 ON CONFLICT (usuario) DO NOTHING;
+
+-- =====================================================================
+-- 8) Bucket de Storage para las fotos de checkpoint (montaje de neumático nuevo)
+-- Esto NO se puede crear por SQL: andá a Supabase Dashboard > Storage >
+-- "New bucket", nombralo exactamente "checkpoints" y marcalo como Public.
+-- Sin este bucket, el montaje de neumáticos nuevos no va a poder subir la
+-- foto obligatoria (la app te va a avisar con un error si falta).
+-- =====================================================================
+
+-- =====================================================================
+-- 9) Sacar las FK viejas que apuntaban a "mecanicos"
+-- El login ahora usa la tabla "usuarios" (no "mecanicos"), pero columnas
+-- como bultero_id/mecanico_id en novedades_diarias, auditorias,
+-- cambios_neumaticos, intervenciones, alertas y cierre_dia todavía tienen
+-- una constraint de clave foranea que exige que ese id exista en
+-- "mecanicos". Como el id que se guarda ahora es el de "usuarios", todo
+-- insert fallaba con "violates foreign key constraint ..._fkey". Este
+-- bloque busca y elimina esas constraints puntuales (no toca las FK a
+-- clientes/equipos, que siguen siendo validas).
+-- =====================================================================
+DO $$
+DECLARE
+  rec RECORD;
+BEGIN
+  FOR rec IN
+    SELECT tc.constraint_name, tc.table_name
+    FROM information_schema.table_constraints tc
+    JOIN information_schema.constraint_column_usage ccu ON tc.constraint_name = ccu.constraint_name
+    WHERE tc.constraint_type = 'FOREIGN KEY' AND ccu.table_name = 'mecanicos'
+      AND tc.table_name IN ('novedades_diarias','auditorias','cambios_neumaticos','intervenciones','alertas','cierre_dia')
+  LOOP
+    EXECUTE format('ALTER TABLE %I DROP CONSTRAINT %I', rec.table_name, rec.constraint_name);
+  END LOOP;
+END $$;
+
+-- =====================================================================
+-- 10) Columna faltante en auditorias_receta
+-- La tabla real no tenia la columna "tareas_extra" (JSONB) que usa la app
+-- para guardar las tareas que el mecanico agrega a mano en el instructivo.
+-- =====================================================================
+ALTER TABLE auditorias_receta ADD COLUMN IF NOT EXISTS tareas_extra JSONB;

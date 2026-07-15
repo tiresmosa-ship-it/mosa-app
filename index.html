@@ -88,6 +88,8 @@ const TOOLS_CHECKLIST = [
   "Pata de cabra","Multiplicador","Chita","Pistola 1\"","Cadenas","Alicate pequeño"
 ];
 
+const MARCAS_NEUMATICOS = ["Triangle", "Aeolus", "Roadx", "Windforce", "Goodyear", "Michelin", "Bridgestone", "Pirelli", "Continental", "Otra"];
+
 /* Configuraciones de eje: filas visuales + grupos de rotacion permitidos */
 const AXLE_CONFIGS = {
   "4x2": {
@@ -323,8 +325,13 @@ async function enviarItem(item) {
     case "auditoria": return enviarAuditoria(item.data);
     case "cambio": return enviarCambio(item.data);
     case "cierre": return enviarCierre(item.data);
+    case "alerta": return enviarAlerta(item.data);
     default: throw new Error("tipo desconocido " + item.tipo);
   }
+}
+async function enviarAlerta(data) {
+  const { error } = await supabase.from("alertas").insert(data);
+  if (error) throw error;
 }
 async function enviarNovedad(data) {
   const { checklist, ...cab } = data;
@@ -333,30 +340,46 @@ async function enviarNovedad(data) {
   const rows = checklist.map(c => ({ id: uuid(), novedad_id: cab.id, herramienta: c.herramienta, cantidad: c.cantidad }));
   if (rows.length) { const { error: e2 } = await supabase.from("novedades_checklist").insert(rows); if (e2) throw e2; }
 }
+async function asegurarNeumatico(clienteId, numeroFuego, equipoId, posicion, extra) {
+  const { data: existente } = await supabase.from("neumaticos").select("id_neumatico").eq("cliente_id", clienteId).eq("numero_fuego", numeroFuego).maybeSingle();
+  if (existente) return;
+  await supabase.from("neumaticos").insert({
+    id_neumatico: uuid(), numero_fuego: numeroFuego, cliente_id: clienteId,
+    marca: (extra && extra.marca) || null, medida: (extra && extra.medida) || null,
+    estado_actual: "nuevo", bodega: null, equipo_actual: equipoId, posicion_actual: posicion,
+    fecha_ingreso: todayISO(), activo: true
+  });
+}
 async function enviarAuditoria(data) {
-  const { posiciones, receta, ...cab } = data;
+  const { posiciones, receta, cliente_id, ...cab } = data;
   const { error: e1 } = await supabase.from("auditorias").insert(cab);
   if (e1) throw e1;
-  const rows = posiciones.filter(p => p.numero_fuego).map(p => ({ ...p, auditoria_id: cab.id_auditoria }));
-  if (rows.length) { const { error: e2 } = await supabase.from("auditoria_posiciones").insert(rows); if (e2) throw e2; }
-  if (receta) { const { error: e3 } = await supabase.from("auditorias_receta").insert({ ...receta, auditoria_id: cab.id_auditoria }); if (e3) throw e3; }
-  await supabase.from("equipos").update({ kilometros: cab.kilometraje }).eq("id_equipo", cab.equipo_id);
-  for (const p of rows) {
-    if (p.__alerta) await insertAlerta(p.__alerta);
+  for (const p of posiciones) {
+    if (p.numero_fuego) await asegurarNeumatico(cliente_id, p.numero_fuego, cab.equipo_id, p.posicion, p);
   }
+  const rows = posiciones.filter(p => p.numero_fuego).map(p => ({
+    id: p.id, posicion: p.posicion, numero_fuego: p.numero_fuego,
+    milimetros: p.milimetros, psi: p.psi, mm_borde_izq: p.mm_borde_izq, mm_centro: p.mm_centro, mm_borde_der: p.mm_borde_der,
+    auditoria_id: cab.id_auditoria
+  }));
+  if (rows.length) { const { error: e2 } = await supabase.from("auditoria_posiciones").insert(rows); if (e2) throw e2; }
+  if (receta) { const { error: e3 } = await supabase.from("auditorias_receta").insert({ ...receta, auditoria_id: cab.id_auditoria, cliente_id }); if (e3) throw e3; }
+  await supabase.from("equipos").update({ kilometros: cab.kilometraje }).eq("id_equipo", cab.equipo_id);
 }
 async function enviarCambio(data) {
-  const { sale, entra, intervenciones, alertas, ...cab } = data;
+  const { sale, entra, intervenciones, alertas, cliente_id, ...cab } = data;
   const { error: e1 } = await supabase.from("cambios_neumaticos").insert(cab);
   if (e1) throw e1;
   const detalle = [];
   for (const s of sale) {
+    await asegurarNeumatico(cliente_id, s.numero_fuego, null, null, s);
     detalle.push({ id: uuid(), cambio_id: cab.id_cambio, tipo: "sale", numero_fuego: s.numero_fuego, posicion: s.posicion || null, milimetros: s.milimetros || null, psi: s.psi || null, estado: null, motivo_salida: s.motivo || null });
-    await actualizarNeumaticoSale(cab.cliente_id, s);
+    await actualizarNeumaticoSale(cliente_id, s);
   }
   for (const en of entra) {
+    await asegurarNeumatico(cliente_id, en.numero_fuego, cab.equipo_id, en.posicion, en);
     detalle.push({ id: uuid(), cambio_id: cab.id_cambio, tipo: "entra", numero_fuego: en.numero_fuego, posicion: en.posicion || null, milimetros: en.milimetros || null, psi: en.psi || null, estado: en.estado || null, motivo_salida: null });
-    await actualizarNeumaticoEntra(cab.cliente_id, cab.equipo_id, en);
+    await actualizarNeumaticoEntra(cliente_id, cab.equipo_id, en);
   }
   if (detalle.length) { const { error: e2 } = await supabase.from("cambio_detalle").insert(detalle); if (e2) throw e2; }
   if (intervenciones && intervenciones.length) { const { error: e3 } = await supabase.from("intervenciones").insert(intervenciones); if (e3) throw e3; }
@@ -390,11 +413,11 @@ async function actualizarNeumaticoSale(clienteId, s) {
 async function actualizarNeumaticoEntra(clienteId, equipoId, en) {
   const { data: existente } = await supabase.from("neumaticos").select("*").eq("cliente_id", clienteId).eq("numero_fuego", en.numero_fuego).maybeSingle();
   if (existente) {
-    await supabase.from("neumaticos").update({ estado_actual: "en_uso", bodega: null, equipo_actual: equipoId, posicion_actual: en.posicion || null }).eq("id_neumatico", existente.id_neumatico);
+    await supabase.from("neumaticos").update({ estado_actual: en.estado || existente.estado_actual || "nuevo", bodega: null, equipo_actual: equipoId, posicion_actual: en.posicion || null }).eq("id_neumatico", existente.id_neumatico);
   } else {
     await supabase.from("neumaticos").insert({
       id_neumatico: uuid(), numero_fuego: en.numero_fuego, cliente_id: clienteId,
-      marca: en.marca || null, medida: en.medida || null, estado_actual: "en_uso", bodega: null,
+      marca: en.marca || null, medida: en.medida || null, estado_actual: en.estado || "nuevo", bodega: null,
       equipo_actual: equipoId, posicion_actual: en.posicion || null, fecha_ingreso: todayISO(), activo: true
     });
   }
@@ -478,6 +501,22 @@ function TextInput({ className = "", alert, warn, ...props }) {
 function Select({ className = "", children, ...props }) {
   return <select className={cx("w-full h-[52px] px-4 rounded-2xl border bg-[#F3F4F6] border-[#E5E7EB] focus:outline-none focus:ring-2 focus:ring-ink/20", className)} {...props}>{children}</select>;
 }
+function MarcaSelect({ value, onChange }) {
+  const isOtra = value && !MARCAS_NEUMATICOS.slice(0, -1).includes(value);
+  const [otra, setOtra] = useState(isOtra ? value : "");
+  return (
+    <div>
+      <Select value={isOtra ? "Otra" : value} onChange={e => { if (e.target.value === "Otra") { onChange(otra); } else { onChange(e.target.value); } }}>
+        <option value="">Seleccionar</option>
+        {MARCAS_NEUMATICOS.map(m => <option key={m} value={m}>{m}</option>)}
+      </Select>
+      {isOtra && (
+        <TextInput className="mt-2" placeholder="Escribí la marca" value={otra}
+          onChange={e => { setOtra(e.target.value); onChange(e.target.value); }} />
+      )}
+    </div>
+  );
+}
 function TextArea({ className = "", ...props }) {
   return <textarea className={cx("w-full min-h-[90px] px-4 py-3 rounded-2xl border bg-[#F3F4F6] border-[#E5E7EB] focus:outline-none focus:ring-2 focus:ring-ink/20", className)} {...props} />;
 }
@@ -550,10 +589,9 @@ function OfflineBadge() {
 function BottomNav({ view, setView }) {
   const items = [
     { id: "inicio", label: "Inicio", icon: Icon.home },
-    { id: "auditoria", label: "Auditoría", icon: Icon.audit },
-    { id: "cambio", label: "Cambio", icon: Icon.swap },
     { id: "cierre", label: "Cierre", icon: Icon.clipboard },
-    { id: "alertas", label: "Alertas", icon: Icon.bell }
+    { id: "alertas", label: "Alertas", icon: Icon.bell },
+    { id: "perfil", label: "Perfil", icon: Icon.user }
   ];
   return (
     <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-bd safe-bottom z-30">
@@ -657,10 +695,15 @@ function SeleccionEmpresa({ user, onConfirm }) {
 /* =====================================================================
    PANTALLA 2 - BIENVENIDA + CHECK DIARIO
 ===================================================================== */
-const STOCK_FIELDS = [
+const DIRECCIONAL_FIELDS = [
   { key: "nuevos", label: "Nuevos" }, { key: "transito", label: "Tránsito" },
   { key: "reparar", label: "Por reparar" }, { key: "recauchados", label: "Recauchados" }
 ];
+const TRACCIONAL_FIELDS = [
+  { key: "tra_nuevos", label: "Nuevos" }, { key: "tra_transito", label: "Tránsito" },
+  { key: "tra_reparar", label: "Por reparar" }, { key: "tra_recauchados", label: "Recauchados" }
+];
+const STOCK_FIELDS = [...DIRECCIONAL_FIELDS, ...TRACCIONAL_FIELDS];
 const PATIO_FIELDS = [
   { key: "llantas_am_aluminio", label: "Americana aluminio" }, { key: "llantas_am_fierro", label: "Americana fierro" },
   { key: "llantas_eu_aluminio", label: "Europea aluminio" }, { key: "llantas_eu_fierro", label: "Europea fierro" }
@@ -689,11 +732,14 @@ function Stepper({ value, onChange }) {
 
 function CheckDiario({ user, clienteId, onDone }) {
   const [stock, setStock] = useState(() => Object.fromEntries([...STOCK_FIELDS, ...PATIO_FIELDS].map(f => [f.key, 0])));
-  const [tools, setTools] = useState(() => Object.fromEntries(TOOLS_CHECKLIST.map(t => [t, null])));
+  const [tools, setTools] = useState(() => Object.fromEntries(TOOLS_CHECKLIST.map(t => [t, { checked: false, cantidad: 0 }])));
   const [saving, setSaving] = useState(false);
-  const toolsFilled = TOOLS_CHECKLIST.filter(t => tools[t] !== null).length;
+  const toolsFilled = TOOLS_CHECKLIST.filter(t => tools[t].checked).length;
   const progress = Math.round((toolsFilled / TOOLS_CHECKLIST.length) * 100);
   const complete = toolsFilled === TOOLS_CHECKLIST.length;
+
+  function setToolQty(t, v) { setTools(s => ({ ...s, [t]: { checked: true, cantidad: v } })); }
+  function toggleTool(t) { setTools(s => ({ ...s, [t]: { ...s[t], checked: !s[t].checked } })); }
 
   async function continuar() {
     setSaving(true);
@@ -702,7 +748,7 @@ function CheckDiario({ user, clienteId, onDone }) {
       id, cliente_id: clienteId, bultero_id: user.id, fecha: todayISO(), hora_inicio: nowHM(),
       numero_hoja: uuid().slice(0, 8),
       ...stock,
-      checklist: TOOLS_CHECKLIST.map(t => ({ herramienta: t, cantidad: tools[t] }))
+      checklist: TOOLS_CHECKLIST.map(t => ({ herramienta: t, cantidad: tools[t].cantidad }))
     };
     const item = { id: uuid(), tipo: "novedad", clienteId, ts: Date.now(), data };
     pushQueue(item);
@@ -713,56 +759,73 @@ function CheckDiario({ user, clienteId, onDone }) {
   }
 
   return (
-    <div className="min-h-screen pb-28 px-5 pt-14 safe-top">
-      <p className="text-[14px] text-muted mb-1">{formatDateLong()}</p>
-      <h1 className="text-[30px] font-extrabold leading-none">Hola, {user.nombre}</h1>
-      <p className="text-[14px] text-sub mt-2 mb-6">Check diario antes de comenzar el turno</p>
-
-      <div className="bg-[#F9FAFB] rounded-[20px] p-5 mb-6">
-        <div className="flex items-center justify-between mb-2">
-          <span className="font-bold text-[16px]">Herramientas</span>
-          <span className="text-[13px] font-bold">{toolsFilled}/{TOOLS_CHECKLIST.length}</span>
-        </div>
-        <div className="h-2 rounded-full bg-[#E5E7EB] overflow-hidden">
-          <div className="h-full bg-ink transition-all" style={{ width: progress + "%" }} />
+    <div className="min-h-screen pb-28 px-5 safe-top">
+      <div className="sticky top-0 z-30 bg-white px-5 pt-14 pb-3">
+        <p className="text-[14px] text-muted mb-1">{formatDateLong()}</p>
+        <h1 className="text-[30px] font-extrabold leading-none">Hola, {user.nombre}</h1>
+        <p className="text-[14px] text-sub mt-2 mb-4">Check diario antes de comenzar el turno</p>
+        <div className="bg-[#F9FAFB] rounded-[20px] p-5">
+          <div className="flex items-center justify-between mb-2">
+            <span className="font-bold text-[16px]">Herramientas</span>
+            <span className="text-[13px] font-bold">{toolsFilled}/{TOOLS_CHECKLIST.length}</span>
+          </div>
+          <div className="h-2 rounded-full bg-[#E5E7EB] overflow-hidden">
+            <div className="h-full bg-ink transition-all" style={{ width: progress + "%" }} />
+          </div>
         </div>
       </div>
 
-      <p className="font-bold text-[15px] mb-2">Stock de neumáticos</p>
-      <Card className="mb-4 space-y-3">
-        {STOCK_FIELDS.map(f => (
-          <div key={f.key} className="flex items-center justify-between">
-            <span className="text-[14px] font-semibold text-[#1F2937]">{f.label}</span>
-            <Stepper value={stock[f.key]} onChange={v => setStock(s => ({ ...s, [f.key]: v }))} />
-          </div>
-        ))}
-      </Card>
+      <div className="px-0 pt-4">
+        <p className="font-bold text-[15px] mb-2">Direccionales</p>
+        <Card className="mb-4 space-y-3">
+          {DIRECCIONAL_FIELDS.map(f => (
+            <div key={f.key} className="flex items-center justify-between">
+              <span className="text-[14px] font-semibold text-[#1F2937]">{f.label}</span>
+              <Stepper value={stock[f.key]} onChange={v => setStock(s => ({ ...s, [f.key]: v }))} />
+            </div>
+          ))}
+        </Card>
 
-      <p className="font-bold text-[15px] mb-2">Llantas en patio</p>
-      <Card className="mb-4 space-y-3">
-        {PATIO_FIELDS.map(f => (
-          <div key={f.key} className="flex items-center justify-between">
-            <span className="text-[14px] font-semibold text-[#1F2937]">{f.label}</span>
-            <Stepper value={stock[f.key]} onChange={v => setStock(s => ({ ...s, [f.key]: v }))} />
-          </div>
-        ))}
-      </Card>
+        <p className="font-bold text-[15px] mb-2">Traccionales</p>
+        <Card className="mb-4 space-y-3">
+          {TRACCIONAL_FIELDS.map(f => (
+            <div key={f.key} className="flex items-center justify-between">
+              <span className="text-[14px] font-semibold text-[#1F2937]">{f.label}</span>
+              <Stepper value={stock[f.key]} onChange={v => setStock(s => ({ ...s, [f.key]: v }))} />
+            </div>
+          ))}
+        </Card>
 
-      <p className="font-bold text-[15px] mb-2">Checklist de herramientas</p>
-      <div className="space-y-2 mb-6">
-        {TOOLS_CHECKLIST.map(t => (
-          <div key={t} className="bg-white rounded-2xl border border-bd shadow-card px-4 py-3 flex items-center justify-between">
-            <span className="text-[14px] font-semibold text-[#1F2937]">{t}</span>
-            <Stepper value={tools[t] || 0} onChange={v => setTools(s => ({ ...s, [t]: v }))} />
-          </div>
-        ))}
+        <p className="font-bold text-[15px] mb-2">Llantas en patio</p>
+        <Card className="mb-4 space-y-3">
+          {PATIO_FIELDS.map(f => (
+            <div key={f.key} className="flex items-center justify-between">
+              <span className="text-[14px] font-semibold text-[#1F2937]">{f.label}</span>
+              <Stepper value={stock[f.key]} onChange={v => setStock(s => ({ ...s, [f.key]: v }))} />
+            </div>
+          ))}
+        </Card>
+
+        <p className="font-bold text-[15px] mb-2">Checklist de herramientas</p>
+        <p className="text-[12.5px] text-muted mb-3">Marcá el check para confirmar que revisaste la herramienta, aunque tengas 0.</p>
+        <div className="space-y-2 mb-6">
+          {TOOLS_CHECKLIST.map(t => (
+            <div key={t} className={cx("bg-white rounded-2xl border shadow-card px-4 py-3 flex items-center gap-3", tools[t].checked ? "border-bd" : "border-[#F59E0B]")}>
+              <button type="button" onClick={() => toggleTool(t)} className={cx("w-7 h-7 rounded-lg flex items-center justify-center shrink-0 border", tools[t].checked ? "bg-ink border-ink" : "bg-white border-[#D1D5DB]")}>
+                {tools[t].checked && <Icon.check width="15" height="15" className="text-white" />}
+              </button>
+              <span className="text-[14px] font-semibold text-[#1F2937] flex-1">{t}</span>
+              <Stepper value={tools[t].cantidad} onChange={v => setToolQty(t, v)} />
+            </div>
+          ))}
+        </div>
       </div>
 
       <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-bd p-4 safe-bottom">
         <Button className="w-full" disabled={!complete || saving} onClick={continuar}>
           {saving ? <span className="spinner" /> : "Continuar a mis equipos"}
         </Button>
-        {!complete && <p className="text-center text-[12px] text-muted mt-2">Completa la cantidad de todas las herramientas (puede ser 0)</p>}
+        {!complete && <p className="text-center text-[12px] text-muted mt-2">Confirmá con el check todas las herramientas (la cantidad puede ser 0)</p>}
       </div>
     </div>
   );
@@ -858,7 +921,7 @@ function AccionEquipo({ equipo, onClose, onAuditoria, onCambio }) {
 /* =====================================================================
    MAPA DE NEUMATICOS (compartido entre Auditoria / Instructivo / Cambio)
 ===================================================================== */
-function TireCircle({ pos, filled, status, mm, psi, fuego, selected, onTap }) {
+function TireCircle({ pos, filled, status, mm, psi, fuego, selected, onTap, dragHandlers }) {
   const styles = {
     empty: "border-2 border-dashed border-[#D1D5DB] bg-[#F9FAFB] text-muted",
     ok: "border-2 border-[#D1D5DB] bg-white text-ink",
@@ -867,7 +930,8 @@ function TireCircle({ pos, filled, status, mm, psi, fuego, selected, onTap }) {
   };
   const key = !filled ? "empty" : (status || "ok");
   return (
-    <button type="button" onClick={onTap}
+    <button type="button" data-pos={pos} onClick={onTap} {...dragHandlers}
+      style={dragHandlers ? { touchAction: "none" } : undefined}
       className={cx("w-[54px] h-[54px] rounded-full flex flex-col items-center justify-center shrink-0 shadow-sm transition",
         styles[key], selected && "ring-2 ring-ink anim-blink")}>
       <span className="text-[9.5px] font-bold opacity-70 leading-none">P{pos}</span>
@@ -881,7 +945,7 @@ function TireCircle({ pos, filled, status, mm, psi, fuego, selected, onTap }) {
   );
 }
 
-function AxleMap({ cfg, posData, selectedPos, onTap }) {
+function AxleMap({ cfg, posData, selectedPos, onTap, getDragHandlers }) {
   return (
     <div className="space-y-6">
       {cfg.rows.map(row => (
@@ -895,7 +959,8 @@ function AxleMap({ cfg, posData, selectedPos, onTap }) {
                 return (
                   <div key={p} className="relative z-10">
                     <TireCircle pos={p} filled={!!d.numero_fuego} status={d.status} mm={d.minMM} psi={d.psi} fuego={d.numero_fuego}
-                      selected={selectedPos === p} onTap={() => onTap(p)} />
+                      selected={selectedPos === p} onTap={() => onTap(p)}
+                      dragHandlers={getDragHandlers ? getDragHandlers(p) : undefined} />
                   </div>
                 );
               })}
@@ -907,9 +972,32 @@ function AxleMap({ cfg, posData, selectedPos, onTap }) {
   );
 }
 
+function GhostTire({ x, y }) {
+  return (
+    <div className="fixed z-[90] pointer-events-none rounded-full w-[54px] h-[54px] -translate-x-1/2 -translate-y-1/2 shadow-lg flex items-center justify-center"
+      style={{ left: x, top: y, background: "#111", border: "3px solid #333" }}>
+      <div className="w-7 h-7 rounded-full border-2 border-[#666]" />
+    </div>
+  );
+}
+
 /* =====================================================================
    PANTALLA 4 - AUDITORIA
 ===================================================================== */
+function KmModal({ kmActual, km, setKm, onContinue }) {
+  const kmNum = parseInt(km, 10);
+  const invalid = km !== "" && !isNaN(kmNum) && kmActual && kmNum < kmActual;
+  return (
+    <Modal title="Kilometraje actual">
+      <Field label="Kilómetros" required hint={kmActual ? `Último registrado: ${kmActual} km` : null}>
+        <TextInput type="number" inputMode="numeric" value={km} alert={invalid} onChange={e => setKm(e.target.value.replace(/[^0-9]/g, ""))} placeholder="Ej: 154200" />
+      </Field>
+      {invalid && <p className="text-[12.5px] font-bold text-[#B91C1C] mt-2">Los km no pueden ser menores a los {kmActual} km ya registrados.</p>}
+      <Button className="w-full mt-5" disabled={!km || invalid} onClick={onContinue}>Continuar</Button>
+    </Modal>
+  );
+}
+
 function AuditoriaForm({ user, clienteId, equipo, cfg, onCancel, onGenerarInstructivo }) {
   const [frioConfirmado, setFrioConfirmado] = useState(false);
   const [km, setKm] = useState(equipo.kilometros || "");
@@ -943,14 +1031,7 @@ function AuditoriaForm({ user, clienteId, equipo, cfg, onCancel, onGenerarInstru
     );
   }
   if (!kmSet) {
-    return (
-      <Modal title="Kilometraje actual">
-        <Field label="Kilómetros" required>
-          <TextInput type="number" inputMode="numeric" value={km} onChange={e => setKm(e.target.value)} placeholder="Ej: 154200" />
-        </Field>
-        <Button className="w-full mt-5" disabled={!km} onClick={() => setKmSet(true)}>Continuar</Button>
-      </Modal>
-    );
+    return <KmModal kmActual={equipo.kilometros} km={km} setKm={setKm} onContinue={() => setKmSet(true)} />;
   }
 
   return (
@@ -1001,11 +1082,11 @@ function PosicionModal({ pos, equipo, cfg, axleCfg, existing, onClose, onSave })
   return (
     <Modal title={`Posición P${pos}`} onClose={onClose}>
       <div className="space-y-4">
-        <Field label="N° de fuego" required hint="Sugerido automáticamente, podés modificarlo">
-          <TextInput value={form.numero_fuego} onChange={e => setForm(f => ({ ...f, numero_fuego: e.target.value }))} className="font-extrabold" />
+        <Field label="N° de fuego" required hint="Sugerido automáticamente, podés modificarlo (solo números)">
+          <TextInput inputMode="numeric" value={form.numero_fuego} onChange={e => setForm(f => ({ ...f, numero_fuego: e.target.value.replace(/[^0-9]/g, "") }))} className="font-extrabold" />
         </Field>
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Marca"><TextInput value={form.marca} onChange={e => setForm(f => ({ ...f, marca: e.target.value }))} /></Field>
+          <Field label="Marca"><MarcaSelect value={form.marca} onChange={v => setForm(f => ({ ...f, marca: v }))} /></Field>
           <Field label="Medida"><TextInput placeholder="295/80R22.5" value={form.medida} onChange={e => setForm(f => ({ ...f, medida: e.target.value }))} /></Field>
         </div>
         <Field label="PSI" required>
@@ -1036,11 +1117,11 @@ function generarRecomendaciones(posData, axleCfg, equipoTipo, cfg) {
     if (d.status === "alerta" || d.status === "atencion") posicionesAlerta.push({ posicion: d.posicion, status: d.status, motivos: d.motivos });
   });
 
-  const psiFuera = Object.values(posData).some(d => (d.motivos || []).some(m => m.startsWith("psi")));
-  if (psiFuera) recs.push({ id: "psi", key: "rec_calibrar_psi", texto: "Calibrar presión de aire en las posiciones marcadas" });
+  const conPsiFuera = Object.values(posData).filter(d => (d.motivos || []).some(m => m.startsWith("psi"))).sort((a, b) => a.posicion - b.posicion);
+  conPsiFuera.forEach(d => recs.push({ id: "psi_" + d.posicion, key: "rec_calibrar_psi", texto: `Calibrar presión de aire en P${d.posicion} (actual ${d.psi} psi)` }));
 
-  const criticos = Object.values(posData).filter(d => d.status === "alerta" && (d.motivos || []).some(m => m.startsWith("mm")));
-  if (criticos.length) recs.push({ id: "cambiar", key: "rec_cambiar_neumaticos", texto: `Cambiar neumáticos en posiciones: ${criticos.map(c => "P" + c.posicion).join(", ")}` });
+  const criticos = Object.values(posData).filter(d => d.status === "alerta" && (d.motivos || []).some(m => m.startsWith("mm"))).sort((a, b) => a.posicion - b.posicion);
+  criticos.forEach(d => recs.push({ id: "cambiar_" + d.posicion, key: "rec_cambiar_neumaticos", texto: `Cambiar neumático en P${d.posicion} (${d.minMM} mm)` }));
 
   axleCfg.groups.forEach((grupo, i) => {
     const mms = grupo.map(p => posData[p] && posData[p].minMM).filter(v => v != null);
@@ -1121,11 +1202,13 @@ function Instructivo({ equipo, axleCfg, posData, recsInfo, checklist, setCheckli
 
 /* =====================================================================
    PANTALLAS 6-7 - HOJA DE CAMBIO
-   Nota de alcance: en lugar de arrastre físico con "ghost" con forma de
-   neumático, la rotación se hace con dos toques (seleccionar origen,
-   tocar destino) validando los mismos grupos de rotación permitidos.
-   El resto del flujo (confirmación obligatoria, toast, montajes,
-   restricciones, guardado en Supabase) sigue la especificación.
+   Interacción: arrastre real con Pointer Events. Los 3 botones de
+   "Entrada" y cada neumático montado son fuentes de arrastre; un ghost
+   con forma de neumático sigue el dedo/cursor. Soltar sobre una posición
+   vacía monta (o abre el buscador si es tránsito); soltar un neumático
+   montado sobre otra posición del mismo grupo de rotación la rota.
+   Un tap corto (sin arrastre) sobre un neumático montado solo abre el
+   modal de información/intervenciones.
 ===================================================================== */
 async function fetchNeumaticosBodega(clienteId, bodega) {
   const { data, error } = await supabase.from("neumaticos").select("*").eq("cliente_id", clienteId).eq("bodega", bodega).eq("activo", true).limit(200);
@@ -1133,83 +1216,52 @@ async function fetchNeumaticosBodega(clienteId, bodega) {
   return data || [];
 }
 
-function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, checklistInicial, onFinish, onCancel }) {
-  const [km, setKm] = useState(equipo.kilometros || "");
-  const [kmSet, setKmSet] = useState(false);
+async function subirFotoCheckpoint(clienteId, pos, file) {
+  const path = `${clienteId}/${Date.now()}_p${pos}_${file.name}`;
+  const { error } = await supabase.storage.from("checkpoints").upload(path, file, { upsert: true });
+  if (error) throw error;
+  const { data } = supabase.storage.from("checkpoints").getPublicUrl(path);
+  return data.publicUrl;
+}
+
+function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, checklistInicial, kmInicial, onFinish, onCancel }) {
+  const [km, setKm] = useState(kmInicial || equipo.kilometros || "");
+  const [kmSet, setKmSet] = useState(!!kmInicial);
   const [posData, setPosData] = useState(() => ({ ...posDataInicial }));
   const [checklist, setChecklist] = useState(checklistInicial);
-  const [activePos, setActivePos] = useState(null);
+  const [nuevaTarea, setNuevaTarea] = useState("");
   const [infoPos, setInfoPos] = useState(null);
   const [montaje, setMontaje] = useState(null); // { tipo, pos }
   const [confirmDlg, setConfirmDlg] = useState(null); // { title, desc, onConfirm }
-  const [rotatingFrom, setRotatingFrom] = useState(null);
+  const [ghost, setGhost] = useState(null); // { x, y }
   const [pushToast, toastNode] = useToasts();
   const startedAt = useRef(Date.now());
   const entra = useRef([]);
   const sale = useRef([]);
   const intervenciones = useRef([]);
-  const alertasAcc = useRef([]);
+  const dragRef = useRef(null);
   const [saving, setSaving] = useState(false);
-
-  const allPositions = axleCfg.rows.flatMap(r => r.positions);
-
-  function tap(p) {
-    if (rotatingFrom != null) {
-      if (rotatingFrom === p) { setRotatingFrom(null); return; }
-      const grupo = axleCfg.groups.find(g => g.includes(rotatingFrom));
-      if (!grupo || !grupo.includes(p)) {
-        if (navigator.vibrate) navigator.vibrate(150);
-        pushToast("✕ Movimiento no permitido entre esos ejes");
-        setRotatingFrom(null);
-        return;
-      }
-      const destFuego = posData[p] ? posData[p].numero_fuego : null;
-      setConfirmDlg({
-        title: "Confirmar rotación",
-        desc: destFuego ? `¿Intercambiar el neumático de P${rotatingFrom} con el de P${p}?` : `¿Mover el neumático de P${rotatingFrom} a la posición P${p}?`,
-        onConfirm: () => {
-          setPosData(s => {
-            const next = { ...s };
-            const a = next[rotatingFrom], b = next[p];
-            if (b) next[rotatingFrom] = { ...b, posicion: rotatingFrom }; else delete next[rotatingFrom];
-            next[p] = { ...a, posicion: p };
-            return next;
-          });
-          pushToast("✓ Rotación registrada");
-          setConfirmDlg(null); setRotatingFrom(null);
-        }
-      });
-      return;
-    }
-    setActivePos(p);
-    if (posData[p] && posData[p].numero_fuego) setInfoPos(p);
-  }
 
   function registrarIntervencion(tipo, pos, extra) {
     intervenciones.current.push({
       id: uuid(), equipo_id: equipo.id_equipo, mecanico_id: user.id, cliente_id: clienteId,
       fecha: todayISO(), tipo, posicion: pos, numero_fuego: posData[pos] ? posData[pos].numero_fuego : null,
       psi_nuevo: extra && extra.psi_nuevo != null ? extra.psi_nuevo : null,
-      observaciones: (extra && extra.observaciones) || null, foto_url: (extra && extra.foto) ? "checkpoint-confirmado" : null
+      observaciones: (extra && extra.observaciones) || null, foto_url: (extra && extra.foto_url) || null
     });
   }
 
-  function accionEntrada(tipo) {
-    if (activePos == null || posData[activePos]) return;
-    setMontaje({ tipo, pos: activePos });
-  }
-  function accionSalida(motivo) {
-    if (activePos == null || !posData[activePos]) return;
-    const d = posData[activePos];
+  function ejecutarSalida(pos, motivo) {
+    const d = posData[pos];
     const label = motivo === "transito" ? "tránsito" : motivo === "reparacion" ? "reparación" : "baja definitiva";
     setConfirmDlg({
       title: "Confirmar salida",
-      desc: `¿Enviar el neumático ${d.numero_fuego} (P${activePos}) a ${label}?`,
+      desc: `¿Enviar el neumático ${d.numero_fuego} (P${pos}) a ${label}?`,
       onConfirm: () => {
-        sale.current.push({ numero_fuego: d.numero_fuego, posicion: activePos, milimetros: d.minMM || null, psi: d.psi || null, motivo });
-        setPosData(s => { const n = { ...s }; delete n[activePos]; return n; });
+        sale.current.push({ numero_fuego: d.numero_fuego, posicion: pos, milimetros: d.minMM || null, psi: d.psi || null, motivo });
+        setPosData(s => { const n = { ...s }; delete n[pos]; return n; });
         pushToast(motivo === "baja" ? "✓ Baja registrada" : "✓ Salida registrada");
-        setConfirmDlg(null); setActivePos(null);
+        setConfirmDlg(null); setInfoPos(null);
       }
     });
   }
@@ -1217,9 +1269,91 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
   function montarNeumatico(pos, data, tipo) {
     setPosData(s => ({ ...s, [pos]: { ...data, posicion: pos, status: "ok", minMM: data.mm ? parseFloat(data.mm) : null } }));
     entra.current.push({ numero_fuego: data.numero_fuego, posicion: pos, milimetros: data.mm ? parseFloat(data.mm) : null, psi: data.psi ? parseInt(data.psi, 10) : null, estado: tipo });
-    if (tipo === "nuevo") registrarIntervencion("checkpoint", pos, { foto: true, observaciones: "Montaje de neumático nuevo, torqueado y checkpoint confirmado" });
-    pushToast(tipo === "nuevo" ? "✓ Montaje registrado" : "✓ Montaje registrado");
-    setMontaje(null); setActivePos(null);
+    if (tipo === "nuevo") registrarIntervencion("checkpoint", pos, { foto_url: data.fotoUrl, observaciones: "Montaje de neumático nuevo, torqueado y checkpoint confirmado" });
+    pushToast("✓ Montaje registrado");
+    setMontaje(null);
+  }
+
+  function confirmarRotacion(origen, destino) {
+    const grupo = axleCfg.groups.find(g => g.includes(origen));
+    if (!grupo || !grupo.includes(destino)) {
+      if (navigator.vibrate) navigator.vibrate(150);
+      pushToast("✕ Movimiento no permitido entre esos ejes");
+      return;
+    }
+    const destFuego = posData[destino] ? posData[destino].numero_fuego : null;
+    setConfirmDlg({
+      title: "Confirmar rotación",
+      desc: destFuego ? `¿Intercambiar el neumático de P${origen} con el de P${destino}?` : `¿Mover el neumático de P${origen} a la posición P${destino}?`,
+      onConfirm: () => {
+        setPosData(s => {
+          const next = { ...s };
+          const a = next[origen], b = next[destino];
+          if (b) next[origen] = { ...b, posicion: origen }; else delete next[origen];
+          next[destino] = { ...a, posicion: destino };
+          return next;
+        });
+        pushToast("✓ Rotación registrada");
+        setConfirmDlg(null);
+      }
+    });
+  }
+
+  function resolverDrop(clientX, clientY) {
+    const el = document.elementFromPoint(clientX, clientY);
+    const salidaEl = el && el.closest("[data-salida]");
+    if (salidaEl) return { salida: salidaEl.getAttribute("data-salida") };
+    const posEl = el && el.closest("[data-pos]");
+    return posEl ? { pos: parseInt(posEl.getAttribute("data-pos"), 10) } : null;
+  }
+
+  function onPointerDownTire(pos, e) {
+    if (!posData[pos]) return;
+    dragRef.current = { sub: "rotate", payload: pos, startX: e.clientX, startY: e.clientY, moved: false };
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) {}
+  }
+  function onPointerDownEntrada(tipo, e) {
+    dragRef.current = { sub: "mount", payload: tipo, startX: e.clientX, startY: e.clientY, moved: false };
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) {}
+  }
+  function onDragMove(e) {
+    const d = dragRef.current;
+    if (!d) return;
+    const dx = e.clientX - d.startX, dy = e.clientY - d.startY;
+    if (!d.moved && Math.hypot(dx, dy) > 10) d.moved = true;
+    if (d.moved) {
+      e.preventDefault();
+      setGhost({ x: e.clientX, y: e.clientY });
+      if (e.clientY < 90) window.scrollBy(0, -14);
+      else if (e.clientY > window.innerHeight - 90) window.scrollBy(0, 14);
+    }
+  }
+  function onDragEnd(e) {
+    const d = dragRef.current;
+    dragRef.current = null;
+    setGhost(null);
+    if (!d) return;
+    if (!d.moved) {
+      if (d.sub === "rotate") setInfoPos(d.payload);
+      else pushToast("Arrastrá este botón hasta una posición vacía del mapa");
+      return;
+    }
+    const dest = resolverDrop(e.clientX, e.clientY);
+    if (d.sub === "mount") {
+      if (dest && dest.pos != null && !posData[dest.pos]) setMontaje({ tipo: d.payload, pos: dest.pos });
+      else pushToast("Soltá sobre una posición vacía del mapa");
+    } else if (d.sub === "rotate") {
+      if (!dest) return;
+      if (dest.salida) { ejecutarSalida(d.payload, dest.salida); return; }
+      if (dest.pos == null || dest.pos === d.payload) return;
+      confirmarRotacion(d.payload, dest.pos);
+    }
+  }
+
+  function agregarTarea() {
+    if (!nuevaTarea.trim()) return;
+    setChecklist(cs => [...cs, { id: uuid(), texto: nuevaTarea.trim(), done: false, extra: true }]);
+    setNuevaTarea("");
   }
 
   async function finalizar() {
@@ -1235,7 +1369,7 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
       ruedas_torqueadas: intervenciones.current.filter(i => i.tipo === "retorqueo" || i.tipo === "checkpoint").length,
       observaciones: `Instructivo seguido: ${sistemaTotal ? Math.round((cumplidas / sistemaTotal) * 100) : 100}%`,
       numero_cambio,
-      sale: sale.current, entra: entra.current, intervenciones: intervenciones.current, alertas: alertasAcc.current
+      sale: sale.current, entra: entra.current, intervenciones: intervenciones.current
     };
     pushQueue({ id: uuid(), tipo: "cambio", clienteId, ts: Date.now(), data: cab });
     syncQueue();
@@ -1244,36 +1378,28 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
   }
 
   if (!kmSet) {
-    return (
-      <Modal title="Kilometraje actual">
-        <Field label="Kilómetros" required>
-          <TextInput type="number" inputMode="numeric" value={km} onChange={e => setKm(e.target.value)} placeholder="Ej: 154200" />
-        </Field>
-        <Button className="w-full mt-5" disabled={!km} onClick={() => setKmSet(true)}>Continuar</Button>
-      </Modal>
-    );
+    return <KmModal kmActual={equipo.kilometros} km={km} setKm={setKm} onContinue={() => setKmSet(true)} />;
   }
 
-  const entradaEnabled = activePos != null && !posData[activePos];
-  const salidaEnabled = activePos != null && !!posData[activePos];
-
   return (
-    <div className="min-h-screen pb-[300px] px-5 pt-14 safe-top">
+    <div className="min-h-screen pb-[260px] px-5 pt-14 safe-top">
       {toastNode}
+      {ghost && <GhostTire x={ghost.x} y={ghost.y} />}
       <div className="flex items-center gap-3 mb-4">
         <button onClick={onCancel} className="w-9 h-9 rounded-full bg-[#F3F4F6] flex items-center justify-center"><Icon.back width="18" height="18" /></button>
         <div>
           <h1 className="text-[20px] font-extrabold">Hoja de cambio · {equipo.patente}</h1>
-          <p className="text-[12.5px] text-muted">{rotatingFrom != null ? `Rotando P${rotatingFrom} · tocá el destino` : activePos != null ? `P${activePos} seleccionada` : "Tocá una posición"}</p>
+          <p className="text-[12.5px] text-muted">Tocá un neumático para verlo, o arrastralo para rotarlo o sacarlo</p>
         </div>
       </div>
 
       <Card className="mb-4">
-        <AxleMap cfg={axleCfg} posData={posData} selectedPos={rotatingFrom != null ? rotatingFrom : activePos} onTap={tap} />
+        <AxleMap cfg={axleCfg} posData={posData} selectedPos={null} onTap={() => {}}
+          getDragHandlers={(p) => posData[p] ? { onPointerDown: (e) => onPointerDownTire(p, e), onPointerMove: onDragMove, onPointerUp: onDragEnd, onPointerCancel: onDragEnd } : undefined} />
       </Card>
 
       <p className="font-bold text-[15px] mb-2">Instructivo</p>
-      <div className="space-y-2 mb-4">
+      <div className="space-y-2 mb-3">
         {checklist.map(c => (
           <button key={c.id} onClick={() => setChecklist(cs => cs.map(x => x.id === c.id ? { ...x, done: !x.done } : x))} className="w-full text-left bg-white rounded-2xl border border-bd shadow-card px-4 py-3 flex items-center gap-3">
             <span className={cx("w-6 h-6 rounded-lg flex items-center justify-center shrink-0", c.done ? "bg-ink" : "bg-white border border-[#D1D5DB]")}>
@@ -1284,23 +1410,30 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
           </button>
         ))}
       </div>
+      <div className="flex gap-2 mb-6">
+        <TextInput placeholder="Agregar tarea personalizada" value={nuevaTarea} onChange={e => setNuevaTarea(e.target.value)} onKeyDown={e => { if (e.key === "Enter") agregarTarea(); }} />
+        <Button variant="subtle" onClick={agregarTarea}>+ Agregar</Button>
+      </div>
 
       <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-bd p-4 safe-bottom space-y-3">
         <Button className="w-full" disabled={saving} onClick={finalizar}>{saving ? <span className="spinner" /> : "Finalizar hoja de cambio"}</Button>
         <div>
-          <p className="text-[11.5px] font-bold text-muted tracking-wide uppercase mb-1.5">Entrada</p>
+          <p className="text-[11.5px] font-bold text-muted tracking-wide uppercase mb-1.5">Entrada · arrastrá al mapa</p>
           <div className="grid grid-cols-3 gap-2">
-            <button disabled={!entradaEnabled} onClick={() => accionEntrada("nuevo")} className="h-12 rounded-2xl text-[13.5px] font-bold bg-ink text-white disabled:opacity-30">Nuevo</button>
-            <button disabled={!entradaEnabled} onClick={() => accionEntrada("transito")} className="h-12 rounded-2xl text-[13.5px] font-bold bg-[#F3F4F6] disabled:opacity-30">Tránsito</button>
-            <button disabled={!entradaEnabled} onClick={() => accionEntrada("recauchado")} className="h-12 rounded-2xl text-[13.5px] font-bold bg-[#F3F4F6] disabled:opacity-30">Recauchado</button>
+            <button onPointerDown={(e) => onPointerDownEntrada("nuevo", e)} onPointerMove={onDragMove} onPointerUp={onDragEnd} onPointerCancel={onDragEnd}
+              style={{ touchAction: "none" }} className="h-12 rounded-2xl text-[13.5px] font-bold bg-ink text-white">Nuevo</button>
+            <button onPointerDown={(e) => onPointerDownEntrada("transito", e)} onPointerMove={onDragMove} onPointerUp={onDragEnd} onPointerCancel={onDragEnd}
+              style={{ touchAction: "none" }} className="h-12 rounded-2xl text-[13.5px] font-bold bg-[#F3F4F6]">Tránsito</button>
+            <button onPointerDown={(e) => onPointerDownEntrada("recauchado", e)} onPointerMove={onDragMove} onPointerUp={onDragEnd} onPointerCancel={onDragEnd}
+              style={{ touchAction: "none" }} className="h-12 rounded-2xl text-[13.5px] font-bold bg-[#F3F4F6]">Recauchado</button>
           </div>
         </div>
         <div>
-          <p className="text-[11.5px] font-bold text-muted tracking-wide uppercase mb-1.5">Salida</p>
+          <p className="text-[11.5px] font-bold text-muted tracking-wide uppercase mb-1.5">Salida · arrastrá el neumático acá</p>
           <div className="grid grid-cols-3 gap-2">
-            <button disabled={!salidaEnabled} onClick={() => accionSalida("transito")} className="h-12 rounded-2xl text-[13.5px] font-bold bg-[#F3F4F6] disabled:opacity-30">Tránsito</button>
-            <button disabled={!salidaEnabled} onClick={() => accionSalida("reparacion")} className="h-12 rounded-2xl text-[13.5px] font-bold bg-[#F3F4F6] disabled:opacity-30">Reparación</button>
-            <button disabled={!salidaEnabled} onClick={() => accionSalida("baja")} className="h-12 rounded-2xl text-[13.5px] font-bold bg-[#FEE2E2] text-[#B91C1C] disabled:opacity-30 flex items-center justify-center gap-1"><Icon.trash width="14" height="14" />Baja</button>
+            <div data-salida="transito" className="h-12 rounded-2xl text-[13.5px] font-bold bg-[#F3F4F6] flex items-center justify-center">Tránsito</div>
+            <div data-salida="reparacion" className="h-12 rounded-2xl text-[13.5px] font-bold bg-[#F3F4F6] flex items-center justify-center">Reparación</div>
+            <div data-salida="baja" className="h-12 rounded-2xl text-[13.5px] font-bold bg-[#FEE2E2] text-[#B91C1C] flex items-center justify-center gap-1"><Icon.trash width="14" height="14" />Baja</div>
           </div>
         </div>
       </div>
@@ -1308,7 +1441,6 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
       {infoPos != null && posData[infoPos] && (
         <TireInfoModal pos={infoPos} data={posData[infoPos]} cfg={cfg} equipo={equipo}
           onClose={() => setInfoPos(null)}
-          onRotar={() => { setInfoPos(null); setRotatingFrom(infoPos); }}
           onRegularPsi={(nuevoPsi) => {
             setConfirmDlg({
               title: "Confirmar regulación de PSI",
@@ -1317,7 +1449,7 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
                 setPosData(s => ({ ...s, [infoPos]: { ...s[infoPos], psi: nuevoPsi } }));
                 registrarIntervencion("regulacion_psi", infoPos, { psi_nuevo: parseInt(nuevoPsi, 10) });
                 const ev = evaluarPosicion(axleCfg, cfg, infoPos, equipo.tipo, { ...posData[infoPos], psi: nuevoPsi });
-                if (ev.status !== "ok") alertasAcc.current.push({ id: uuid(), cliente_id: clienteId, equipo_id: equipo.id_equipo, mecanico_id: user.id, tipo: parseInt(nuevoPsi, 10) < ev.psiObjetivo ? "psi_bajo" : "psi_alto", severidad: ev.status === "alerta" ? "rojo" : "amarillo", titulo: "PSI fuera de rango tras regulación", descripcion: `P${infoPos} quedó en ${nuevoPsi} psi (objetivo ${ev.psiObjetivo})`, posicion: infoPos, numero_fuego: posData[infoPos].numero_fuego, leida_mecanico: true, leida_admin: false, leida_superadmin: false });
+                if (ev.status !== "ok") pushQueue({ id: uuid(), tipo: "alerta", clienteId, ts: Date.now(), data: { id: uuid(), cliente_id: clienteId, equipo_id: equipo.id_equipo, mecanico_id: user.id, tipo: parseInt(nuevoPsi, 10) < ev.psiObjetivo ? "psi_bajo" : "psi_alto", severidad: ev.status === "alerta" ? "rojo" : "amarillo", titulo: "PSI fuera de rango tras regulación", descripcion: `P${infoPos} quedó en ${nuevoPsi} psi (objetivo ${ev.psiObjetivo})`, posicion: infoPos, numero_fuego: posData[infoPos].numero_fuego, leida_mecanico: false, leida_admin: false, leida_superadmin: false } });
                 pushToast("✓ Regulación guardada");
                 setConfirmDlg(null); setInfoPos(null);
               }
@@ -1327,7 +1459,7 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
             setConfirmDlg({
               title: "Confirmar retorqueo",
               desc: `¿Registrar retorqueo en P${infoPos} (${posData[infoPos].numero_fuego})? Se confirma que se tomó la foto de checkpoint.`,
-              onConfirm: () => { registrarIntervencion("retorqueo", infoPos, { foto: true }); pushToast("✓ Retorqueo registrado"); setConfirmDlg(null); setInfoPos(null); }
+              onConfirm: () => { registrarIntervencion("retorqueo", infoPos, {}); pushToast("✓ Retorqueo registrado"); setConfirmDlg(null); setInfoPos(null); }
             });
           }}
           onReparacion={() => {
@@ -1356,7 +1488,7 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
   );
 }
 
-function TireInfoModal({ pos, data, cfg, equipo, onClose, onRotar, onRegularPsi, onRetorqueo, onReparacion }) {
+function TireInfoModal({ pos, data, cfg, equipo, onClose, onRegularPsi, onRetorqueo, onReparacion }) {
   const [psiField, setPsiField] = useState(String(data.psi || ""));
   const [showPsi, setShowPsi] = useState(false);
   return (
@@ -1380,7 +1512,7 @@ function TireInfoModal({ pos, data, cfg, equipo, onClose, onRotar, onRegularPsi,
           <Button variant="subtle" onClick={() => setShowPsi(true)}><Icon.gauge width="18" height="18" /> Regulación PSI</Button>
           <Button variant="subtle" onClick={onRetorqueo}><Icon.wrench width="18" height="18" /> Retorqueo</Button>
           <Button variant="subtle" onClick={onReparacion}><Icon.bandage width="18" height="18" /> Reparación</Button>
-          <Button variant="ghost" onClick={onRotar}><Icon.swap width="18" height="18" /> Rotar a otra posición</Button>
+          <p className="text-[11.5px] text-muted text-center mt-2">Para rotarlo o sacarlo, cerrá esta ventana y arrastralo desde el mapa hasta otra posición o hasta Salida.</p>
         </div>
       )}
     </Modal>
@@ -1395,11 +1527,13 @@ function MontajeModal({ tipo, pos, equipo, clienteId, onClose, onConfirm }) {
   const [psi, setPsi] = useState("");
   const [mm, setMm] = useState("");
   const [torqueado, setTorqueado] = useState(false);
-  const [foto, setFoto] = useState(false);
+  const [fotoUrl, setFotoUrl] = useState(null);
+  const [fotoNombre, setFotoNombre] = useState("");
+  const [subiendoFoto, setSubiendoFoto] = useState(false);
+  const [fotoError, setFotoError] = useState("");
   const [search, setSearch] = useState("");
   const [buscando, setBuscando] = useState(tipo === "transito");
   const [opciones, setOpciones] = useState([]);
-  const [seleccion, setSeleccion] = useState(null);
 
   useEffect(() => {
     if (tipo === "transito") fetchNeumaticosBodega(clienteId, "transito").then(setOpciones).catch(() => setOpciones([]));
@@ -1411,13 +1545,27 @@ function MontajeModal({ tipo, pos, equipo, clienteId, onClose, onConfirm }) {
     return (o.numero_fuego || "").toLowerCase().includes(s) || (o.marca || "").toLowerCase().includes(s) || (o.modelo || "").toLowerCase().includes(s);
   });
 
+  async function onFotoChange(e) {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    setFotoNombre(file.name); setSubiendoFoto(true); setFotoError(""); setFotoUrl(null);
+    try {
+      const url = await subirFotoCheckpoint(clienteId, pos, file);
+      setFotoUrl(url);
+    } catch (err) {
+      setFotoError("No se pudo subir la foto. Verificá que exista el bucket público 'checkpoints' en Supabase Storage.");
+    } finally {
+      setSubiendoFoto(false);
+    }
+  }
+
   if (tipo === "transito" && buscando) {
     return (
       <Modal title="Montar desde tránsito" onClose={onClose}>
         <TextInput placeholder="Buscar por N° fuego, marca o modelo" value={search} onChange={e => setSearch(e.target.value)} className="mb-3" />
         <div className="space-y-2 max-h-72 overflow-y-auto">
           {filtradas.map(o => (
-            <button key={o.id_neumatico} onClick={() => { setSeleccion(o); setFuego(o.numero_fuego); setMarca(o.marca || ""); setMedida(o.medida || ""); setBuscando(false); }}
+            <button key={o.id_neumatico} onClick={() => { setFuego(o.numero_fuego); setMarca(o.marca || ""); setMedida(o.medida || ""); setBuscando(false); }}
               className="w-full text-left bg-[#F9FAFB] rounded-xl px-3 py-2.5 flex items-center justify-between">
               <div><p className="font-bold text-[14px]">{o.numero_fuego}</p><p className="text-[12px] text-muted">{o.marca} {o.modelo}</p></div>
               <span className="text-[12px] text-muted">P{o.posicion_actual || "-"}</span>
@@ -1430,17 +1578,17 @@ function MontajeModal({ tipo, pos, equipo, clienteId, onClose, onConfirm }) {
   }
 
   const titulo = tipo === "nuevo" ? "Montar neumático nuevo" : tipo === "transito" ? "Confirmar montaje" : "Montar recauchado";
-  const disabled = !fuego || psi === "" || mm === "" || (tipo === "nuevo" && (!torqueado || !foto));
+  const disabled = !fuego || psi === "" || mm === "" || (tipo === "nuevo" && (!torqueado || !fotoUrl || subiendoFoto));
 
   return (
     <Modal title={titulo} onClose={onClose}>
       <div className="space-y-4">
-        <Field label="N° de fuego" required hint={tipo === "nuevo" ? "Sugerido automáticamente, podés modificarlo" : null}>
-          <TextInput value={fuego} onChange={e => setFuego(e.target.value)} className="font-extrabold" disabled={tipo === "transito"} />
+        <Field label="N° de fuego" required hint={tipo === "nuevo" ? "Sugerido automáticamente, podés modificarlo (solo números)" : null}>
+          <TextInput inputMode="numeric" value={fuego} onChange={e => setFuego(e.target.value.replace(/[^0-9]/g, ""))} className="font-extrabold" disabled={tipo === "transito"} />
         </Field>
         {tipo !== "transito" && (
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Marca"><TextInput value={marca} onChange={e => setMarca(e.target.value)} /></Field>
+            <Field label="Marca"><MarcaSelect value={marca} onChange={setMarca} /></Field>
             <Field label="Medida"><TextInput value={medida} onChange={e => setMedida(e.target.value)} /></Field>
           </div>
         )}
@@ -1449,12 +1597,18 @@ function MontajeModal({ tipo, pos, equipo, clienteId, onClose, onConfirm }) {
           <Field label="MM actual" required><TextInput type="number" step="0.1" value={mm} onChange={e => setMm(e.target.value)} /></Field>
         </div>
         {tipo === "nuevo" && (
-          <div className="space-y-2">
+          <div className="space-y-3">
             <label className="flex items-center gap-2 text-[13.5px] font-semibold"><input type="checkbox" checked={torqueado} onChange={e => setTorqueado(e.target.checked)} /> Ruedas torqueadas</label>
-            <label className="flex items-center gap-2 text-[13.5px] font-semibold"><input type="checkbox" checked={foto} onChange={e => setFoto(e.target.checked)} /> Foto de checkpoint tomada (obligatoria)</label>
+            <Field label="Foto de checkpoint" required hint="Obligatoria para completar el montaje">
+              <input type="file" accept="image/*" capture="environment" onChange={onFotoChange}
+                className="w-full text-[13px] file:mr-3 file:py-2 file:px-3 file:rounded-xl file:border-0 file:bg-ink file:text-white file:font-bold" />
+            </Field>
+            {subiendoFoto && <p className="text-[12.5px] text-muted">Subiendo foto...</p>}
+            {fotoUrl && <p className="text-[12.5px] font-bold text-[#15803D]">✓ Foto subida: {fotoNombre}</p>}
+            {fotoError && <p className="text-[12.5px] font-bold text-[#B91C1C]">{fotoError}</p>}
           </div>
         )}
-        <Button className="w-full" disabled={disabled} onClick={() => onConfirm({ numero_fuego: fuego, marca, medida, psi, mm })}>Continuar</Button>
+        <Button className="w-full" disabled={disabled} onClick={() => onConfirm({ numero_fuego: fuego, marca, medida, psi, mm, fotoUrl })}>Continuar</Button>
       </div>
     </Modal>
   );
@@ -1537,16 +1691,21 @@ function CierreDelDia({ user, clienteId }) {
    ALERTAS
 ===================================================================== */
 function AlertasScreen({ user, clienteId }) {
-  const [alertas, setAlertas] = useState([]);
+  const [remotas, setRemotas] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("todas");
+  const pendientesCount = useQueueCount();
 
   useEffect(() => {
-    db.fetchAlertas(clienteId).then(setAlertas).catch(() => {}).finally(() => setLoading(false));
-  }, [clienteId]);
+    db.fetchAlertas(clienteId).then(setRemotas).catch(() => {}).finally(() => setLoading(false));
+  }, [clienteId, pendientesCount]);
+
+  const pendientes = getQueue().filter(q => q.tipo === "alerta" && q.clienteId === clienteId).map(q => ({ ...q.data, __pendiente: true }));
+  const alertas = [...pendientes, ...remotas.filter(r => !pendientes.some(p => p.id === r.id))];
 
   async function marcarLeida(a) {
-    setAlertas(as => as.map(x => x.id === a.id ? { ...x, leida_mecanico: true } : x));
+    if (a.__pendiente) return;
+    setRemotas(as => as.map(x => x.id === a.id ? { ...x, leida_mecanico: true } : x));
     await supabase.from("alertas").update({ leida_mecanico: true }).eq("id", a.id);
   }
 
@@ -1571,7 +1730,10 @@ function AlertasScreen({ user, clienteId }) {
               </div>
               <Badge color={a.severidad === "rojo" ? "red" : a.severidad === "amarillo" ? "amber" : "gray"}>{a.severidad === "rojo" ? "Alerta" : a.severidad === "amarillo" ? "Atención" : "Info"}</Badge>
             </div>
-            {!a.leida_mecanico && <span className="inline-block mt-2 text-[11px] font-bold text-ink">● No leída</span>}
+            <div className="flex items-center gap-2 mt-2">
+              {!a.leida_mecanico && <span className="text-[11px] font-bold text-ink">● No leída</span>}
+              {a.__pendiente && <span className="text-[11px] font-bold text-[#92400E]">Sincronizando...</span>}
+            </div>
           </button>
         ))}
         {!loading && filtradas.length === 0 && <p className="text-center text-muted py-10 text-sm">Sin alertas.</p>}
@@ -1591,21 +1753,23 @@ async function construirYGuardarAuditoria({ user, clienteId, equipo, cfg, posDat
   const flags = {};
   recsInfo.recs.forEach(r => { if (r.key) flags[r.key] = checklist.find(c => c.id === r.id) ? true : false; });
 
+  const alertasGeneradas = [];
   const posiciones = Object.values(posData).map(d => {
-    const alerta = d.status !== "ok" ? {
-      id: uuid(), cliente_id: clienteId, equipo_id: equipo.id_equipo, mecanico_id: user.id,
-      tipo: (d.motivos || []).some(m => m.startsWith("mm")) ? (d.status === "alerta" ? "mm_critico" : "mm_bajo") : (d.status === "alerta" ? "psi_bajo" : "psi_alto"),
-      severidad: d.status === "alerta" ? "rojo" : "amarillo", titulo: `Posición P${d.posicion} en ${statusLabel(d.status).toLowerCase()}`,
-      descripcion: (d.motivos || []).join("; "), posicion: d.posicion, numero_fuego: d.numero_fuego,
-      leida_mecanico: true, leida_admin: false, leida_superadmin: false
-    } : null;
+    if (d.status !== "ok") {
+      alertasGeneradas.push({
+        id: uuid(), cliente_id: clienteId, equipo_id: equipo.id_equipo, mecanico_id: user.id,
+        tipo: (d.motivos || []).some(m => m.startsWith("mm")) ? (d.status === "alerta" ? "mm_critico" : "mm_bajo") : (d.status === "alerta" ? "psi_bajo" : "psi_alto"),
+        severidad: d.status === "alerta" ? "rojo" : "amarillo", titulo: `Posición P${d.posicion} en ${statusLabel(d.status).toLowerCase()}`,
+        descripcion: (d.motivos || []).join("; "), posicion: d.posicion, numero_fuego: d.numero_fuego,
+        leida_mecanico: false, leida_admin: false, leida_superadmin: false
+      });
+    }
     return {
       id: uuid(), posicion: d.posicion, numero_fuego: d.numero_fuego,
       milimetros: d.minMM != null ? d.minMM : null, psi: d.psi ? parseInt(d.psi, 10) : null,
       mm_borde_izq: d.mm_borde_izq !== "" ? parseFloat(d.mm_borde_izq) : null,
       mm_centro: d.mm_centro !== "" ? parseFloat(d.mm_centro) : null,
-      mm_borde_der: d.mm_borde_der !== "" ? parseFloat(d.mm_borde_der) : null,
-      __alerta: alerta
+      mm_borde_der: d.mm_borde_der !== "" ? parseFloat(d.mm_borde_der) : null
     };
   });
 
@@ -1625,7 +1789,9 @@ async function construirYGuardarAuditoria({ user, clienteId, equipo, cfg, posDat
     }
   };
   pushQueue({ id: uuid(), tipo: "auditoria", clienteId, ts: Date.now(), data: cab });
+  alertasGeneradas.forEach(a => pushQueue({ id: uuid(), tipo: "alerta", clienteId, ts: Date.now(), data: a }));
   syncQueue();
+  return alertasGeneradas.length;
 }
 
 async function construirPosDataDesdeEquipo(equipoId) {
@@ -1649,6 +1815,7 @@ function MecanicoApp({ user }) {
   const [cfg, setCfg] = useState(DEFAULT_CFG);
   const [tab, setTab] = useState("inicio");
   const [flow, setFlow] = useState(null);
+  const [pushToast, toastNode] = useToasts();
 
   useEffect(() => {
     const turno = getTurno();
@@ -1663,13 +1830,6 @@ function MecanicoApp({ user }) {
   }
   if (!checkDone) {
     return <CheckDiario user={user} clienteId={clienteId} onDone={() => setCheckDone(true)} />;
-  }
-
-  function abrirEquipo(equipo, modo) {
-    if (modo === "auditoria") setFlow({ stage: "auditoria", equipo });
-    else if (modo === "cambio") {
-      construirPosDataDesdeEquipo(equipo.id_equipo).then(pd => setFlow({ stage: "cambio", equipo, axleCfg: axleConfigFor(equipo), posData: pd, checklist: [] }));
-    } else setFlow({ stage: "accion", equipo });
   }
 
   let body;
@@ -1697,30 +1857,30 @@ function MecanicoApp({ user }) {
       <Instructivo equipo={flow.equipo} axleCfg={flow.axleCfg} posData={flow.posData} recsInfo={flow.recsInfo}
         checklist={flow.checklist} setChecklist={(fn) => setFlow(f => ({ ...f, checklist: typeof fn === "function" ? fn(f.checklist) : fn }))}
         onContinuar={async () => {
-          await construirYGuardarAuditoria({ user, clienteId, equipo: flow.equipo, cfg, posData: flow.posData, axleCfg: flow.axleCfg, km: flow.km, checklist: flow.checklist, recsInfo: flow.recsInfo });
-          setFlow({ stage: "cambio", equipo: flow.equipo, axleCfg: flow.axleCfg, posData: flow.posData, checklist: flow.checklist });
+          const n = await construirYGuardarAuditoria({ user, clienteId, equipo: flow.equipo, cfg, posData: flow.posData, axleCfg: flow.axleCfg, km: flow.km, checklist: flow.checklist, recsInfo: flow.recsInfo });
+          pushToast(n > 0 ? `✓ Auditoría guardada · ${n} alerta${n !== 1 ? "s" : ""} generada${n !== 1 ? "s" : ""}` : "✓ Auditoría guardada");
+          setFlow({ stage: "cambio", equipo: flow.equipo, axleCfg: flow.axleCfg, posData: flow.posData, checklist: flow.checklist, kmInicial: flow.km });
         }}
         onCerrar={async () => {
-          await construirYGuardarAuditoria({ user, clienteId, equipo: flow.equipo, cfg, posData: flow.posData, axleCfg: flow.axleCfg, km: flow.km, checklist: flow.checklist, recsInfo: flow.recsInfo });
+          const n = await construirYGuardarAuditoria({ user, clienteId, equipo: flow.equipo, cfg, posData: flow.posData, axleCfg: flow.axleCfg, km: flow.km, checklist: flow.checklist, recsInfo: flow.recsInfo });
+          pushToast(n > 0 ? `✓ Auditoría guardada · ${n} alerta${n !== 1 ? "s" : ""} generada${n !== 1 ? "s" : ""}` : "✓ Auditoría guardada");
           setFlow(null);
         }} />
     );
   } else if (flow && flow.stage === "cambio") {
     body = (
       <CambioForm user={user} clienteId={clienteId} equipo={flow.equipo} cfg={cfg} axleCfg={flow.axleCfg}
-        posDataInicial={flow.posData} checklistInicial={flow.checklist}
+        posDataInicial={flow.posData} checklistInicial={flow.checklist} kmInicial={flow.kmInicial}
         onCancel={() => setFlow(null)} onFinish={() => setFlow(null)} />
     );
-  } else if (tab === "inicio") {
-    body = <SeleccionEquipo clienteId={clienteId} onPick={(eq) => setFlow({ stage: "accion", equipo: eq })} />;
-  } else if (tab === "auditoria") {
-    body = <SeleccionEquipo clienteId={clienteId} onPick={(eq) => abrirEquipo(eq, "auditoria")} />;
-  } else if (tab === "cambio") {
-    body = <SeleccionEquipo clienteId={clienteId} onPick={(eq) => abrirEquipo(eq, "cambio")} />;
   } else if (tab === "cierre") {
     body = <CierreDelDia user={user} clienteId={clienteId} />;
   } else if (tab === "alertas") {
     body = <AlertasScreen user={user} clienteId={clienteId} />;
+  } else if (tab === "perfil") {
+    body = <PerfilScreen user={user} />;
+  } else {
+    body = <SeleccionEquipo clienteId={clienteId} onPick={(eq) => setFlow({ stage: "accion", equipo: eq })} />;
   }
 
   const showBottomNav = !flow || flow.stage === "accion";
@@ -1728,8 +1888,33 @@ function MecanicoApp({ user }) {
   return (
     <div>
       <div className="fixed top-2 left-0 right-0 z-40"><OfflineBadge /></div>
+      {toastNode}
       {body}
       {showBottomNav && <BottomNav view={tab} setView={(t) => { setTab(t); setFlow(null); }} />}
+    </div>
+  );
+}
+
+function PerfilScreen({ user }) {
+  const [confirming, setConfirming] = useState(false);
+  return (
+    <div className="min-h-screen pb-24 px-5 pt-14 safe-top">
+      <h1 className="text-[30px] font-extrabold mb-6">Perfil</h1>
+      <Card className="mb-6">
+        <div className="flex items-center gap-3">
+          <div className="w-12 h-12 rounded-full bg-[#F3F4F6] flex items-center justify-center"><Icon.user width="22" height="22" /></div>
+          <div>
+            <p className="font-bold text-[16px]">{user.nombre} {user.apellido || ""}</p>
+            <p className="text-[12.5px] text-muted">Usuario: {user.usuario} · Rol: {user.rol}</p>
+          </div>
+        </div>
+      </Card>
+      <Button variant="danger" className="w-full" onClick={() => setConfirming(true)}>Cerrar sesión</Button>
+      {confirming && (
+        <Confirm title="Cerrar sesión" desc="¿Seguro que querés cerrar tu sesión?"
+          onCancel={() => setConfirming(false)}
+          onConfirm={() => { clearSession(); location.reload(); }} />
+      )}
     </div>
   );
 }
