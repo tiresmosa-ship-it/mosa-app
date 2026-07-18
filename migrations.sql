@@ -158,3 +158,27 @@ END $$;
 -- para guardar las tareas que el mecanico agrega a mano en el instructivo.
 -- =====================================================================
 ALTER TABLE auditorias_receta ADD COLUMN IF NOT EXISTS tareas_extra JSONB;
+
+-- =====================================================================
+-- 11) Permisos para subir fotos al bucket "checkpoints" (Supabase Storage)
+-- Crear el bucket "checkpoints" como Public no alcanza: Storage tambien
+-- tiene sus propias politicas de RLS sobre la tabla storage.objects que
+-- bloquean la subida (error "new row violates row-level security policy").
+-- Este bloque agrega las politicas necesarias para que el rol anon pueda
+-- subir y leer archivos en ese bucket puntual.
+-- Requisito: el bucket "checkpoints" ya debe existir (Dashboard > Storage > New bucket).
+-- =====================================================================
+DROP POLICY IF EXISTS "anon puede subir a checkpoints" ON storage.objects;
+CREATE POLICY "anon puede subir a checkpoints" ON storage.objects
+  FOR INSERT TO anon
+  WITH CHECK (bucket_id = 'checkpoints');
+
+DROP POLICY IF EXISTS "anon puede actualizar checkpoints" ON storage.objects;
+CREATE POLICY "anon puede actualizar checkpoints" ON storage.objects
+  FOR UPDATE TO anon
+  USING (bucket_id = 'checkpoints');
+
+DROP POLICY IF EXISTS "anon puede leer checkpoints" ON storage.objects;
+CREATE POLICY "anon puede leer checkpoints" ON storage.objects
+  FOR SELECT TO anon
+  USING (bucket_id = 'checkpoints');

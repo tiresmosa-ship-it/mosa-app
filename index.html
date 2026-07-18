@@ -215,6 +215,11 @@ const db = {
     if (error) throw error;
     return data;
   },
+  async fetchUsuario(id) {
+    const { data, error } = await supabase.from("usuarios").select("*").eq("id", id).maybeSingle();
+    if (error) throw error;
+    return data;
+  },
   async fetchCliente(clienteId) {
     const { data, error } = await supabase.from("clientes").select("*").eq("id_cliente", clienteId).maybeSingle();
     if (error) throw error;
@@ -335,10 +340,10 @@ async function enviarAlerta(data) {
 }
 async function enviarNovedad(data) {
   const { checklist, ...cab } = data;
-  const { error: e1 } = await supabase.from("novedades_diarias").insert(cab);
+  const { error: e1 } = await supabase.from("check_diario").insert(cab);
   if (e1) throw e1;
   const rows = checklist.map(c => ({ id: uuid(), novedad_id: cab.id, herramienta: c.herramienta, cantidad: c.cantidad }));
-  if (rows.length) { const { error: e2 } = await supabase.from("novedades_checklist").insert(rows); if (e2) throw e2; }
+  if (rows.length) { const { error: e2 } = await supabase.from("check_diario_herramientas").insert(rows); if (e2) throw e2; }
 }
 async function asegurarNeumatico(clienteId, numeroFuego, equipoId, posicion, extra) {
   const { data: existente } = await supabase.from("neumaticos").select("id_neumatico").eq("cliente_id", clienteId).eq("numero_fuego", numeroFuego).maybeSingle();
@@ -745,9 +750,11 @@ function CheckDiario({ user, clienteId, onDone }) {
     setSaving(true);
     const id = uuid();
     const data = {
-      id, cliente_id: clienteId, bultero_id: user.id, fecha: todayISO(), hora_inicio: nowHM(),
-      numero_hoja: uuid().slice(0, 8),
+      id, cliente_id: clienteId, empresa_id: clienteId, bultero_id: user.id, fecha: todayISO(), hora_inicio: nowHM(),
+      numero_hoja: uuid().slice(0, 8), completado: true,
       ...stock,
+      neu_dir_nuevo: stock.nuevos, neu_dir_transito: stock.transito, neu_dir_reparar: stock.reparar, neu_dir_recauchado: stock.recauchados,
+      neu_trac_nuevo: stock.tra_nuevos, neu_trac_transito: stock.tra_transito, neu_trac_reparar: stock.tra_reparar, neu_trac_recauchado: stock.tra_recauchados,
       checklist: TOOLS_CHECKLIST.map(t => ({ herramienta: t, cantidad: tools[t].cantidad }))
     };
     const item = { id: uuid(), tipo: "novedad", clienteId, ts: Date.now(), data };
@@ -1806,6 +1813,133 @@ async function construirPosDataDesdeEquipo(equipoId) {
 }
 
 /* =====================================================================
+   ARBOL DE DECISION DEL MECANICO (al loguear)
+===================================================================== */
+function horasDesdeHoraCierre(fecha, horaCierre) {
+  if (!horaCierre) return Infinity;
+  const then = new Date(fecha + "T" + horaCierre);
+  return (Date.now() - then.getTime()) / 3600000;
+}
+async function evaluarEstadoMecanico(user) {
+  const hoy = todayISO();
+  const { data: pendientes } = await supabase.from("cierre_dia").select("*")
+    .eq("mecanico_id", user.id).lt("fecha", hoy).eq("cerrado", false)
+    .order("fecha", { ascending: false }).limit(1);
+  if (pendientes && pendientes.length) return { estado: "jornada_pendiente", jornada: pendientes[0] };
+
+  const { data: hoyCierres } = await supabase.from("cierre_dia").select("*")
+    .eq("mecanico_id", user.id).eq("fecha", hoy).eq("cerrado", true)
+    .order("creado_en", { ascending: false }).limit(1);
+  if (hoyCierres && hoyCierres.length) {
+    const c = hoyCierres[0];
+    if (horasDesdeHoraCierre(hoy, c.hora_cierre) < 8) return { estado: "jornada_cerrada_hoy" };
+  }
+
+  const { data: checks } = await supabase.from("check_diario").select("*")
+    .eq("bultero_id", user.id).eq("fecha", hoy).eq("completado", true)
+    .order("creado_en", { ascending: false }).limit(1);
+  if (checks && checks.length) return { estado: "menu_principal", clienteId: checks[0].empresa_id || checks[0].cliente_id };
+  return { estado: "bienvenida" };
+}
+async function resumenJornada(mecanicoId, fecha) {
+  const [{ data: aud }, { data: cam }, { data: interv }] = await Promise.all([
+    supabase.from("auditorias").select("id_auditoria").eq("bultero_id", mecanicoId).eq("fecha", fecha),
+    supabase.from("cambios_neumaticos").select("id_cambio").eq("bultero_id", mecanicoId).eq("fecha", fecha),
+    supabase.from("intervenciones").select("id").eq("mecanico_id", mecanicoId).eq("fecha", fecha)
+  ]);
+  return { auditorias: (aud || []).length, cambios: (cam || []).length, intervenciones: (interv || []).length };
+}
+async function ultimaActividadDelDia(mecanicoId, fecha) {
+  const tablas = [
+    { t: "auditorias", campo: "bultero_id" },
+    { t: "cambios_neumaticos", campo: "bultero_id" },
+    { t: "intervenciones", campo: "mecanico_id" },
+    { t: "check_diario", campo: "bultero_id" }
+  ];
+  let ultima = null;
+  for (const { t, campo } of tablas) {
+    const { data } = await supabase.from(t).select("creado_en").eq(campo, mecanicoId).eq("fecha", fecha).order("creado_en", { ascending: false }).limit(1);
+    if (data && data[0] && data[0].creado_en) {
+      const ts = new Date(data[0].creado_en);
+      if (!ultima || ts > ultima) ultima = ts;
+    }
+  }
+  return ultima;
+}
+
+function MecanicoGate({ user }) {
+  const [state, setState] = useState({ status: "loading" });
+
+  async function cargar() {
+    setState({ status: "loading" });
+    try {
+      const res = await evaluarEstadoMecanico(user);
+      if (res.estado === "jornada_pendiente") {
+        const resumen = await resumenJornada(user.id, res.jornada.fecha);
+        setState({ status: "jornada_pendiente", jornada: res.jornada, resumen });
+      } else if (res.estado === "jornada_cerrada_hoy") {
+        setState({ status: "jornada_cerrada_hoy" });
+      } else if (res.estado === "menu_principal") {
+        setTurno({ clienteId: res.clienteId, fecha: todayISO(), checkDone: true });
+        setState({ status: "ready" });
+      } else {
+        localStorage.removeItem(LS.turno);
+        setState({ status: "ready" });
+      }
+    } catch (e) {
+      console.error("No se pudo evaluar el estado del mecánico", e);
+      setState({ status: "ready" });
+    }
+  }
+
+  useEffect(() => { cargar(); }, []);
+
+  async function cerrarJornadaAnterior() {
+    setState(s => ({ ...s, cerrando: true }));
+    const ultima = await ultimaActividadDelDia(user.id, state.jornada.fecha);
+    const horaCierre = ultima ? ultima.toTimeString().slice(0, 8) : "23:59:59";
+    await supabase.from("cierre_dia").update({ cerrado: true, hora_cierre: horaCierre, motivo_sin_cierre: "olvido_cierre" }).eq("id", state.jornada.id);
+    await cargar();
+  }
+
+  if (state.status === "loading") {
+    return <div className="min-h-screen flex items-center justify-center"><span className="spinner" /></div>;
+  }
+
+  if (state.status === "jornada_pendiente") {
+    const r = state.resumen;
+    return (
+      <div className="min-h-screen flex flex-col px-6 pt-16 safe-top">
+        <h1 className="text-[24px] font-extrabold leading-tight mb-2">Tenés una jornada del {formatDateLong(state.jornada.fecha)} sin cerrar</h1>
+        <p className="text-[14px] text-sub mb-6">Cerrala antes de seguir. Este es el resumen de ese día:</p>
+        <div className="grid grid-cols-3 gap-3 mb-6">
+          {[["Auditorías", r.auditorias], ["Cambios", r.cambios], ["Intervenciones", r.intervenciones]].map(([l, v]) => (
+            <div key={l} className="bg-[#F9FAFB] rounded-[18px] p-4 text-center">
+              <p className="text-[22px] font-extrabold">{v}</p>
+              <p className="text-[11px] font-semibold text-muted mt-1">{l}</p>
+            </div>
+          ))}
+        </div>
+        <Button className="w-full" disabled={state.cerrando} onClick={cerrarJornadaAnterior}>
+          {state.cerrando ? <span className="spinner" /> : "Cerrar jornada anterior"}
+        </Button>
+      </div>
+    );
+  }
+
+  if (state.status === "jornada_cerrada_hoy") {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center px-8 text-center">
+        <p className="text-[20px] font-extrabold mb-2">Ya cerraste tu jornada de hoy</p>
+        <p className="text-[14px] text-sub">Contactá a tu supervisor si necesitás continuar.</p>
+      </div>
+    );
+  }
+
+  return <MecanicoApp user={user} />;
+}
+
+/* =====================================================================
    APP DEL MECANICO
 ===================================================================== */
 function MecanicoApp({ user }) {
@@ -1920,28 +2054,38 @@ function PerfilScreen({ user }) {
 }
 
 /* =====================================================================
-   APP ADMIN / SUPERADMIN / CLIENTE (placeholder de esta primera etapa)
+   DASHBOARDS ADMIN / SUPERADMIN / CLIENTE (placeholder de esta primera etapa)
+   Cada rol va directo a su propio dashboard, sin pasar por el árbol de
+   decisión del mecánico.
 ===================================================================== */
-function AdminApp({ user, onLogout }) {
+function RolDashboard({ user, onLogout, panelLabel, descripcion }) {
   return (
     <div className="min-h-screen px-6 pt-16 safe-top">
       <div className="flex items-center justify-between mb-8">
         <div>
-          <p className="text-[14px] text-muted">Panel de flota</p>
+          <p className="text-[14px] text-muted">{panelLabel}</p>
           <h1 className="text-[28px] font-extrabold">Hola, {user.nombre}</h1>
         </div>
         <button onClick={onLogout} className="w-10 h-10 rounded-full bg-[#F3F4F6] flex items-center justify-center"><Icon.user width="18" height="18" /></button>
       </div>
       <Card>
-        <p className="font-bold text-[16px] mb-2">Panel de administración en construcción</p>
-        <p className="text-[14px] text-sub">
-          Tu rol es <b>{user.rol}</b>. El dashboard, maestros (clientes, equipos, mecánicos, neumáticos, inventario),
-          historial, configuración y usuarios &amp; permisos llegan en la siguiente etapa del proyecto.
-          Por ahora podés usar esta sesión para verificar el flujo del mecánico con otro usuario.
-        </p>
+        <p className="font-bold text-[16px] mb-2">{panelLabel} en construcción</p>
+        <p className="text-[14px] text-sub">{descripcion}</p>
       </Card>
     </div>
   );
+}
+function AdminApp({ user, onLogout }) {
+  return <RolDashboard user={user} onLogout={onLogout} panelLabel="Dashboard de Admin"
+    descripcion="El dashboard, maestros (clientes, equipos, mecánicos, neumáticos, inventario), historial, configuración y alertas llegan en la siguiente etapa del proyecto." />;
+}
+function SuperAdminApp({ user, onLogout }) {
+  return <RolDashboard user={user} onLogout={onLogout} panelLabel="Dashboard de SuperAdmin"
+    descripcion="Acceso total: todo lo del panel de Admin, más el panel de usuarios y permisos, llega en la siguiente etapa del proyecto." />;
+}
+function ClienteApp({ user, onLogout }) {
+  return <RolDashboard user={user} onLogout={onLogout} panelLabel="Panel de Cliente"
+    descripcion="La vista de solo lectura de tus equipos, neumáticos y auditorías llega en la siguiente etapa del proyecto." />;
 }
 
 /* =====================================================================
@@ -1949,13 +2093,26 @@ function AdminApp({ user, onLogout }) {
 ===================================================================== */
 function App() {
   const [user, setUser] = useState(() => getSession());
+  const [checking, setChecking] = useState(!!getSession());
+
+  useEffect(() => {
+    const cached = getSession();
+    if (!cached) { setChecking(false); return; }
+    db.fetchUsuario(cached.id).then(fresh => {
+      if (!fresh || !fresh.activo) { clearSession(); setUser(null); }
+      else { setSession(fresh); setUser(fresh); }
+    }).catch(() => { /* sin conexión: seguir con la sesión cacheada */ }).finally(() => setChecking(false));
+  }, []);
 
   function handleLogin(u) { setSession(u); setUser(u); }
   function handleLogout() { clearSession(); setUser(null); }
 
+  if (checking) return <div className="min-h-screen flex items-center justify-center"><span className="spinner" /></div>;
   if (!user) return <Login onLogin={handleLogin} />;
-  if (user.rol === "mecanico") return <MecanicoApp user={user} key={user.id} />;
-  return <AdminApp user={user} onLogout={handleLogout} />;
+  if (user.rol === "mecanico") return <MecanicoGate user={user} key={user.id} />;
+  if (user.rol === "admin") return <AdminApp user={user} onLogout={handleLogout} />;
+  if (user.rol === "superadmin") return <SuperAdminApp user={user} onLogout={handleLogout} />;
+  return <ClienteApp user={user} onLogout={handleLogout} />;
 }
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
