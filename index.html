@@ -1118,6 +1118,7 @@ function AuditoriaForm({ user, clienteId, equipo, cfg, onCancel, onGenerarInstru
   const allPositions = axleCfg.rows.flatMap(r => r.positions);
   const [posData, setPosData] = useState({});
   const [editingPos, setEditingPos] = useState(null);
+  const [generando, setGenerando] = useState(false);
   const startedAt = useRef(Date.now());
 
   function abrirPosicion(p) { setEditingPos(p); }
@@ -1164,8 +1165,9 @@ function AuditoriaForm({ user, clienteId, equipo, cfg, onCancel, onGenerarInstru
       <p className="text-[12.5px] text-muted px-1">{completas}/{allPositions.length} posiciones cargadas</p>
 
       <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-bd p-4 safe-bottom">
-        <Button className="w-full" disabled={!todasCompletas} onClick={() => onGenerarInstructivo(posData, axleCfg, km, startedAt.current)}>
-          Generar Instructivo
+        <Button className="w-full" disabled={!todasCompletas || generando}
+          onClick={async () => { setGenerando(true); try { await onGenerarInstructivo(posData, axleCfg, km, startedAt.current); } catch (e) { setGenerando(false); } }}>
+          {generando ? <span className="spinner" /> : "Generar Instructivo"}
         </Button>
       </div>
 
@@ -1254,7 +1256,7 @@ function generarRecomendaciones(posData, axleCfg, equipoTipo, cfg) {
 /* =====================================================================
    PANTALLA 5 - INSTRUCTIVO
 ===================================================================== */
-function Instructivo({ equipo, axleCfg, posData, recsInfo, checklist, setChecklist, onContinuar, onCerrar }) {
+function Instructivo({ equipo, axleCfg, posData, recsInfo, checklist, setChecklist, discrepancias, onContinuar, onCerrar }) {
   const [nuevaTarea, setNuevaTarea] = useState("");
   const sistemaTotal = checklist.filter(c => !c.extra).length;
   const cumplidas = checklist.filter(c => !c.extra && c.done).length;
@@ -1303,6 +1305,22 @@ function Instructivo({ equipo, axleCfg, posData, recsInfo, checklist, setCheckli
       </div>
 
       <p className="text-[12.5px] text-muted mb-6">Recomendadas: {sistemaTotal} · Cumplidas: {cumplidas} · Extra agregadas: {extra}</p>
+
+      {discrepancias && discrepancias.length > 0 && (
+        <div className="bg-[#FEE2E2] rounded-2xl p-4 mb-6">
+          <p className="font-extrabold text-[15px] text-[#B91C1C] mb-3">⚠ Neumáticos que no coinciden</p>
+          <div className="space-y-2">
+            {discrepancias.map((d, i) => (
+              <div key={i} className="bg-white rounded-xl px-3 py-2 border border-[#FCA5A5]">
+                <p className="text-[13px] font-semibold text-[#7F1D1D]">
+                  Posición {d.posicion}: {CAMPO_LABELS[d.campo] || d.campo} registrado {d.valor_sistema == null ? "sin registro" : d.valor_sistema}, mecánico encontró {d.valor_mecanico}
+                </p>
+              </div>
+            ))}
+          </div>
+          <p className="text-[12px] text-[#92400E] mt-3 font-semibold">Pendiente de aprobación por administrador</p>
+        </div>
+      )}
 
       <div className="space-y-3">
         <Button className="w-full" onClick={() => onContinuar({ pct, cumplidas, sistemaTotal, extra })}>Continuar a hoja de cambio</Button>
@@ -1712,8 +1730,10 @@ function MontajeModal({ tipo, pos, equipo, clienteId, onClose, onConfirm }) {
           <div className="space-y-3">
             <label className="flex items-center gap-2 text-[13.5px] font-semibold"><input type="checkbox" checked={torqueado} onChange={e => setTorqueado(e.target.checked)} /> Ruedas torqueadas</label>
             <Field label="Foto de checkpoint" required hint="Obligatoria para completar el montaje">
-              <input type="file" accept="image/*" capture="environment" onChange={onFotoChange}
-                className="w-full text-[13px] file:mr-3 file:py-2 file:px-3 file:rounded-xl file:border-0 file:bg-ink file:text-white file:font-bold" />
+              <label className="h-14 px-5 rounded-2xl font-bold text-[15px] bg-ink text-white flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98] transition w-full">
+                <span className="text-[18px]">📷</span> Tomar foto
+                <input type="file" accept="image/*" capture="environment" onChange={onFotoChange} className="hidden" />
+              </label>
             </Field>
             {subiendoFoto && <p className="text-[12.5px] text-muted">Subiendo foto...</p>}
             {fotoUrl && <p className="text-[12.5px] font-bold text-[#15803D]">✓ Foto subida: {fotoNombre}</p>}
@@ -1855,9 +1875,53 @@ function AlertasScreen({ user, clienteId }) {
 }
 
 /* =====================================================================
+   COMPARACION DE NEUMATICOS (auditoria vs sistema)
+   Por cada posicion auditada busca el neumatico que el sistema tiene
+   registrado en ese equipo/posicion y compara numero_fuego / marca /
+   medida. numero_fuego siempre se compara (si el sistema no tiene nada en
+   esa posicion, es un neumatico no registrado). marca/medida solo se
+   comparan cuando el sistema tiene un valor cargado, para no generar ruido
+   con los neumaticos viejos que todavia tienen marca/medida en null.
+===================================================================== */
+function normStr(v) { return (v == null ? "" : String(v)).trim().toLowerCase(); }
+const CAMPO_LABELS = { numero_fuego: "N° de fuego", marca: "marca", medida: "medida" };
+async function compararNeumaticosAuditoria(clienteId, equipoId, posData) {
+  const { data: neus, error } = await supabase.from("neumaticos")
+    .select("numero_fuego, marca, medida, posicion_actual")
+    .eq("cliente_id", clienteId).eq("equipo_actual", equipoId).eq("activo", true);
+  if (error) throw error;
+  const porPos = {};
+  (neus || []).forEach(n => { if (n.posicion_actual != null) porPos[n.posicion_actual] = n; });
+  const discrepancias = [];
+  Object.values(posData).forEach(d => {
+    if (!d.numero_fuego) return;
+    const sis = porPos[d.posicion] || {};
+    const campos = [
+      { campo: "numero_fuego", sistema: sis.numero_fuego, mecanico: d.numero_fuego, siempre: true },
+      { campo: "marca", sistema: sis.marca, mecanico: d.marca, siempre: false },
+      { campo: "medida", sistema: sis.medida, mecanico: d.medida, siempre: false }
+    ];
+    campos.forEach(c => {
+      const s = normStr(c.sistema), m = normStr(c.mecanico);
+      if (!m) return;                    // el mecanico no cargo ese campo
+      if (!c.siempre && !s) return;      // marca/medida: no comparar si el sistema no tiene dato
+      if (s !== m) {
+        discrepancias.push({
+          posicion: d.posicion, campo: c.campo,
+          valor_sistema: c.sistema == null ? null : String(c.sistema),
+          valor_mecanico: String(c.mecanico),
+          aprobada: false, aprobada_por: null, justificacion: null
+        });
+      }
+    });
+  });
+  return discrepancias;
+}
+
+/* =====================================================================
    GUARDADO DE AUDITORIA (encabezado + posiciones + receta)
 ===================================================================== */
-async function construirYGuardarAuditoria({ user, clienteId, equipo, cfg, posData, axleCfg, km, checklist, recsInfo }) {
+async function construirYGuardarAuditoria({ user, clienteId, equipo, cfg, posData, axleCfg, km, checklist, recsInfo, discrepanciasNeumaticos, recetaEstado }) {
   const numero_auditoria = await siguienteNumeroAuditoria(clienteId, cfg).catch(() => String(Date.now()).slice(-6));
   const sistemaTotal = checklist.filter(c => !c.extra).length;
   const cumplidas = checklist.filter(c => !c.extra && c.done).length;
@@ -1899,9 +1963,25 @@ async function construirYGuardarAuditoria({ user, clienteId, equipo, cfg, posDat
       rec_rotar_semi_e2: !!flags.rec_rotar_semi_e2, rec_rotar_semi_e3: !!flags.rec_rotar_semi_e3,
       posiciones_alerta: recsInfo.posicionesAlerta, seguio_receta: pct === 100, pct_receta_seguida: pct,
       tareas_extra: checklist.filter(c => c.extra).map(c => ({ texto: c.texto, done: c.done })),
+      discrepancias_neumaticos: discrepanciasNeumaticos || [],
+      estado: recetaEstado || "pendiente",
       observaciones_mecanico: null
     }
   };
+
+  // Una alerta por cada discrepancia de neumatico detectada (informativa para
+  // el mecanico, pendiente de aprobacion del administrador).
+  (discrepanciasNeumaticos || []).forEach(dn => {
+    alertasGeneradas.push({
+      id: uuid(), cliente_id: clienteId, equipo_id: equipo.id_equipo, mecanico_id: user.id,
+      tipo: "neumatico_no_registrado", severidad: "rojo",
+      titulo: `Neumático no coincide en P${dn.posicion}`,
+      descripcion: `${CAMPO_LABELS[dn.campo] || dn.campo}: sistema ${dn.valor_sistema == null ? "sin registro" : dn.valor_sistema} · mecánico ${dn.valor_mecanico}`,
+      posicion: dn.posicion, numero_fuego: dn.valor_mecanico,
+      leida_mecanico: true, leida_admin: false, leida_superadmin: false
+    });
+  });
+
   pushQueue({ id: uuid(), tipo: "auditoria", clienteId, ts: Date.now(), data: cab });
   alertasGeneradas.forEach(a => pushQueue({ id: uuid(), tipo: "alerta", clienteId, ts: Date.now(), data: a }));
   syncQueue();
@@ -2087,23 +2167,27 @@ function MecanicoApp({ user }) {
     body = (
       <AuditoriaForm user={user} clienteId={clienteId} equipo={flow.equipo} cfg={cfg}
         onCancel={() => setFlow(null)}
-        onGenerarInstructivo={(posData, axleCfg, km, startedAt) => {
+        onGenerarInstructivo={async (posData, axleCfg, km, startedAt) => {
           const recsInfo = generarRecomendaciones(posData, axleCfg, flow.equipo.tipo, cfg);
           const checklist = recsInfo.recs.map(r => ({ id: r.id, texto: r.texto, done: false, extra: false }));
-          setFlow({ stage: "instructivo", equipo: flow.equipo, posData, axleCfg, km, recsInfo, checklist });
+          let discrepanciasNeumaticos = [];
+          try { discrepanciasNeumaticos = await compararNeumaticosAuditoria(clienteId, flow.equipo.id_equipo, posData); }
+          catch (e) { console.error("No se pudo comparar neumáticos contra el sistema", e); }
+          setFlow({ stage: "instructivo", equipo: flow.equipo, posData, axleCfg, km, recsInfo, checklist, discrepanciasNeumaticos });
         }} />
     );
   } else if (flow && flow.stage === "instructivo") {
     body = (
       <Instructivo equipo={flow.equipo} axleCfg={flow.axleCfg} posData={flow.posData} recsInfo={flow.recsInfo}
         checklist={flow.checklist} setChecklist={(fn) => setFlow(f => ({ ...f, checklist: typeof fn === "function" ? fn(f.checklist) : fn }))}
+        discrepancias={flow.discrepanciasNeumaticos}
         onContinuar={async () => {
-          const n = await construirYGuardarAuditoria({ user, clienteId, equipo: flow.equipo, cfg, posData: flow.posData, axleCfg: flow.axleCfg, km: flow.km, checklist: flow.checklist, recsInfo: flow.recsInfo });
+          const n = await construirYGuardarAuditoria({ user, clienteId, equipo: flow.equipo, cfg, posData: flow.posData, axleCfg: flow.axleCfg, km: flow.km, checklist: flow.checklist, recsInfo: flow.recsInfo, discrepanciasNeumaticos: flow.discrepanciasNeumaticos, recetaEstado: "en_proceso" });
           pushToast(n > 0 ? `✓ Auditoría guardada · ${n} alerta${n !== 1 ? "s" : ""} generada${n !== 1 ? "s" : ""}` : "✓ Auditoría guardada");
           setFlow({ stage: "cambio", equipo: flow.equipo, axleCfg: flow.axleCfg, posData: flow.posData, checklist: flow.checklist, kmInicial: flow.km });
         }}
         onCerrar={async () => {
-          const n = await construirYGuardarAuditoria({ user, clienteId, equipo: flow.equipo, cfg, posData: flow.posData, axleCfg: flow.axleCfg, km: flow.km, checklist: flow.checklist, recsInfo: flow.recsInfo });
+          const n = await construirYGuardarAuditoria({ user, clienteId, equipo: flow.equipo, cfg, posData: flow.posData, axleCfg: flow.axleCfg, km: flow.km, checklist: flow.checklist, recsInfo: flow.recsInfo, discrepanciasNeumaticos: flow.discrepanciasNeumaticos, recetaEstado: "pendiente" });
           pushToast(n > 0 ? `✓ Auditoría guardada · ${n} alerta${n !== 1 ? "s" : ""} generada${n !== 1 ? "s" : ""}` : "✓ Auditoría guardada");
           setFlow(null);
         }} />

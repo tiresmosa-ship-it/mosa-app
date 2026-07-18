@@ -246,3 +246,17 @@ ALTER TABLE alertas DROP CONSTRAINT IF EXISTS alertas_tipo_check;
 -- =====================================================================
 ALTER TABLE auditorias ADD COLUMN IF NOT EXISTS cliente_id TEXT REFERENCES clientes(id_cliente);
 UPDATE auditorias a SET cliente_id = e.cliente_id FROM equipos e WHERE a.equipo_id = e.id_equipo AND a.cliente_id IS NULL;
+
+-- =====================================================================
+-- 17) Columna discrepancias_neumaticos en auditorias_receta (JSONB)
+-- Al generar el instructivo, la app compara cada posicion auditada contra
+-- lo que el sistema tiene registrado en "neumaticos" (numero_fuego, marca,
+-- medida) para el equipo_actual. Cuando algo no coincide, guarda el detalle
+-- en este JSONB (array de objetos {posicion, campo, valor_sistema,
+-- valor_mecanico, aprobada, aprobada_por, justificacion}) para que el
+-- administrador pueda revisarlo/aprobarlo mas adelante. El mecanico solo lo
+-- ve de forma informativa. Ademas se genera una alerta tipo
+-- 'neumatico_no_registrado' por cada discrepancia (el CHECK de alertas.tipo
+-- ya fue eliminado en el bloque 15, asi que ese tipo entra sin problema).
+-- =====================================================================
+ALTER TABLE auditorias_receta ADD COLUMN IF NOT EXISTS discrepancias_neumaticos JSONB DEFAULT '[]'::jsonb;
