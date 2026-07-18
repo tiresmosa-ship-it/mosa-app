@@ -182,3 +182,57 @@ DROP POLICY IF EXISTS "anon puede leer checkpoints" ON storage.objects;
 CREATE POLICY "anon puede leer checkpoints" ON storage.objects
   FOR SELECT TO anon
   USING (bucket_id = 'checkpoints');
+
+-- =====================================================================
+-- 12) Columnas de "Ejes libres" en check_diario
+-- El check diario del mecanico ahora tiene una tercera seccion de conteo
+-- de neumaticos (Direccionales / Traccionales / Ejes libres), pero la
+-- tabla solo tenia columnas neu_dir_* y neu_trac_*.
+-- =====================================================================
+ALTER TABLE check_diario ADD COLUMN IF NOT EXISTS neu_libre_nuevo INT;
+ALTER TABLE check_diario ADD COLUMN IF NOT EXISTS neu_libre_transito INT;
+ALTER TABLE check_diario ADD COLUMN IF NOT EXISTS neu_libre_reparar INT;
+ALTER TABLE check_diario ADD COLUMN IF NOT EXISTS neu_libre_recauchado INT;
+
+-- =====================================================================
+-- 13) Permisos para discrepancias_inventario
+-- La tabla existe (columnas: id, origen, tipo_item, valor_sistema,
+-- valor_fisico, cliente_id, mecanico_id, fecha, resuelta, creado_en) pero
+-- bloqueaba INSERT para anon con "new row violates row-level security
+-- policy". La usa el check diario para registrar diferencias entre lo
+-- contado a mano y el inventario real de neumaticos.
+-- =====================================================================
+GRANT SELECT, INSERT, UPDATE ON discrepancias_inventario TO anon;
+ALTER TABLE discrepancias_inventario ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS anon_all ON discrepancias_inventario;
+CREATE POLICY anon_all ON discrepancias_inventario FOR ALL TO anon USING (true) WITH CHECK (true);
+
+-- =====================================================================
+-- 14) Otra FK vieja apuntando a "mecanicos" (mismo problema del punto 9)
+-- discrepancias_inventario.mecanico_id todavia exigia que el id exista en
+-- "mecanicos" en vez de "usuarios". Se repite el mismo bloque de borrado
+-- de constraints, ahora incluyendo esta tabla.
+-- =====================================================================
+DO $$
+DECLARE
+  rec RECORD;
+BEGIN
+  FOR rec IN
+    SELECT tc.constraint_name, tc.table_name
+    FROM information_schema.table_constraints tc
+    JOIN information_schema.constraint_column_usage ccu ON tc.constraint_name = ccu.constraint_name
+    WHERE tc.constraint_type = 'FOREIGN KEY' AND ccu.table_name = 'mecanicos'
+      AND tc.table_name = 'discrepancias_inventario'
+  LOOP
+    EXECUTE format('ALTER TABLE %I DROP CONSTRAINT %I', rec.table_name, rec.constraint_name);
+  END LOOP;
+END $$;
+
+-- =====================================================================
+-- 15) alertas.tipo tenia un CHECK constraint con una lista fija de
+-- valores (psi_bajo/psi_alto/mm_bajo/.../cierre_dia) que no incluia el
+-- nuevo tipo 'discrepancia_inventario' usado por el check diario. Se
+-- saca el constraint para no tener que ampliarlo cada vez que se agregue
+-- un tipo de alerta nuevo.
+-- =====================================================================
+ALTER TABLE alertas DROP CONSTRAINT IF EXISTS alertas_tipo_check;

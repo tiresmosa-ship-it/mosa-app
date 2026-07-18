@@ -678,6 +678,10 @@ function Login({ onLogin }) {
 function SeleccionEmpresa({ user, onConfirm }) {
   const [cliente, setCliente] = useState(null);
   useEffect(() => { db.fetchCliente(user.cliente_id).then(setCliente).catch(() => setCliente({ nombre: user.cliente_id })); }, []);
+  function confirmar() {
+    localStorage.setItem("empresa_activa_hoy", user.cliente_id);
+    onConfirm(user.cliente_id);
+  }
   return (
     <div className="min-h-screen flex flex-col px-6 pt-16 safe-top">
       <p className="text-[14px] text-muted mb-2">Antes de comenzar</p>
@@ -692,7 +696,7 @@ function SeleccionEmpresa({ user, onConfirm }) {
         </div>
       </Card>
       <div className="flex-1" />
-      <Button className="w-full mb-8" disabled={!cliente} onClick={() => onConfirm(user.cliente_id)}>Confirmar y continuar</Button>
+      <Button className="w-full mb-8" disabled={!cliente} onClick={confirmar}>Confirmar empresa</Button>
     </div>
   );
 }
@@ -708,11 +712,15 @@ const TRACCIONAL_FIELDS = [
   { key: "tra_nuevos", label: "Nuevos" }, { key: "tra_transito", label: "Tránsito" },
   { key: "tra_reparar", label: "Por reparar" }, { key: "tra_recauchados", label: "Recauchados" }
 ];
-const STOCK_FIELDS = [...DIRECCIONAL_FIELDS, ...TRACCIONAL_FIELDS];
+const LIBRE_FIELDS = [
+  { key: "libre_nuevos", label: "Nuevos" }, { key: "libre_transito", label: "Tránsito" },
+  { key: "libre_reparar", label: "Por reparar" }, { key: "libre_recauchados", label: "Recauchados" }
+];
 const PATIO_FIELDS = [
   { key: "llantas_am_aluminio", label: "Americana aluminio" }, { key: "llantas_am_fierro", label: "Americana fierro" },
   { key: "llantas_eu_aluminio", label: "Europea aluminio" }, { key: "llantas_eu_fierro", label: "Europea fierro" }
 ];
+const ALL_STOCK_FIELDS = [...DIRECCIONAL_FIELDS, ...TRACCIONAL_FIELDS, ...LIBRE_FIELDS, ...PATIO_FIELDS];
 
 function Stepper({ value, onChange }) {
   const [editing, setEditing] = useState(false);
@@ -728,53 +736,166 @@ function Stepper({ value, onChange }) {
   }
   return (
     <div className="flex items-center gap-2">
-      <button type="button" onClick={() => onChange(Math.max(0, value - 1))} className="w-9 h-9 rounded-lg bg-[#F3F4F6] font-bold text-lg">−</button>
+      <button type="button" disabled={value === 0} onClick={() => onChange(Math.max(0, value - 1))} className="w-9 h-9 rounded-lg bg-[#F3F4F6] font-bold text-lg disabled:opacity-40">−</button>
       <button type="button" onClick={() => { setTmp(String(value)); setEditing(true); }} className="w-10 text-center font-bold">{value}</button>
       <button type="button" onClick={() => onChange(value + 1)} className="w-9 h-9 rounded-lg bg-[#F3F4F6] font-bold text-lg">+</button>
     </div>
   );
 }
 
+async function compararInventarioNeumaticos(clienteId, checkTotales) {
+  const { data: neus } = await supabase.from("neumaticos").select("bodega").eq("cliente_id", clienteId).eq("activo", true);
+  const sistema = { nuevo: 0, transito: 0, recauchado: 0 };
+  (neus || []).forEach(n => { if (sistema[n.bodega] !== undefined) sistema[n.bodega]++; });
+  const labels = { nuevo: "Neumáticos nuevos", transito: "Neumáticos en tránsito", recauchado: "Neumáticos recauchados" };
+  const diffs = [];
+  for (const bucket of ["nuevo", "transito", "recauchado"]) {
+    if (checkTotales[bucket] !== sistema[bucket]) diffs.push({ bucket, label: labels[bucket], sistema: sistema[bucket], fisico: checkTotales[bucket] });
+  }
+  return diffs;
+}
+async function registrarDiscrepancias(clienteId, mecanicoId, fecha, diffs) {
+  const rows = diffs.map(d => ({
+    id: uuid(), origen: "check_diario", tipo_item: "neumatico", item_detalle: d.label,
+    valor_sistema: d.sistema, valor_fisico: d.fisico, diferencia: d.fisico - d.sistema,
+    cliente_id: clienteId, mecanico_id: mecanicoId, fecha
+  }));
+  if (rows.length) await supabase.from("discrepancias_inventario").insert(rows);
+  await supabase.from("alertas").insert({
+    id: uuid(), cliente_id: clienteId, equipo_id: null, mecanico_id: mecanicoId,
+    tipo: "discrepancia_inventario", severidad: "rojo", titulo: "Discrepancia en el check diario",
+    descripcion: diffs.map(d => `${d.label}: sistema ${d.sistema} · contado ${d.fisico}`).join(" · "),
+    leida_mecanico: true, leida_admin: false, leida_superadmin: false
+  });
+  return rows.map(r => r.id);
+}
+async function guardarObservacionDiscrepancia(ids, texto) {
+  if (!ids.length || !texto.trim()) return;
+  await supabase.from("discrepancias_inventario").update({ observacion_mecanico: texto.trim() }).in("id", ids);
+}
+async function marcarInicioJornada(clienteId, mecanicoId, fecha, horaInicio) {
+  const { data: existente } = await supabase.from("cierre_dia").select("id").eq("mecanico_id", mecanicoId).eq("fecha", fecha).maybeSingle();
+  if (existente) {
+    await supabase.from("cierre_dia").update({ hora_inicio: horaInicio }).eq("id", existente.id);
+  } else {
+    await supabase.from("cierre_dia").insert({
+      id: uuid(), cliente_id: clienteId, mecanico_id: mecanicoId, fecha, hora_inicio: horaInicio,
+      auditorias_realizadas: 0, cambios_realizados: 0, regulaciones_psi: 0, retorqueos: 0, rotaciones: 0, reparaciones: 0, cerrado: false
+    });
+  }
+}
+
 function CheckDiario({ user, clienteId, onDone }) {
-  const [stock, setStock] = useState(() => Object.fromEntries([...STOCK_FIELDS, ...PATIO_FIELDS].map(f => [f.key, 0])));
+  const [stock, setStock] = useState(() => Object.fromEntries(ALL_STOCK_FIELDS.map(f => [f.key, { value: 0, touched: false }])));
   const [tools, setTools] = useState(() => Object.fromEntries(TOOLS_CHECKLIST.map(t => [t, { checked: false, cantidad: 0 }])));
   const [saving, setSaving] = useState(false);
-  const toolsFilled = TOOLS_CHECKLIST.filter(t => tools[t].checked).length;
-  const progress = Math.round((toolsFilled / TOOLS_CHECKLIST.length) * 100);
-  const complete = toolsFilled === TOOLS_CHECKLIST.length;
+  const [discrepancias, setDiscrepancias] = useState(null); // null = no evaluado, [] = sin diferencias, [...] = con diferencias
+  const [observacion, setObservacion] = useState("");
+  const [pushToast, toastNode] = useToasts();
 
+  const toolsFilled = TOOLS_CHECKLIST.filter(t => tools[t].checked).length;
+  const stockFilled = ALL_STOCK_FIELDS.filter(f => stock[f.key].touched).length;
+  const totalItems = TOOLS_CHECKLIST.length + ALL_STOCK_FIELDS.length;
+  const progress = Math.round(((toolsFilled + stockFilled) / totalItems) * 100);
+  const complete = toolsFilled === TOOLS_CHECKLIST.length && stockFilled === ALL_STOCK_FIELDS.length;
+
+  function setStockVal(key, v) { setStock(s => ({ ...s, [key]: { value: v, touched: true } })); }
   function setToolQty(t, v) { setTools(s => ({ ...s, [t]: { checked: true, cantidad: v } })); }
   function toggleTool(t) { setTools(s => ({ ...s, [t]: { ...s[t], checked: !s[t].checked } })); }
+
+  function renderSeccion(titulo, fields) {
+    return (
+      <>
+        <p className="font-bold text-[15px] mb-2">{titulo}</p>
+        <Card className="mb-4 space-y-3">
+          {fields.map(f => (
+            <div key={f.key} className="flex items-center justify-between">
+              <span className={cx("text-[14px] font-semibold", stock[f.key].touched ? "text-[#1F2937]" : "text-[#92400E]")}>{f.label}</span>
+              <Stepper value={stock[f.key].value} onChange={v => setStockVal(f.key, v)} />
+            </div>
+          ))}
+        </Card>
+      </>
+    );
+  }
 
   async function continuar() {
     setSaving(true);
     const id = uuid();
+    const horaInicio = nowHM();
+    const totales = {
+      nuevo: stock.nuevos.value + stock.tra_nuevos.value + stock.libre_nuevos.value,
+      transito: stock.transito.value + stock.tra_transito.value + stock.libre_transito.value,
+      recauchado: stock.recauchados.value + stock.tra_recauchados.value + stock.libre_recauchados.value
+    };
     const data = {
-      id, cliente_id: clienteId, empresa_id: clienteId, bultero_id: user.id, fecha: todayISO(), hora_inicio: nowHM(),
+      id, cliente_id: clienteId, empresa_id: clienteId, bultero_id: user.id, fecha: todayISO(), hora_inicio: horaInicio,
       numero_hoja: uuid().slice(0, 8), completado: true,
-      ...stock,
-      neu_dir_nuevo: stock.nuevos, neu_dir_transito: stock.transito, neu_dir_reparar: stock.reparar, neu_dir_recauchado: stock.recauchados,
-      neu_trac_nuevo: stock.tra_nuevos, neu_trac_transito: stock.tra_transito, neu_trac_reparar: stock.tra_reparar, neu_trac_recauchado: stock.tra_recauchados,
+      nuevos: stock.nuevos.value, transito: stock.transito.value, reparar: stock.reparar.value, recauchados: stock.recauchados.value,
+      tra_nuevos: stock.tra_nuevos.value, tra_transito: stock.tra_transito.value, tra_reparar: stock.tra_reparar.value, tra_recauchados: stock.tra_recauchados.value,
+      llantas_am_aluminio: stock.llantas_am_aluminio.value, llantas_am_fierro: stock.llantas_am_fierro.value,
+      llantas_eu_aluminio: stock.llantas_eu_aluminio.value, llantas_eu_fierro: stock.llantas_eu_fierro.value,
+      neu_dir_nuevo: stock.nuevos.value, neu_dir_transito: stock.transito.value, neu_dir_reparar: stock.reparar.value, neu_dir_recauchado: stock.recauchados.value,
+      neu_trac_nuevo: stock.tra_nuevos.value, neu_trac_transito: stock.tra_transito.value, neu_trac_reparar: stock.tra_reparar.value, neu_trac_recauchado: stock.tra_recauchados.value,
+      neu_libre_nuevo: stock.libre_nuevos.value, neu_libre_transito: stock.libre_transito.value, neu_libre_reparar: stock.libre_reparar.value, neu_libre_recauchado: stock.libre_recauchados.value,
       checklist: TOOLS_CHECKLIST.map(t => ({ herramienta: t, cantidad: tools[t].cantidad }))
     };
-    const item = { id: uuid(), tipo: "novedad", clienteId, ts: Date.now(), data };
-    pushQueue(item);
+    pushQueue({ id: uuid(), tipo: "novedad", clienteId, ts: Date.now(), data });
     syncQueue();
     setTurno({ clienteId, fecha: todayISO(), checkDone: true });
+    localStorage.setItem("check_completado_hoy", "true");
+
+    try {
+      await marcarInicioJornada(clienteId, user.id, todayISO(), horaInicio);
+      const diffs = await compararInventarioNeumaticos(clienteId, totales);
+      if (diffs.length) {
+        const ids = await registrarDiscrepancias(clienteId, user.id, todayISO(), diffs);
+        setDiscrepancias({ diffs, ids });
+        setSaving(false);
+        return;
+      }
+    } catch (e) { console.error("No se pudo comparar el inventario", e); }
+
+    pushToast("✓ Check diario completado");
     setSaving(false);
-    onDone();
+    setTimeout(onDone, 700);
+  }
+
+  if (discrepancias) {
+    return (
+      <div className="min-h-screen flex flex-col px-6 pt-16 safe-top">
+        {toastNode}
+        <div className="w-14 h-14 rounded-2xl bg-[#FEE2E2] flex items-center justify-center mb-5 text-2xl">⚠</div>
+        <h1 className="text-[22px] font-extrabold leading-tight mb-2">Tu conteo difiere del inventario registrado</h1>
+        <p className="text-[13.5px] text-sub mb-5">Podés seguir trabajando igual. Se le enviará una alerta a tu supervisor.</p>
+        <div className="space-y-2 mb-5">
+          {discrepancias.diffs.map(d => (
+            <div key={d.bucket} className="bg-[#FEF3C7] rounded-2xl px-4 py-3">
+              <p className="font-bold text-[14px] text-[#92400E]">{d.label}</p>
+              <p className="text-[12.5px] text-[#92400E]">Sistema: {d.sistema} · Contado: {d.fisico}</p>
+            </div>
+          ))}
+        </div>
+        <Field label="Observación (opcional)">
+          <TextArea placeholder="Contanos si sabés por qué difiere..." value={observacion} onChange={e => setObservacion(e.target.value)} />
+        </Field>
+        <div className="flex-1" />
+        <Button className="w-full mt-5 mb-8" onClick={() => { guardarObservacionDiscrepancia(discrepancias.ids, observacion).catch(() => {}); onDone(); }}>Entendido, continuar</Button>
+      </div>
+    );
   }
 
   return (
     <div className="min-h-screen pb-28 px-5 safe-top">
+      {toastNode}
       <div className="sticky top-0 z-30 bg-white px-5 pt-14 pb-3">
         <p className="text-[14px] text-muted mb-1">{formatDateLong()}</p>
         <h1 className="text-[30px] font-extrabold leading-none">Hola, {user.nombre}</h1>
-        <p className="text-[14px] text-sub mt-2 mb-4">Check diario antes de comenzar el turno</p>
+        <p className="text-[14px] text-sub mt-2 mb-4">Para iniciar tenés que completar el check del día</p>
         <div className="bg-[#F9FAFB] rounded-[20px] p-5">
           <div className="flex items-center justify-between mb-2">
-            <span className="font-bold text-[16px]">Herramientas</span>
-            <span className="text-[13px] font-bold">{toolsFilled}/{TOOLS_CHECKLIST.length}</span>
+            <span className="font-bold text-[16px]">Progreso del check</span>
+            <span className="text-[13px] font-bold">{toolsFilled + stockFilled}/{totalItems}</span>
           </div>
           <div className="h-2 rounded-full bg-[#E5E7EB] overflow-hidden">
             <div className="h-full bg-ink transition-all" style={{ width: progress + "%" }} />
@@ -783,35 +904,11 @@ function CheckDiario({ user, clienteId, onDone }) {
       </div>
 
       <div className="px-0 pt-4">
-        <p className="font-bold text-[15px] mb-2">Direccionales</p>
-        <Card className="mb-4 space-y-3">
-          {DIRECCIONAL_FIELDS.map(f => (
-            <div key={f.key} className="flex items-center justify-between">
-              <span className="text-[14px] font-semibold text-[#1F2937]">{f.label}</span>
-              <Stepper value={stock[f.key]} onChange={v => setStock(s => ({ ...s, [f.key]: v }))} />
-            </div>
-          ))}
-        </Card>
-
-        <p className="font-bold text-[15px] mb-2">Traccionales</p>
-        <Card className="mb-4 space-y-3">
-          {TRACCIONAL_FIELDS.map(f => (
-            <div key={f.key} className="flex items-center justify-between">
-              <span className="text-[14px] font-semibold text-[#1F2937]">{f.label}</span>
-              <Stepper value={stock[f.key]} onChange={v => setStock(s => ({ ...s, [f.key]: v }))} />
-            </div>
-          ))}
-        </Card>
-
-        <p className="font-bold text-[15px] mb-2">Llantas en patio</p>
-        <Card className="mb-4 space-y-3">
-          {PATIO_FIELDS.map(f => (
-            <div key={f.key} className="flex items-center justify-between">
-              <span className="text-[14px] font-semibold text-[#1F2937]">{f.label}</span>
-              <Stepper value={stock[f.key]} onChange={v => setStock(s => ({ ...s, [f.key]: v }))} />
-            </div>
-          ))}
-        </Card>
+        <p className="font-extrabold text-[17px] mb-3">Conteo de neumáticos</p>
+        {renderSeccion("Direccionales", DIRECCIONAL_FIELDS)}
+        {renderSeccion("Traccionales", TRACCIONAL_FIELDS)}
+        {renderSeccion("Ejes libres", LIBRE_FIELDS)}
+        {renderSeccion("Llantas en patio", PATIO_FIELDS)}
 
         <p className="font-bold text-[15px] mb-2">Checklist de herramientas</p>
         <p className="text-[12.5px] text-muted mb-3">Marcá el check para confirmar que revisaste la herramienta, aunque tengas 0.</p>
@@ -830,9 +927,9 @@ function CheckDiario({ user, clienteId, onDone }) {
 
       <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-bd p-4 safe-bottom">
         <Button className="w-full" disabled={!complete || saving} onClick={continuar}>
-          {saving ? <span className="spinner" /> : "Continuar a mis equipos"}
+          {saving ? <span className="spinner" /> : "Confirmar check diario"}
         </Button>
-        {!complete && <p className="text-center text-[12px] text-muted mt-2">Confirmá con el check todas las herramientas (la cantidad puede ser 0)</p>}
+        {!complete && <p className="text-center text-[12px] text-muted mt-2">Completá el conteo de neumáticos y confirmá las {TOOLS_CHECKLIST.length} herramientas</p>}
       </div>
     </div>
   );
