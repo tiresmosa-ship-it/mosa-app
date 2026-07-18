@@ -262,9 +262,16 @@ const db = {
 };
 
 async function siguienteNumeroAuditoria(clienteId, cfg) {
-  const { data, error } = await supabase.from("auditorias").select("numero_auditoria").order("numero_auditoria", { ascending: false }).limit(1);
-  let base = parseInt(cfg.numero_auditoria_inicio || 1, 10);
-  if (!error && data && data[0] && !isNaN(parseInt(data[0].numero_auditoria, 10))) base = Math.max(base, parseInt(data[0].numero_auditoria, 10) + 1);
+  const { data, error } = await supabase.from("auditorias").select("numero_auditoria").eq("cliente_id", clienteId);
+  const inicio = parseInt(cfg.numero_auditoria_inicio || 1, 10);
+  let maxExistente = null;
+  if (!error && data) {
+    data.forEach(r => {
+      const n = parseInt(r.numero_auditoria, 10);
+      if (!isNaN(n) && (maxExistente === null || n > maxExistente)) maxExistente = n;
+    });
+  }
+  const base = maxExistente === null ? inicio : maxExistente + 1;
   const pendientes = getQueue().filter(q => q.clienteId === clienteId && q.tipo === "auditoria").length;
   return String(base + pendientes);
 }
@@ -356,7 +363,8 @@ async function asegurarNeumatico(clienteId, numeroFuego, equipoId, posicion, ext
   });
 }
 async function enviarAuditoria(data) {
-  const { posiciones, receta, cliente_id, ...cab } = data;
+  const { posiciones, receta, cliente_id, ...rest } = data;
+  const cab = { ...rest, cliente_id };
   const { error: e1 } = await supabase.from("auditorias").insert(cab);
   if (e1) throw e1;
   for (const p of posiciones) {
@@ -1868,9 +1876,11 @@ async function construirYGuardarAuditoria({ user, clienteId, equipo, cfg, posDat
         leida_mecanico: false, leida_admin: false, leida_superadmin: false
       });
     }
+    const mmVals = [d.mm_borde_izq, d.mm_centro, d.mm_borde_der].map(v => parseFloat(v)).filter(v => !isNaN(v));
+    const promedioMM = mmVals.length ? Math.round((mmVals.reduce((a, b) => a + b, 0) / mmVals.length) * 100) / 100 : null;
     return {
       id: uuid(), posicion: d.posicion, numero_fuego: d.numero_fuego,
-      milimetros: d.minMM != null ? d.minMM : null, psi: d.psi ? parseInt(d.psi, 10) : null,
+      milimetros: promedioMM, psi: d.psi ? parseInt(d.psi, 10) : null,
       mm_borde_izq: d.mm_borde_izq !== "" ? parseFloat(d.mm_borde_izq) : null,
       mm_centro: d.mm_centro !== "" ? parseFloat(d.mm_centro) : null,
       mm_borde_der: d.mm_borde_der !== "" ? parseFloat(d.mm_borde_der) : null

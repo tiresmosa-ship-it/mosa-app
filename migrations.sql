@@ -236,3 +236,13 @@ END $$;
 -- un tipo de alerta nuevo.
 -- =====================================================================
 ALTER TABLE alertas DROP CONSTRAINT IF EXISTS alertas_tipo_check;
+
+-- =====================================================================
+-- 16) Falta cliente_id en auditorias
+-- El correlativo de numero_auditoria tiene que calcularse por cliente
+-- (MAX(numero_auditoria) WHERE cliente_id = cliente_activo), pero la
+-- tabla auditorias no tenia esa columna (por eso el codigo la sacaba
+-- del insert). La agregamos para poder filtrar correctamente.
+-- =====================================================================
+ALTER TABLE auditorias ADD COLUMN IF NOT EXISTS cliente_id TEXT REFERENCES clientes(id_cliente);
+UPDATE auditorias a SET cliente_id = e.cliente_id FROM equipos e WHERE a.equipo_id = e.id_equipo AND a.cliente_id IS NULL;
