@@ -260,3 +260,80 @@ UPDATE auditorias a SET cliente_id = e.cliente_id FROM equipos e WHERE a.equipo_
 -- ya fue eliminado en el bloque 15, asi que ese tipo entra sin problema).
 -- =====================================================================
 ALTER TABLE auditorias_receta ADD COLUMN IF NOT EXISTS discrepancias_neumaticos JSONB DEFAULT '[]'::jsonb;
+
+-- =====================================================================
+-- 18) Partes faltantes de la hoja de cambio
+-- =====================================================================
+
+-- 18a) neumaticos.estado_actual: el CHECK actual solo permite
+-- nuevo/transito/recauchado/baja, pero al montar un neumatico (entrada) la
+-- app ahora lo marca como 'en_uso' (spec de la hoja de cambio). Ampliamos el
+-- CHECK para incluir ese valor sin perder la validacion.
+ALTER TABLE neumaticos DROP CONSTRAINT IF EXISTS neumaticos_estado_actual_check;
+ALTER TABLE neumaticos ADD CONSTRAINT neumaticos_estado_actual_check
+  CHECK (estado_actual IN ('nuevo','transito','recauchado','baja','en_uso'));
+
+-- 18b) neumaticos.psi_actual: la tabla no guardaba el PSI vigente del
+-- neumatico. La regulacion de PSI en la hoja de cambio ahora lo actualiza.
+ALTER TABLE neumaticos ADD COLUMN IF NOT EXISTS psi_actual INT;
+
+-- 18c) auditorias_receta.estado: se agregan los estados nuevos del ciclo de
+-- vida del instructivo (en_proceso/sin_cambio/parcial/completado). Si existe
+-- un CHECK viejo que los limite, lo sacamos (mismo criterio que alertas.tipo
+-- en el bloque 15). 'en_proceso' ya se venia guardando sin problema.
+ALTER TABLE auditorias_receta DROP CONSTRAINT IF EXISTS auditorias_receta_estado_check;
+
+-- 18d) movimientos_bodega: la hoja de cambio ahora registra cada salida
+-- (tipo='salida', origen segun motivo) y cada montaje (tipo='entrada',
+-- origen='montaje'). La tabla ya tenia GRANT + policy anon (bloque 5), pero
+-- podria conservar una FK vieja de mecanico_id -> mecanicos (mismo patron de
+-- los bloques 9 y 14). La sacamos si existe para que el insert con id de
+-- 'usuarios' no falle.
+DO $$
+DECLARE
+  rec RECORD;
+BEGIN
+  FOR rec IN
+    SELECT tc.constraint_name, tc.table_name
+    FROM information_schema.table_constraints tc
+    JOIN information_schema.constraint_column_usage ccu ON tc.constraint_name = ccu.constraint_name
+    WHERE tc.constraint_type = 'FOREIGN KEY' AND ccu.table_name = 'mecanicos'
+      AND tc.table_name = 'movimientos_bodega'
+  LOOP
+    EXECUTE format('ALTER TABLE %I DROP CONSTRAINT %I', rec.table_name, rec.constraint_name);
+  END LOOP;
+END $$;
+
+-- =====================================================================
+-- 19) cambio_detalle.motivo_salida: el CHECK actual solo permite
+-- transito/reparacion/baja. Pero la baja ahora guarda el MOTIVO especifico
+-- (desgaste_normal/pinchadura/corte/dano_prematuro/otro) en motivo_salida, y
+-- las filas de rotacion se marcan con 'rotacion'. Ampliamos el CHECK para
+-- aceptar esos valores (mas NULL, que usan las entradas/montajes).
+-- =====================================================================
+ALTER TABLE cambio_detalle DROP CONSTRAINT IF EXISTS cambio_detalle_motivo_salida_check;
+ALTER TABLE cambio_detalle ADD CONSTRAINT cambio_detalle_motivo_salida_check
+  CHECK (motivo_salida IS NULL OR motivo_salida IN (
+    'transito','reparacion','baja',
+    'desgaste_normal','pinchadura','corte','dano_prematuro','otro',
+    'rotacion'
+  ));
+
+-- =====================================================================
+-- 20) CHECKs de bodega/origen que bloqueaban las salidas
+-- =====================================================================
+
+-- 20a) neumaticos.bodega: el CHECK actual solo permite los valores viejos
+-- (nuevo/recauchado/transito/salidas). Al sacar un neumatico la app ahora
+-- setea bodega='baja' o 'reparacion' (destino de la salida), que el CHECK
+-- rechazaba. Lo ampliamos manteniendo NULL y los valores existentes.
+ALTER TABLE neumaticos DROP CONSTRAINT IF EXISTS neumaticos_bodega_check;
+ALTER TABLE neumaticos ADD CONSTRAINT neumaticos_bodega_check
+  CHECK (bodega IS NULL OR bodega IN
+    ('nuevo','recauchado','transito','reparacion','baja','salidas'));
+
+-- 20b) movimientos_bodega.origen: el CHECK fijo bloquea 'baja_<motivo>'
+-- (baja_pinchadura, etc.), que es un descriptor compositivo con variantes
+-- ilimitadas. Lo eliminamos (mismo criterio que alertas.tipo en el bloque 15);
+-- 'montaje', 'transito', 'reparacion' y 'baja_*' quedan todos permitidos.
+ALTER TABLE movimientos_bodega DROP CONSTRAINT IF EXISTS movimientos_bodega_origen_check;

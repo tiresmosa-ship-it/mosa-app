@@ -379,24 +379,73 @@ async function enviarAuditoria(data) {
   if (receta) { const { error: e3 } = await supabase.from("auditorias_receta").insert({ ...receta, auditoria_id: cab.id_auditoria, cliente_id }); if (e3) throw e3; }
   await supabase.from("equipos").update({ kilometros: cab.kilometraje }).eq("id_equipo", cab.equipo_id);
 }
+async function insertMovimientoBodega(clienteId, mecanicoId, tipo, origen, numeroFuego) {
+  const { error } = await supabase.from("movimientos_bodega").insert({
+    id: uuid(), cliente_id: clienteId, mecanico_id: mecanicoId, fecha: todayISO(),
+    categoria: "neumatico", tipo, origen, numero_fuego: numeroFuego
+  });
+  if (error) console.error("No se pudo registrar movimiento de bodega", error);
+}
 async function enviarCambio(data) {
-  const { sale, entra, intervenciones, alertas, cliente_id, ...cab } = data;
+  const { sale, entra, rotaciones, intervenciones, alertas, recetaUpdate, cliente_id, ...cab } = data;
+  const mecanicoId = cab.bultero_id;
   const { error: e1 } = await supabase.from("cambios_neumaticos").insert(cab);
   if (e1) throw e1;
   const detalle = [];
+  // SALIDAS: cambio_detalle (tipo='sale', motivo_salida), neumaticos (bodega/estado),
+  // movimientos_bodega (tipo='salida', origen segun motivo).
   for (const s of sale) {
     await asegurarNeumatico(cliente_id, s.numero_fuego, null, null, s);
-    detalle.push({ id: uuid(), cambio_id: cab.id_cambio, tipo: "sale", numero_fuego: s.numero_fuego, posicion: s.posicion || null, milimetros: s.milimetros || null, psi: s.psi || null, estado: null, motivo_salida: s.motivo || null });
+    detalle.push({ id: uuid(), cambio_id: cab.id_cambio, tipo: "sale", numero_fuego: s.numero_fuego, posicion: s.posicion || null, milimetros: s.milimetros || null, psi: s.psi || null, estado: null, motivo_salida: s.motivo_salida || s.motivo || null });
     await actualizarNeumaticoSale(cliente_id, s);
+    await insertMovimientoBodega(cliente_id, mecanicoId, "salida", s.origen_mov || s.motivo || "salida", s.numero_fuego);
   }
+  // ENTRADAS (montaje): cambio_detalle (tipo='entra', estado=tipo original),
+  // neumaticos (equipo/posicion, estado_actual='en_uso'), movimientos_bodega
+  // (tipo='entrada', origen='montaje').
   for (const en of entra) {
     await asegurarNeumatico(cliente_id, en.numero_fuego, cab.equipo_id, en.posicion, en);
     detalle.push({ id: uuid(), cambio_id: cab.id_cambio, tipo: "entra", numero_fuego: en.numero_fuego, posicion: en.posicion || null, milimetros: en.milimetros || null, psi: en.psi || null, estado: en.estado || null, motivo_salida: null });
     await actualizarNeumaticoEntra(cliente_id, cab.equipo_id, en);
+    await insertMovimientoBodega(cliente_id, mecanicoId, "entrada", "montaje", en.numero_fuego);
+  }
+  // ROTACIONES: 4 filas de cambio_detalle (sale A / entra A / sale B / entra B),
+  // se intercambia posicion_actual entre A y B. El inventario NO cambia y no se
+  // registran movimientos_bodega.
+  for (const r of (rotaciones || [])) {
+    const a = r.a, b = r.b;
+    detalle.push({ id: uuid(), cambio_id: cab.id_cambio, tipo: "sale", numero_fuego: a.numero_fuego, posicion: r.origen, milimetros: a.mm || null, psi: a.psi || null, estado: null, motivo_salida: "rotacion" });
+    detalle.push({ id: uuid(), cambio_id: cab.id_cambio, tipo: "entra", numero_fuego: a.numero_fuego, posicion: r.destino, milimetros: a.mm || null, psi: a.psi || null, estado: null, motivo_salida: "rotacion" });
+    if (b) {
+      detalle.push({ id: uuid(), cambio_id: cab.id_cambio, tipo: "sale", numero_fuego: b.numero_fuego, posicion: r.destino, milimetros: b.mm || null, psi: b.psi || null, estado: null, motivo_salida: "rotacion" });
+      detalle.push({ id: uuid(), cambio_id: cab.id_cambio, tipo: "entra", numero_fuego: b.numero_fuego, posicion: r.origen, milimetros: b.mm || null, psi: b.psi || null, estado: null, motivo_salida: "rotacion" });
+      // Swap seguro (evita choque si hay indice unico por equipo/posicion):
+      // A -> null, B -> origen, A -> destino.
+      await supabase.from("neumaticos").update({ posicion_actual: null }).eq("cliente_id", cliente_id).eq("numero_fuego", a.numero_fuego).eq("equipo_actual", cab.equipo_id);
+      await supabase.from("neumaticos").update({ posicion_actual: r.origen }).eq("cliente_id", cliente_id).eq("numero_fuego", b.numero_fuego).eq("equipo_actual", cab.equipo_id);
+      await supabase.from("neumaticos").update({ posicion_actual: r.destino }).eq("cliente_id", cliente_id).eq("numero_fuego", a.numero_fuego).eq("equipo_actual", cab.equipo_id);
+    } else {
+      await supabase.from("neumaticos").update({ posicion_actual: r.destino }).eq("cliente_id", cliente_id).eq("numero_fuego", a.numero_fuego).eq("equipo_actual", cab.equipo_id);
+    }
   }
   if (detalle.length) { const { error: e2 } = await supabase.from("cambio_detalle").insert(detalle); if (e2) throw e2; }
-  if (intervenciones && intervenciones.length) { const { error: e3 } = await supabase.from("intervenciones").insert(intervenciones); if (e3) throw e3; }
+  if (intervenciones && intervenciones.length) {
+    const { error: e3 } = await supabase.from("intervenciones").insert(intervenciones); if (e3) throw e3;
+    // Regulacion de PSI: actualizar neumaticos.psi_actual (no se toca auditoria_posiciones).
+    for (const iv of intervenciones) {
+      if (iv.tipo === "regulacion_psi" && iv.psi_nuevo != null && iv.numero_fuego) {
+        await supabase.from("neumaticos").update({ psi_actual: iv.psi_nuevo }).eq("cliente_id", cliente_id).eq("numero_fuego", iv.numero_fuego);
+      }
+    }
+  }
   await supabase.from("equipos").update({ kilometros: cab.kilometraje }).eq("id_equipo", cab.equipo_id);
+  // Cierre del instructivo asociado: parcial (quedan tareas) o completado.
+  if (recetaUpdate && recetaUpdate.id) {
+    const { error: e4 } = await supabase.from("auditorias_receta").update({
+      estado: recetaUpdate.estado, tareas_cumplidas: recetaUpdate.tareas_cumplidas, tareas_pendientes: recetaUpdate.tareas_pendientes
+    }).eq("id", recetaUpdate.id);
+    if (e4) console.error("No se pudo actualizar el estado del instructivo", e4);
+  }
   for (const a of (alertas || [])) await insertAlerta(a);
 }
 async function enviarCierre(data) {
@@ -414,25 +463,35 @@ async function insertAlerta(a) {
   if (error) console.error("No se pudo registrar alerta", error);
 }
 async function actualizarNeumaticoSale(clienteId, s) {
+  // destino = motivo de salida: transito | reparacion | baja.
+  // bodega = destino (baja/transito/reparacion), estado_actual valido del CHECK.
+  const destino = s.motivo;
+  const bodega = destino === "baja" ? "baja" : destino; // 'baja' | 'transito' | 'reparacion'
+  const estado = destino === "baja" ? "baja" : "transito";
   const { data: existente } = await supabase.from("neumaticos").select("*").eq("cliente_id", clienteId).eq("numero_fuego", s.numero_fuego).maybeSingle();
-  const bodega = s.motivo === "baja" ? "salidas" : s.motivo === "reparacion" ? "transito" : "transito";
-  const estado = s.motivo === "baja" ? "baja" : "transito";
   if (existente) {
-    await supabase.from("neumaticos").update({ estado_actual: estado, bodega, equipo_actual: null, posicion_actual: null }).eq("id_neumatico", existente.id_neumatico);
+    const { error } = await supabase.from("neumaticos").update({ estado_actual: estado, bodega, equipo_actual: null, posicion_actual: null }).eq("id_neumatico", existente.id_neumatico);
+    if (error) throw error;
   } else {
-    await supabase.from("neumaticos").insert({ id_neumatico: uuid(), numero_fuego: s.numero_fuego, cliente_id: clienteId, estado_actual: estado, bodega, equipo_actual: null, posicion_actual: null, fecha_ingreso: todayISO(), activo: true });
+    const { error } = await supabase.from("neumaticos").insert({ id_neumatico: uuid(), numero_fuego: s.numero_fuego, cliente_id: clienteId, estado_actual: estado, bodega, equipo_actual: null, posicion_actual: null, fecha_ingreso: todayISO(), activo: true });
+    if (error) throw error;
   }
 }
 async function actualizarNeumaticoEntra(clienteId, equipoId, en) {
+  // Montaje: el neumatico queda montado en el equipo -> estado_actual='en_uso',
+  // bodega=NULL (spec hoja de cambio). El tipo original (nuevo/transito/
+  // recauchado) queda registrado en cambio_detalle.estado.
   const { data: existente } = await supabase.from("neumaticos").select("*").eq("cliente_id", clienteId).eq("numero_fuego", en.numero_fuego).maybeSingle();
   if (existente) {
-    await supabase.from("neumaticos").update({ estado_actual: en.estado || existente.estado_actual || "nuevo", bodega: null, equipo_actual: equipoId, posicion_actual: en.posicion || null }).eq("id_neumatico", existente.id_neumatico);
+    const { error } = await supabase.from("neumaticos").update({ estado_actual: "en_uso", bodega: null, equipo_actual: equipoId, posicion_actual: en.posicion || null }).eq("id_neumatico", existente.id_neumatico);
+    if (error) throw error;
   } else {
-    await supabase.from("neumaticos").insert({
+    const { error } = await supabase.from("neumaticos").insert({
       id_neumatico: uuid(), numero_fuego: en.numero_fuego, cliente_id: clienteId,
-      marca: en.marca || null, medida: en.medida || null, estado_actual: en.estado || "nuevo", bodega: null,
+      marca: en.marca || null, medida: en.medida || null, estado_actual: "en_uso", bodega: null,
       equipo_actual: equipoId, posicion_actual: en.posicion || null, fecha_ingreso: todayISO(), activo: true
     });
+    if (error) throw error;
   }
 }
 window.addEventListener("online", () => syncQueue());
@@ -1354,7 +1413,50 @@ async function subirFotoCheckpoint(clienteId, pos, file) {
   return data.publicUrl;
 }
 
-function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, checklistInicial, kmInicial, onFinish, onCancel }) {
+const BAJA_MOTIVOS = [
+  { slug: "desgaste_normal", label: "Desgaste normal" },
+  { slug: "pinchadura", label: "Pinchadura" },
+  { slug: "corte", label: "Corte" },
+  { slug: "dano_prematuro", label: "Daño prematuro" },
+  { slug: "otro", label: "Otro" }
+];
+function BajaModal({ pos, fuego, onClose, onConfirm }) {
+  const [sel, setSel] = useState("desgaste_normal");
+  return (
+    <Modal title="Motivo de baja" onClose={onClose}>
+      <p className="text-[13.5px] text-sub mb-4">Neumático <span className="font-bold text-ink">{fuego}</span> · Posición P{pos}</p>
+      <div className="space-y-2 mb-5">
+        {BAJA_MOTIVOS.map(m => (
+          <button key={m.slug} type="button" onClick={() => setSel(m.slug)}
+            className={cx("w-full text-left rounded-2xl border px-4 py-3 flex items-center gap-3", sel === m.slug ? "border-ink bg-[#F3F4F6]" : "border-bd bg-white")}>
+            <span className={cx("w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0", sel === m.slug ? "border-ink" : "border-[#D1D5DB]")}>
+              {sel === m.slug && <span className="w-2.5 h-2.5 rounded-full bg-ink" />}
+            </span>
+            <span className="text-[14px] font-semibold">{m.label}</span>
+          </button>
+        ))}
+      </div>
+      <Button variant="danger" className="w-full" onClick={() => onConfirm(sel)}>Confirmar baja</Button>
+    </Modal>
+  );
+}
+function InstructivoPendienteModal({ pendiente, onUsar, onLimpia }) {
+  const fecha = pendiente.auditorias ? pendiente.auditorias.fecha : null;
+  const pend = pendiente.tareas_pendientes != null ? pendiente.tareas_pendientes : (pendiente.total_tareas || 0);
+  return (
+    <Modal title="Instructivo pendiente">
+      <p className="text-[14px] text-[#374151] mb-5">
+        Este equipo tiene un instructivo pendiente de la auditoría del <span className="font-bold">{fecha ? formatDateLong(fecha) : "—"}</span> con <span className="font-bold">{pend}</span> tarea{pend !== 1 ? "s" : ""} sin completar. ¿Querés trabajar sobre ese instructivo?
+      </p>
+      <div className="space-y-3">
+        <Button className="w-full" onClick={onUsar}>Sí, usar ese instructivo</Button>
+        <Button variant="ghost" className="w-full" onClick={onLimpia}>No, abrir hoja limpia</Button>
+      </div>
+    </Modal>
+  );
+}
+
+function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, checklistInicial, kmInicial, recetaIdInicial, pendiente, onFinish, onCancel }) {
   const [km, setKm] = useState(kmInicial || equipo.kilometros || "");
   const [kmSet, setKmSet] = useState(!!kmInicial);
   const [posData, setPosData] = useState(() => ({ ...posDataInicial }));
@@ -1362,12 +1464,18 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
   const [nuevaTarea, setNuevaTarea] = useState("");
   const [infoPos, setInfoPos] = useState(null);
   const [montaje, setMontaje] = useState(null); // { tipo, pos }
+  const [bajaSel, setBajaSel] = useState(null); // { pos }
   const [confirmDlg, setConfirmDlg] = useState(null); // { title, desc, onConfirm }
   const [ghost, setGhost] = useState(null); // { x, y }
   const [pushToast, toastNode] = useToasts();
+  // Instructivo pendiente (solo entrada directa a la hoja, no viniendo de auditoria):
+  // null = ya resuelto / no hay; objeto = falta que el mecanico elija.
+  const [pendienteDlg, setPendienteDlg] = useState(pendiente || null);
+  const recetaId = useRef(recetaIdInicial || null);
   const startedAt = useRef(Date.now());
   const entra = useRef([]);
   const sale = useRef([]);
+  const rotaciones = useRef([]);
   const intervenciones = useRef([]);
   const dragRef = useRef(null);
   const [saving, setSaving] = useState(false);
@@ -1377,23 +1485,33 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
       id: uuid(), equipo_id: equipo.id_equipo, mecanico_id: user.id, cliente_id: clienteId,
       fecha: todayISO(), tipo, posicion: pos, numero_fuego: posData[pos] ? posData[pos].numero_fuego : null,
       psi_nuevo: extra && extra.psi_nuevo != null ? extra.psi_nuevo : null,
-      observaciones: (extra && extra.observaciones) || null, foto_url: (extra && extra.foto_url) || null
+      observaciones: (extra && extra.observaciones) || null, foto_url: (extra && extra.foto_url) || null,
+      timestamp_inicio: (extra && extra.timestamp_inicio) || null, timestamp_fin: (extra && extra.timestamp_fin) || null
     });
   }
 
   function ejecutarSalida(pos, motivo) {
     const d = posData[pos];
-    const label = motivo === "transito" ? "tránsito" : motivo === "reparacion" ? "reparación" : "baja definitiva";
+    // Baja: pide motivo con radio buttons (modal aparte). Transito/reparacion: confirmacion directa.
+    if (motivo === "baja") { setBajaSel({ pos }); return; }
+    const label = motivo === "transito" ? "tránsito" : "reparación";
     setConfirmDlg({
       title: "Confirmar salida",
       desc: `¿Enviar el neumático ${d.numero_fuego} (P${pos}) a ${label}?`,
       onConfirm: () => {
-        sale.current.push({ numero_fuego: d.numero_fuego, posicion: pos, milimetros: d.minMM || null, psi: d.psi || null, motivo });
+        sale.current.push({ numero_fuego: d.numero_fuego, posicion: pos, milimetros: d.minMM || null, psi: d.psi || null, motivo, motivo_salida: motivo, origen_mov: motivo });
         setPosData(s => { const n = { ...s }; delete n[pos]; return n; });
-        pushToast(motivo === "baja" ? "✓ Baja registrada" : "✓ Salida registrada");
+        pushToast("✓ Salida registrada");
         setConfirmDlg(null); setInfoPos(null);
       }
     });
+  }
+  function confirmarBaja(pos, reason) {
+    const d = posData[pos];
+    sale.current.push({ numero_fuego: d.numero_fuego, posicion: pos, milimetros: d.minMM || null, psi: d.psi || null, motivo: "baja", motivo_salida: reason, origen_mov: "baja_" + reason });
+    setPosData(s => { const n = { ...s }; delete n[pos]; return n; });
+    pushToast("✓ Baja registrada");
+    setBajaSel(null); setInfoPos(null);
   }
 
   function montarNeumatico(pos, data, tipo) {
@@ -1416,11 +1534,19 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
       title: "Confirmar rotación",
       desc: destFuego ? `¿Intercambiar el neumático de P${origen} con el de P${destino}?` : `¿Mover el neumático de P${origen} a la posición P${destino}?`,
       onConfirm: () => {
+        const a = posData[origen], b = posData[destino];
+        // Registrar la rotacion para persistirla (4 filas de cambio_detalle si es
+        // intercambio, 2 si es mover a posicion vacia). No cambia inventario.
+        rotaciones.current.push({
+          origen, destino,
+          a: { numero_fuego: a.numero_fuego, mm: a.minMM != null ? a.minMM : null, psi: a.psi || null },
+          b: b ? { numero_fuego: b.numero_fuego, mm: b.minMM != null ? b.minMM : null, psi: b.psi || null } : null
+        });
         setPosData(s => {
           const next = { ...s };
-          const a = next[origen], b = next[destino];
-          if (b) next[origen] = { ...b, posicion: origen }; else delete next[origen];
-          next[destino] = { ...a, posicion: destino };
+          const na = next[origen], nb = next[destino];
+          if (nb) next[origen] = { ...nb, posicion: origen }; else delete next[origen];
+          next[destino] = { ...na, posicion: destino };
           return next;
         });
         pushToast("✓ Rotación registrada");
@@ -1491,6 +1617,12 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
     const numero_cambio = await siguienteNumeroCambio(clienteId, cfg).catch(() => String(Date.now()).slice(-6));
     const sistemaTotal = checklist.filter(c => !c.extra).length;
     const cumplidas = checklist.filter(c => !c.extra && c.done).length;
+    const pendientesTareas = sistemaTotal - cumplidas;
+    // Cierre del instructivo: parcial si quedan tareas, completado si no. Sin alerta.
+    const recetaUpdate = recetaId.current ? {
+      id: recetaId.current, estado: pendientesTareas > 0 ? "parcial" : "completado",
+      tareas_cumplidas: cumplidas, tareas_pendientes: pendientesTareas
+    } : null;
     const cab = {
       id_cambio: uuid(), equipo_id: equipo.id_equipo, bultero_id: user.id, cliente_id: clienteId,
       fecha: todayISO(), kilometraje: parseInt(km, 10) || equipo.kilometros,
@@ -1499,7 +1631,8 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
       ruedas_torqueadas: intervenciones.current.filter(i => i.tipo === "retorqueo" || i.tipo === "checkpoint").length,
       observaciones: `Instructivo seguido: ${sistemaTotal ? Math.round((cumplidas / sistemaTotal) * 100) : 100}%`,
       numero_cambio,
-      sale: sale.current, entra: entra.current, intervenciones: intervenciones.current
+      sale: sale.current, entra: entra.current, rotaciones: rotaciones.current, intervenciones: intervenciones.current,
+      recetaUpdate
     };
     pushQueue({ id: uuid(), tipo: "cambio", clienteId, ts: Date.now(), data: cab });
     syncQueue();
@@ -1507,8 +1640,37 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
     onFinish();
   }
 
+  // Instructivo pendiente: elegir usar el existente (carga el checklist) o abrir limpia.
+  if (pendienteDlg) {
+    return (
+      <InstructivoPendienteModal pendiente={pendienteDlg}
+        onUsar={async () => {
+          const pa = pendienteDlg.posiciones_alerta || {};
+          const recs = Array.isArray(pa.recomendaciones) ? pa.recomendaciones : [];
+          const extras = Array.isArray(pa.tareas_extra) ? pa.tareas_extra : (Array.isArray(pendienteDlg.tareas_extra) ? pendienteDlg.tareas_extra : []);
+          const cl = [
+            ...recs.map(r => ({ id: r.id || uuid(), texto: r.texto, done: !!r.done, extra: false })),
+            ...extras.map(t => ({ id: uuid(), texto: t.texto, done: !!t.done, extra: true }))
+          ];
+          setChecklist(cl);
+          recetaId.current = pendienteDlg.id;
+          try { await supabase.from("auditorias_receta").update({ estado: "en_proceso" }).eq("id", pendienteDlg.id); } catch (e) { console.error(e); }
+          setPendienteDlg(null);
+        }}
+        onLimpia={async () => {
+          try { await supabase.from("auditorias_receta").update({ estado: "sin_cambio" }).eq("id", pendienteDlg.id); } catch (e) { console.error(e); }
+          recetaId.current = null;
+          setPendienteDlg(null);
+        }} />
+    );
+  }
+
   if (!kmSet) {
-    return <KmModal kmActual={equipo.kilometros} km={km} setKm={setKm} onContinue={() => setKmSet(true)} />;
+    return <KmModal kmActual={equipo.kilometros} km={km} setKm={setKm} onContinue={async () => {
+      // Entrada directa (sin venir de auditoria): persistir los km en el equipo.
+      try { await supabase.from("equipos").update({ kilometros: parseInt(km, 10) }).eq("id_equipo", equipo.id_equipo); } catch (e) { console.error(e); }
+      setKmSet(true);
+    }} />;
   }
 
   return (
@@ -1576,8 +1738,9 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
               title: "Confirmar regulación de PSI",
               desc: `Ajustar P${infoPos} (${posData[infoPos].numero_fuego}) a ${nuevoPsi} psi.`,
               onConfirm: () => {
+                const ahora = new Date().toISOString();
                 setPosData(s => ({ ...s, [infoPos]: { ...s[infoPos], psi: nuevoPsi } }));
-                registrarIntervencion("regulacion_psi", infoPos, { psi_nuevo: parseInt(nuevoPsi, 10) });
+                registrarIntervencion("regulacion_psi", infoPos, { psi_nuevo: parseInt(nuevoPsi, 10), timestamp_inicio: ahora, timestamp_fin: ahora });
                 const ev = evaluarPosicion(axleCfg, cfg, infoPos, equipo.tipo, { ...posData[infoPos], psi: nuevoPsi });
                 if (ev.status !== "ok") pushQueue({ id: uuid(), tipo: "alerta", clienteId, ts: Date.now(), data: { id: uuid(), cliente_id: clienteId, equipo_id: equipo.id_equipo, mecanico_id: user.id, tipo: parseInt(nuevoPsi, 10) < ev.psiObjetivo ? "psi_bajo" : "psi_alto", severidad: ev.status === "alerta" ? "rojo" : "amarillo", titulo: "PSI fuera de rango tras regulación", descripcion: `P${infoPos} quedó en ${nuevoPsi} psi (objetivo ${ev.psiObjetivo})`, posicion: infoPos, numero_fuego: posData[infoPos].numero_fuego, leida_mecanico: false, leida_admin: false, leida_superadmin: false } });
                 pushToast("✓ Regulación guardada");
@@ -1611,6 +1774,12 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
             onConfirm: () => { montarNeumatico(montaje.pos, data, montaje.tipo); setConfirmDlg(null); }
           })}
         />
+      )}
+
+      {bajaSel && posData[bajaSel.pos] && (
+        <BajaModal pos={bajaSel.pos} fuego={posData[bajaSel.pos].numero_fuego}
+          onClose={() => setBajaSel(null)}
+          onConfirm={(reason) => confirmarBaja(bajaSel.pos, reason)} />
       )}
 
       {confirmDlg && <Confirm title={confirmDlg.title} desc={confirmDlg.desc} onConfirm={confirmDlg.onConfirm} onCancel={() => setConfirmDlg(null)} />}
@@ -1951,18 +2120,31 @@ async function construirYGuardarAuditoria({ user, clienteId, equipo, cfg, posDat
     };
   });
 
+  // Recomendaciones reales (se excluye el placeholder "Todo en orden").
+  const realRecs = recsInfo.recs.filter(r => r.key);
+  const recomendacionesJSON = realRecs.map(r => ({ id: r.id, key: r.key, texto: r.texto, done: false }));
+  const tareasExtraJSON = checklist.filter(c => c.extra).map(c => ({ texto: c.texto, done: c.done }));
+  const totalTareas = realRecs.length;
+  const recetaId = uuid();
   const cab = {
     id_auditoria: uuid(), equipo_id: equipo.id_equipo, bultero_id: user.id, cliente_id: clienteId,
     fecha: todayISO(), kilometraje: parseInt(km, 10) || equipo.kilometros, numero_auditoria,
     posiciones,
     receta: {
-      id: uuid(), cliente_id: clienteId,
+      id: recetaId, cliente_id: clienteId,
       rec_calibrar_psi: !!flags.rec_calibrar_psi, rec_cambiar_neumaticos: !!flags.rec_cambiar_neumaticos,
       rec_rotar_delanteros: !!flags.rec_rotar_delanteros, rec_rotar_traccionales: !!flags.rec_rotar_traccionales,
       rec_rotar_eje_libre: !!flags.rec_rotar_eje_libre, rec_rotar_semi_e1: !!flags.rec_rotar_semi_e1,
       rec_rotar_semi_e2: !!flags.rec_rotar_semi_e2, rec_rotar_semi_e3: !!flags.rec_rotar_semi_e3,
-      posiciones_alerta: recsInfo.posicionesAlerta, seguio_receta: pct === 100, pct_receta_seguida: pct,
-      tareas_extra: checklist.filter(c => c.extra).map(c => ({ texto: c.texto, done: c.done })),
+      // posiciones_alerta agrupa recomendaciones + discrepancias + tareas extra (spec).
+      posiciones_alerta: {
+        recomendaciones: recomendacionesJSON,
+        discrepancias_neumaticos: discrepanciasNeumaticos || [],
+        tareas_extra: tareasExtraJSON
+      },
+      total_tareas: totalTareas, tareas_cumplidas: 0, tareas_pendientes: totalTareas,
+      seguio_receta: pct === 100, pct_receta_seguida: pct,
+      tareas_extra: tareasExtraJSON,
       discrepancias_neumaticos: discrepanciasNeumaticos || [],
       estado: recetaEstado || "pendiente",
       observaciones_mecanico: null
@@ -1985,7 +2167,18 @@ async function construirYGuardarAuditoria({ user, clienteId, equipo, cfg, posDat
   pushQueue({ id: uuid(), tipo: "auditoria", clienteId, ts: Date.now(), data: cab });
   alertasGeneradas.forEach(a => pushQueue({ id: uuid(), tipo: "alerta", clienteId, ts: Date.now(), data: a }));
   syncQueue();
-  return alertasGeneradas.length;
+  return { alertas: alertasGeneradas.length, recetaId, auditoriaId: cab.id_auditoria };
+}
+
+async function buscarInstructivoPendiente(equipoId) {
+  // Instructivo de una auditoria previa que sigue pendiente o parcial.
+  const { data, error } = await supabase.from("auditorias_receta")
+    .select("id,auditoria_id,estado,total_tareas,tareas_cumplidas,tareas_pendientes,posiciones_alerta,tareas_extra,auditorias!inner(equipo_id,fecha)")
+    .eq("auditorias.equipo_id", equipoId).in("estado", ["pendiente", "parcial"]);
+  if (error) throw error;
+  if (!data || !data.length) return null;
+  data.sort((a, b) => ((b.auditorias && b.auditorias.fecha) || "").localeCompare((a.auditorias && a.auditorias.fecha) || ""));
+  return data[0];
 }
 
 async function construirPosDataDesdeEquipo(equipoId) {
@@ -2160,7 +2353,12 @@ function MecanicoApp({ user }) {
         <SeleccionEquipo clienteId={clienteId} onPick={(eq) => setFlow({ stage: "accion", equipo: eq })} />
         <AccionEquipo equipo={flow.equipo} onClose={() => setFlow(null)}
           onAuditoria={() => setFlow({ stage: "auditoria", equipo: flow.equipo })}
-          onCambio={() => construirPosDataDesdeEquipo(flow.equipo.id_equipo).then(pd => setFlow({ stage: "cambio", equipo: flow.equipo, axleCfg: axleConfigFor(flow.equipo), posData: pd, checklist: [] }))} />
+          onCambio={async () => {
+            const pd = await construirPosDataDesdeEquipo(flow.equipo.id_equipo);
+            let pend = null;
+            try { pend = await buscarInstructivoPendiente(flow.equipo.id_equipo); } catch (e) { console.error("No se pudo buscar instructivo pendiente", e); }
+            setFlow({ stage: "cambio", equipo: flow.equipo, axleCfg: axleConfigFor(flow.equipo), posData: pd, checklist: [], pendiente: pend });
+          }} />
       </>
     );
   } else if (flow && flow.stage === "auditoria") {
@@ -2182,12 +2380,14 @@ function MecanicoApp({ user }) {
         checklist={flow.checklist} setChecklist={(fn) => setFlow(f => ({ ...f, checklist: typeof fn === "function" ? fn(f.checklist) : fn }))}
         discrepancias={flow.discrepanciasNeumaticos}
         onContinuar={async () => {
-          const n = await construirYGuardarAuditoria({ user, clienteId, equipo: flow.equipo, cfg, posData: flow.posData, axleCfg: flow.axleCfg, km: flow.km, checklist: flow.checklist, recsInfo: flow.recsInfo, discrepanciasNeumaticos: flow.discrepanciasNeumaticos, recetaEstado: "en_proceso" });
+          const res = await construirYGuardarAuditoria({ user, clienteId, equipo: flow.equipo, cfg, posData: flow.posData, axleCfg: flow.axleCfg, km: flow.km, checklist: flow.checklist, recsInfo: flow.recsInfo, discrepanciasNeumaticos: flow.discrepanciasNeumaticos, recetaEstado: "en_proceso" });
+          const n = res.alertas;
           pushToast(n > 0 ? `✓ Auditoría guardada · ${n} alerta${n !== 1 ? "s" : ""} generada${n !== 1 ? "s" : ""}` : "✓ Auditoría guardada");
-          setFlow({ stage: "cambio", equipo: flow.equipo, axleCfg: flow.axleCfg, posData: flow.posData, checklist: flow.checklist, kmInicial: flow.km });
+          setFlow({ stage: "cambio", equipo: flow.equipo, axleCfg: flow.axleCfg, posData: flow.posData, checklist: flow.checklist, kmInicial: flow.km, recetaIdInicial: res.recetaId });
         }}
         onCerrar={async () => {
-          const n = await construirYGuardarAuditoria({ user, clienteId, equipo: flow.equipo, cfg, posData: flow.posData, axleCfg: flow.axleCfg, km: flow.km, checklist: flow.checklist, recsInfo: flow.recsInfo, discrepanciasNeumaticos: flow.discrepanciasNeumaticos, recetaEstado: "pendiente" });
+          const res = await construirYGuardarAuditoria({ user, clienteId, equipo: flow.equipo, cfg, posData: flow.posData, axleCfg: flow.axleCfg, km: flow.km, checklist: flow.checklist, recsInfo: flow.recsInfo, discrepanciasNeumaticos: flow.discrepanciasNeumaticos, recetaEstado: "pendiente" });
+          const n = res.alertas;
           pushToast(n > 0 ? `✓ Auditoría guardada · ${n} alerta${n !== 1 ? "s" : ""} generada${n !== 1 ? "s" : ""}` : "✓ Auditoría guardada");
           setFlow(null);
         }} />
@@ -2196,6 +2396,7 @@ function MecanicoApp({ user }) {
     body = (
       <CambioForm user={user} clienteId={clienteId} equipo={flow.equipo} cfg={cfg} axleCfg={flow.axleCfg}
         posDataInicial={flow.posData} checklistInicial={flow.checklist} kmInicial={flow.kmInicial}
+        recetaIdInicial={flow.recetaIdInicial} pendiente={flow.pendiente}
         onCancel={() => setFlow(null)} onFinish={() => setFlow(null)} />
     );
   } else if (tab === "cierre") {
