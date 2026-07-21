@@ -244,8 +244,12 @@ const db = {
       { cliente_id: clienteId, clave, valor: String(valor) }, { onConflict: "cliente_id,clave" });
     if (error) throw error;
   },
-  async fetchAlertas(clienteId) {
-    const { data, error } = await supabase.from("alertas").select("*").eq("cliente_id", clienteId).order("id", { ascending: false }).limit(100);
+  async fetchAlertas(clienteId, mecanicoId) {
+    // discrepancia_inventario es una alerta para el Admin (revisa stock del check
+    // diario), el mecanico no debe verla en su pantalla de Alertas.
+    let q = supabase.from("alertas").select("*").eq("cliente_id", clienteId).neq("tipo", "discrepancia_inventario").order("creado_en", { ascending: false }).limit(100);
+    if (mecanicoId) q = q.eq("mecanico_id", mecanicoId);
+    const { data, error } = await q;
     if (error) throw error;
     return data || [];
   },
@@ -521,6 +525,20 @@ function useQueueCount() {
   }, []);
   return count;
 }
+function useAlertasNoLeidas(clienteId, mecanicoId) {
+  const [count, setCount] = useState(0);
+  const queuePending = useQueueCount();
+  useEffect(() => {
+    if (!clienteId || !mecanicoId) return;
+    let cancel = false;
+    const cargar = () => db.fetchAlertas(clienteId, mecanicoId).then(as => { if (!cancel) setCount(as.filter(a => !a.leida_mecanico).length); }).catch(() => {});
+    cargar();
+    window.addEventListener("mosa-alertas-changed", cargar);
+    const t = setInterval(cargar, 15000);
+    return () => { cancel = true; window.removeEventListener("mosa-alertas-changed", cargar); clearInterval(t); };
+  }, [clienteId, mecanicoId, queuePending]);
+  return count;
+}
 
 /* =====================================================================
    ICONOS (inline SVG, 24px, stroke)
@@ -658,7 +676,7 @@ function OfflineBadge() {
 /* =====================================================================
    NAV
 ===================================================================== */
-function BottomNav({ view, setView, disabledExcept }) {
+function BottomNav({ view, setView, disabledExcept, alertasNoLeidas }) {
   const items = [
     { id: "inicio", label: "Inicio", icon: Icon.home },
     { id: "cierre", label: "Cierre", icon: Icon.clipboard },
@@ -672,8 +690,13 @@ function BottomNav({ view, setView, disabledExcept }) {
           const active = view === it.id;
           const disabled = disabledExcept && it.id !== disabledExcept;
           return (
-            <button key={it.id} disabled={disabled} onClick={() => setView(it.id)} className={cx("flex-1 flex flex-col items-center gap-1 py-2.5", disabled && "opacity-30")}>
-              <it.icon width="24" height="24" className={active ? "text-ink" : "text-[#B0B3B8]"} />
+            <button key={it.id} disabled={disabled} onClick={() => setView(it.id)} className={cx("relative flex-1 flex flex-col items-center gap-1 py-2.5", disabled && "opacity-30")}>
+              <span className="relative">
+                <it.icon width="24" height="24" className={active ? "text-ink" : "text-[#B0B3B8]"} />
+                {it.id === "alertas" && alertasNoLeidas > 0 && (
+                  <span className="absolute -top-1 -right-2.5 min-w-[16px] h-4 px-1 rounded-full bg-[#EF4444] text-white text-[10px] font-bold flex items-center justify-center">{alertasNoLeidas > 99 ? "99+" : alertasNoLeidas}</span>
+                )}
+              </span>
               <span className={cx("text-[10.5px] font-semibold", active ? "text-ink" : "text-[#B0B3B8]")}>{it.label}</span>
             </button>
           );
@@ -1991,19 +2014,32 @@ function AlertasScreen({ user, clienteId }) {
   const [remotas, setRemotas] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("todas");
+  const [equiposMap, setEquiposMap] = useState({});
   const pendientesCount = useQueueCount();
 
   useEffect(() => {
-    db.fetchAlertas(clienteId).then(setRemotas).catch(() => {}).finally(() => setLoading(false));
-  }, [clienteId, pendientesCount]);
+    db.fetchAlertas(clienteId, user.id).then(setRemotas).catch(() => {}).finally(() => setLoading(false));
+  }, [clienteId, user.id, pendientesCount]);
 
-  const pendientes = getQueue().filter(q => q.tipo === "alerta" && q.clienteId === clienteId).map(q => ({ ...q.data, __pendiente: true }));
-  const alertas = [...pendientes, ...remotas.filter(r => !pendientes.some(p => p.id === r.id))];
+  useEffect(() => {
+    db.fetchEquipos(clienteId).then(eqs => {
+      const map = {};
+      (eqs || []).forEach(e => { map[e.id_equipo] = e.numero_interno ? `${e.numero_interno} · ${e.patente}` : e.patente; });
+      setEquiposMap(map);
+    }).catch(() => {});
+  }, [clienteId]);
+
+  // Alertas propias pendientes de sincronizar (aun en la cola offline) tambien
+  // son del mecanico actual, ya que se generan siempre con mecanico_id=user.id.
+  const pendientes = getQueue().filter(q => q.tipo === "alerta" && q.clienteId === clienteId && q.data.mecanico_id === user.id && q.data.tipo !== "discrepancia_inventario").map(q => ({ ...q.data, __pendiente: true }));
+  const alertas = [...pendientes, ...remotas.filter(r => !pendientes.some(p => p.id === r.id))]
+    .sort((a, b) => (b.creado_en || "").localeCompare(a.creado_en || ""));
 
   async function marcarLeida(a) {
-    if (a.__pendiente) return;
+    if (a.__pendiente || a.leida_mecanico) return;
     setRemotas(as => as.map(x => x.id === a.id ? { ...x, leida_mecanico: true } : x));
     await supabase.from("alertas").update({ leida_mecanico: true }).eq("id", a.id);
+    window.dispatchEvent(new Event("mosa-alertas-changed"));
   }
 
   const filtradas = alertas.filter(a => filter === "todas" ? true : filter === "noleidas" ? !a.leida_mecanico : true);
@@ -2019,7 +2055,7 @@ function AlertasScreen({ user, clienteId }) {
       {loading && <div className="flex justify-center py-10"><span className="spinner" /></div>}
       <div className="space-y-3">
         {filtradas.map(a => (
-          <button key={a.id} onClick={() => marcarLeida(a)} className="w-full text-left bg-white rounded-2xl border border-bd shadow-card p-4">
+          <div key={a.id} className="w-full text-left bg-white rounded-2xl border border-bd shadow-card p-4">
             <div className="flex items-start justify-between gap-2">
               <div className="flex-1">
                 <p className="font-bold text-[14.5px]">{a.titulo}</p>
@@ -2027,11 +2063,21 @@ function AlertasScreen({ user, clienteId }) {
               </div>
               <Badge color={a.severidad === "rojo" ? "red" : a.severidad === "amarillo" ? "amber" : "gray"}>{a.severidad === "rojo" ? "Alerta" : a.severidad === "amarillo" ? "Atención" : "Info"}</Badge>
             </div>
-            <div className="flex items-center gap-2 mt-2">
-              {!a.leida_mecanico && <span className="text-[11px] font-bold text-ink">● No leída</span>}
-              {a.__pendiente && <span className="text-[11px] font-bold text-[#92400E]">Sincronizando...</span>}
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-[12px] text-muted">
+              {a.equipo_id && <span>{equiposMap[a.equipo_id] || "Equipo"}</span>}
+              {a.posicion != null && <span>P{a.posicion}</span>}
+              {a.creado_en && <span>{(a.creado_en).slice(0, 10)} · {(a.creado_en).slice(11, 16)}</span>}
             </div>
-          </button>
+            <div className="flex items-center justify-between gap-2 mt-2.5">
+              <div className="flex items-center gap-2">
+                {!a.leida_mecanico && <span className="text-[11px] font-bold text-ink">● No leída</span>}
+                {a.__pendiente && <span className="text-[11px] font-bold text-[#92400E]">Sincronizando...</span>}
+              </div>
+              {!a.leida_mecanico && !a.__pendiente && (
+                <button onClick={() => marcarLeida(a)} className="text-[12px] font-bold text-ink px-3 py-1.5 rounded-full bg-[#F3F4F6]">Marcar como leída</button>
+              )}
+            </div>
+          </div>
         ))}
         {!loading && filtradas.length === 0 && <p className="text-center text-muted py-10 text-sm">Sin alertas.</p>}
       </div>
@@ -2121,6 +2167,17 @@ async function construirYGuardarAuditoria({ user, clienteId, equipo, cfg, posDat
   const recomendacionesJSON = realRecs.map(r => ({ id: r.id, key: r.key, texto: r.texto, done: false }));
   const tareasExtraJSON = checklist.filter(c => c.extra).map(c => ({ texto: c.texto, done: c.done }));
   const totalTareas = realRecs.length;
+
+  // Alerta amarilla por cada rotacion recomendada (desgaste desparejo entre
+  // posiciones de un mismo eje/grupo). El mecanico la ve en su pantalla de Alertas.
+  realRecs.filter(r => r.key.startsWith("rec_rotar_")).forEach(r => {
+    alertasGeneradas.push({
+      id: uuid(), cliente_id: clienteId, equipo_id: equipo.id_equipo, mecanico_id: user.id,
+      tipo: "rotacion_recomendada", severidad: "amarillo", titulo: "Rotación recomendada",
+      descripcion: r.texto, posicion: null, numero_fuego: null,
+      leida_mecanico: false, leida_admin: false, leida_superadmin: false
+    });
+  });
   const recetaId = uuid();
   const cab = {
     id_auditoria: uuid(), equipo_id: equipo.id_equipo, bultero_id: user.id, cliente_id: clienteId,
@@ -2416,6 +2473,7 @@ function MecanicoApp({ user }) {
   const [tab, setTab] = useState("inicio");
   const [flow, setFlow] = useState(null);
   const [pushToast, toastNode] = useToasts();
+  const alertasNoLeidas = useAlertasNoLeidas(clienteId, user.id);
   // Bloqueo tras cerrar jornada: solo se levanta con un login nuevo (MecanicoGate
   // reevalua desde la DB). En esta misma sesion, solo queda accesible Alertas.
   const [jornadaCerrada, setJornadaCerrada] = useState(() => {
@@ -2516,7 +2574,7 @@ function MecanicoApp({ user }) {
       <div className="fixed top-2 left-0 right-0 z-40"><OfflineBadge /></div>
       {toastNode}
       {body}
-      {showBottomNav && <BottomNav view={tab} setView={(t) => { setTab(t); setFlow(null); }} disabledExcept={jornadaCerrada ? "alertas" : null} />}
+      {showBottomNav && <BottomNav view={tab} setView={(t) => { setTab(t); setFlow(null); }} disabledExcept={jornadaCerrada ? "alertas" : null} alertasNoLeidas={alertasNoLeidas} />}
     </div>
   );
 }
