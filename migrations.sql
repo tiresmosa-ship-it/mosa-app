@@ -337,3 +337,13 @@ ALTER TABLE neumaticos ADD CONSTRAINT neumaticos_bodega_check
 -- ilimitadas. Lo eliminamos (mismo criterio que alertas.tipo en el bloque 15);
 -- 'montaje', 'transito', 'reparacion' y 'baja_*' quedan todos permitidos.
 ALTER TABLE movimientos_bodega DROP CONSTRAINT IF EXISTS movimientos_bodega_origen_check;
+
+-- =====================================================================
+-- 21) intervenciones.tipo: el CHECK fijo bloquea el nuevo tipo 'giro_neumatico'
+-- (giro sobre la llanta / inversion de cara en un neumatico direccional, sin
+-- cambiar de posicion). Mismo criterio que los bloques 15/20b: se elimina el
+-- CHECK en vez de tener que ampliarlo cada vez que se agregue un tipo nuevo
+-- de intervencion (regulacion_psi/retorqueo/reparacion/checkpoint ya
+-- funcionaban y no se ven afectados).
+-- =====================================================================
+ALTER TABLE intervenciones DROP CONSTRAINT IF EXISTS intervenciones_tipo_check;

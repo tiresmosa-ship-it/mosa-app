@@ -90,41 +90,52 @@ const TOOLS_CHECKLIST = [
 
 const MARCAS_NEUMATICOS = ["Triangle", "Aeolus", "Roadx", "Windforce", "Goodyear", "Michelin", "Bridgestone", "Pirelli", "Continental", "Otra"];
 
-/* Configuraciones de eje: filas visuales + grupos de rotacion permitidos */
+/* Configuraciones de eje: filas visuales + grupos de rotacion permitidos.
+   "ejeTipo" (distinto del "type" usado para psi/mm, que no se toca) clasifica
+   cada fila para las reglas de rotacion:
+   - "D"  direccional: sin sentido de giro, cambio de lado siempre permitido.
+   - "M"  traccional/motriz: banda caluga, sentido de giro obligatorio -> solo
+          puede rotar dentro del mismo lado (izq/der), nunca cruzando.
+   - "T"  libre/flotante (eje de apoyo o semi): banda lineal, sin sentido de
+          giro, se puede rotar libremente dentro del eje sin restriccion de lado.
+   - "auxilio": posicion de auxilio del semi, aislada (grupo de una sola posicion).
+   En 6x2 el eje motriz (M) y el libre (T) son grupos separados (bloqueado
+   cruzar). En 6x4 ambos ejes traseros son motrices (M+M) y comparten un solo
+   grupo de rotacion, pero como ambos son ejeTipo "M" igual se exige mismo lado. */
 const AXLE_CONFIGS = {
   "4x2": {
     total: 6,
     rows: [
-      { label: "D", type: "D", positions: [1, 2] },
-      { label: "T", type: "M", positions: [3, 4, 5, 6] }
+      { label: "D", type: "D", ejeTipo: "D", positions: [1, 2] },
+      { label: "T", type: "M", ejeTipo: "M", positions: [3, 4, 5, 6] }
     ],
     groups: [[1, 2], [3, 4, 5, 6]]
   },
   "6x2": {
     total: 10,
     rows: [
-      { label: "D", type: "D", positions: [1, 2] },
-      { label: "M", type: "M", positions: [3, 4, 5, 6] },
-      { label: "T", type: "M", positions: [7, 8, 9, 10] }
+      { label: "D", type: "D", ejeTipo: "D", positions: [1, 2] },
+      { label: "M", type: "M", ejeTipo: "M", positions: [3, 4, 5, 6] },
+      { label: "T", type: "M", ejeTipo: "T", positions: [7, 8, 9, 10] }
     ],
     groups: [[1, 2], [3, 4, 5, 6], [7, 8, 9, 10]]
   },
   "6x4": {
     total: 10,
     rows: [
-      { label: "D", type: "D", positions: [1, 2] },
-      { label: "M", type: "M", positions: [3, 4, 5, 6] },
-      { label: "T", type: "M", positions: [7, 8, 9, 10] }
+      { label: "D", type: "D", ejeTipo: "D", positions: [1, 2] },
+      { label: "M", type: "M", ejeTipo: "M", positions: [3, 4, 5, 6] },
+      { label: "T", type: "M", ejeTipo: "M", positions: [7, 8, 9, 10] }
     ],
     groups: [[1, 2], [3, 4, 5, 6, 7, 8, 9, 10]]
   },
   "semi": {
     total: 13,
     rows: [
-      { label: "Eje 1", type: "M", positions: [1, 2, 3, 4] },
-      { label: "Eje 2", type: "M", positions: [5, 6, 7, 8] },
-      { label: "Eje 3", type: "M", positions: [9, 10, 11, 12] },
-      { label: "Auxilio", type: "auxilio", positions: [13] }
+      { label: "Eje 1", type: "M", ejeTipo: "T", positions: [1, 2, 3, 4] },
+      { label: "Eje 2", type: "M", ejeTipo: "T", positions: [5, 6, 7, 8] },
+      { label: "Eje 3", type: "M", ejeTipo: "T", positions: [9, 10, 11, 12] },
+      { label: "Auxilio", type: "auxilio", ejeTipo: "auxilio", positions: [13] }
     ],
     groups: [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12], [13]]
   }
@@ -137,6 +148,20 @@ function axleConfigFor(equipo) {
 function posType(cfg, pos) {
   const row = cfg.rows.find(r => r.positions.includes(pos));
   return row ? row.type : "M";
+}
+function ejeTipoDePosicion(cfg, pos) {
+  const row = cfg.rows.find(r => r.positions.includes(pos));
+  return row ? row.ejeTipo : "M";
+}
+// Lado (izq/der) de una posicion dentro de SU propia fila: primera mitad de
+// row.positions = izquierda, segunda mitad = derecha. Se usa solo para
+// validar ejes traccionales (ejeTipo "M"), que no pueden cambiar de lado.
+function ladoDePosicion(cfg, pos) {
+  const row = cfg.rows.find(r => r.positions.includes(pos));
+  if (!row) return null;
+  const idx = row.positions.indexOf(pos);
+  const mitad = Math.ceil(row.positions.length / 2);
+  return idx < mitad ? "izq" : "der";
 }
 
 /* =====================================================================
@@ -329,8 +354,14 @@ async function syncQueue(onProgress) {
         removeFromQueue(item.id);
         if (onProgress) onProgress(item);
       } catch (e) {
+        // 23505 = unique_violation: el insert anterior en realidad SI llego al
+        // servidor (la respuesta se perdio por una conexion inestable, tipica
+        // en 3G/4G de campo), y el reintento choca con su propio id. Tratamos
+        // esto como exito para no dejar el item trabado para siempre.
+        if (e && e.code === "23505") { removeFromQueue(item.id); continue; }
         console.error("Error sincronizando", item, e);
-        break;
+        // No usar "break": un item que sigue fallando (ej. sin conexion real)
+        // no debe bloquear la sincronizacion del resto de la cola.
       }
     }
   } finally { syncing = false; }
@@ -688,7 +719,7 @@ function BottomNav({ view, setView, disabledExcept, alertasNoLeidas }) {
       <div className="flex">
         {items.map(it => {
           const active = view === it.id;
-          const disabled = disabledExcept && it.id !== disabledExcept;
+          const disabled = disabledExcept && !disabledExcept.includes(it.id);
           return (
             <button key={it.id} disabled={disabled} onClick={() => setView(it.id)} className={cx("relative flex-1 flex flex-col items-center gap-1 py-2.5", disabled && "opacity-30")}>
               <span className="relative">
@@ -827,7 +858,7 @@ function Stepper({ value, onChange }) {
   }
   return (
     <div className="flex items-center gap-2">
-      <button type="button" disabled={value === 0} onClick={() => onChange(Math.max(0, value - 1))} className="w-9 h-9 rounded-lg bg-[#F3F4F6] font-bold text-lg disabled:opacity-40">−</button>
+      <button type="button" onClick={() => onChange(Math.max(0, value - 1))} className="w-9 h-9 rounded-lg bg-[#F3F4F6] font-bold text-lg">−</button>
       <button type="button" onClick={() => { setTmp(String(value)); setEditing(true); }} className="w-10 text-center font-bold">{value}</button>
       <button type="button" onClick={() => onChange(value + 1)} className="w-9 h-9 rounded-lg bg-[#F3F4F6] font-bold text-lg">+</button>
     </div>
@@ -1553,6 +1584,14 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
       pushToast("✕ Movimiento no permitido entre esos ejes");
       return;
     }
+    // Ejes traccionales (M, banda caluga) tienen sentido de giro obligatorio:
+    // solo pueden rotar dentro de su mismo lado (izq/der), nunca cruzando.
+    // Direccionales (D) y libres/flotantes (T) no tienen esta restriccion.
+    if (ejeTipoDePosicion(axleCfg, origen) === "M" && ladoDePosicion(axleCfg, origen) !== ladoDePosicion(axleCfg, destino)) {
+      if (navigator.vibrate) navigator.vibrate(150);
+      pushToast("✕ No se puede cruzar de lado: se pierde el sentido de giro");
+      return;
+    }
     const destFuego = posData[destino] ? posData[destino].numero_fuego : null;
     setConfirmDlg({
       title: "Confirmar rotación",
@@ -1755,8 +1794,15 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
       </div>
 
       {infoPos != null && posData[infoPos] && (
-        <TireInfoModal pos={infoPos} data={posData[infoPos]} cfg={cfg} equipo={equipo}
+        <TireInfoModal pos={infoPos} data={posData[infoPos]} cfg={cfg} equipo={equipo} axleCfg={axleCfg}
           onClose={() => setInfoPos(null)}
+          onGirar={() => {
+            setConfirmDlg({
+              title: "Confirmar giro de neumático",
+              desc: `¿Registrar el giro (inversión de cara) del neumático en P${infoPos} (${posData[infoPos].numero_fuego})?`,
+              onConfirm: () => { registrarIntervencion("giro_neumatico", infoPos, {}); pushToast("✓ Giro registrado"); setConfirmDlg(null); setInfoPos(null); }
+            });
+          }}
           onRegularPsi={(nuevoPsi) => {
             setConfirmDlg({
               title: "Confirmar regulación de PSI",
@@ -1811,9 +1857,10 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
   );
 }
 
-function TireInfoModal({ pos, data, cfg, equipo, onClose, onRegularPsi, onRetorqueo, onReparacion }) {
+function TireInfoModal({ pos, data, cfg, equipo, axleCfg, onClose, onRegularPsi, onRetorqueo, onReparacion, onGirar }) {
   const [psiField, setPsiField] = useState(String(data.psi || ""));
   const [showPsi, setShowPsi] = useState(false);
+  const esDireccional = axleCfg && ejeTipoDePosicion(axleCfg, pos) === "D";
   return (
     <Modal title={`Posición P${pos}`} onClose={onClose}>
       <div className="mb-4">
@@ -1835,7 +1882,12 @@ function TireInfoModal({ pos, data, cfg, equipo, onClose, onRegularPsi, onRetorq
           <Button variant="subtle" onClick={() => setShowPsi(true)}><Icon.gauge width="18" height="18" /> Regulación PSI</Button>
           <Button variant="subtle" onClick={onRetorqueo}><Icon.wrench width="18" height="18" /> Retorqueo</Button>
           <Button variant="subtle" onClick={onReparacion}><Icon.bandage width="18" height="18" /> Reparación</Button>
-          <p className="text-[11.5px] text-muted text-center mt-2">Para rotarlo o sacarlo, cerrá esta ventana y arrastralo desde el mapa hasta otra posición o hasta Salida.</p>
+          {esDireccional && (
+            <Button variant="subtle" onClick={onGirar}><Icon.gauge width="18" height="18" /> Girar neumático (invertir cara)</Button>
+          )}
+          <p className="text-[11.5px] text-muted text-center mt-2">
+            {esDireccional ? "Direccional: girá la cara si hay desgaste irregular, o cerrá esta ventana y arrastralo hasta la otra posición para cambiar de lado." : "Para rotarlo o sacarlo, cerrá esta ventana y arrastralo desde el mapa hasta otra posición o hasta Salida."}
+          </p>
         </div>
       )}
     </Modal>
@@ -2454,7 +2506,8 @@ function MecanicoGate({ user }) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center px-8 text-center">
         <p className="text-[20px] font-extrabold mb-2">Ya cerraste tu jornada de hoy</p>
-        <p className="text-[14px] text-sub">Contactá a tu supervisor si necesitás continuar.</p>
+        <p className="text-[14px] text-sub mb-6">Contactá a tu supervisor si necesitás continuar.</p>
+        <Button variant="ghost" onClick={() => { clearSession(); location.reload(); }}>Iniciar sesión</Button>
       </div>
     );
   }
@@ -2497,7 +2550,7 @@ function MecanicoApp({ user }) {
   }
 
   let body;
-  if (jornadaCerrada && tab !== "alertas") {
+  if (jornadaCerrada && tab !== "alertas" && tab !== "perfil") {
     body = (
       <div className="min-h-screen flex flex-col items-center justify-center px-8 text-center">
         <div className="w-14 h-14 rounded-2xl bg-[#DCFCE7] flex items-center justify-center mb-5"><Icon.check width="26" height="26" className="text-[#15803D]" /></div>
@@ -2574,7 +2627,7 @@ function MecanicoApp({ user }) {
       <div className="fixed top-2 left-0 right-0 z-40"><OfflineBadge /></div>
       {toastNode}
       {body}
-      {showBottomNav && <BottomNav view={tab} setView={(t) => { setTab(t); setFlow(null); }} disabledExcept={jornadaCerrada ? "alertas" : null} alertasNoLeidas={alertasNoLeidas} />}
+      {showBottomNav && <BottomNav view={tab} setView={(t) => { setTab(t); setFlow(null); }} disabledExcept={jornadaCerrada ? ["alertas", "perfil"] : null} alertasNoLeidas={alertasNoLeidas} />}
     </div>
   );
 }
