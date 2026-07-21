@@ -658,7 +658,7 @@ function OfflineBadge() {
 /* =====================================================================
    NAV
 ===================================================================== */
-function BottomNav({ view, setView }) {
+function BottomNav({ view, setView, disabledExcept }) {
   const items = [
     { id: "inicio", label: "Inicio", icon: Icon.home },
     { id: "cierre", label: "Cierre", icon: Icon.clipboard },
@@ -670,8 +670,9 @@ function BottomNav({ view, setView }) {
       <div className="flex">
         {items.map(it => {
           const active = view === it.id;
+          const disabled = disabledExcept && it.id !== disabledExcept;
           return (
-            <button key={it.id} onClick={() => setView(it.id)} className="flex-1 flex flex-col items-center gap-1 py-2.5">
+            <button key={it.id} disabled={disabled} onClick={() => setView(it.id)} className={cx("flex-1 flex flex-col items-center gap-1 py-2.5", disabled && "opacity-30")}>
               <it.icon width="24" height="24" className={active ? "text-ink" : "text-[#B0B3B8]"} />
               <span className={cx("text-[10.5px] font-semibold", active ? "text-ink" : "text-[#B0B3B8]")}>{it.label}</span>
             </button>
@@ -1918,44 +1919,39 @@ function MontajeModal({ tipo, pos, equipo, clienteId, onClose, onConfirm }) {
 /* =====================================================================
    PANTALLA 8 - CIERRE DEL DIA
 ===================================================================== */
-function CierreDelDia({ user, clienteId }) {
+function CierreDelDia({ user, clienteId, onCerrado }) {
   const [resumen, setResumen] = useState(null);
   const [cerrando, setCerrando] = useState(false);
+  const [confirmando, setConfirmando] = useState(false);
   const [cerrado, setCerrado] = useState(false);
 
   useEffect(() => {
-    (async () => {
-      const queue = getQueue().filter(q => q.clienteId === clienteId);
-      let auditorias = 0, cambios = 0, regulaciones = 0, retorqueos = 0, rotaciones = 0, reparaciones = 0, pctSum = 0, pctN = 0;
-      queue.forEach(q => {
-        if (q.tipo === "auditoria") { auditorias++; if (q.data.receta) { pctSum += q.data.receta.pct_receta_seguida || 0; pctN++; } }
-        if (q.tipo === "cambio") {
-          cambios++;
-          (q.data.intervenciones || []).forEach(i => { if (i.tipo === "regulacion_psi") regulaciones++; if (i.tipo === "retorqueo") retorqueos++; if (i.tipo === "reparacion") reparaciones++; });
-        }
-      });
-      try {
-        const { data: remAud } = await supabase.from("auditorias").select("id_auditoria").eq("bultero_id", user.id).eq("fecha", todayISO());
-        const { data: remCam } = await supabase.from("cambios_neumaticos").select("id_cambio").eq("bultero_id", user.id).eq("fecha", todayISO());
-        auditorias += (remAud || []).length; cambios += (remCam || []).length;
-      } catch (e) {}
-      setResumen({ auditorias, cambios, regulaciones, retorqueos, rotaciones, reparaciones, pct: pctN ? Math.round(pctSum / pctN) : null });
-    })();
+    construirResumenJornada(user.id, clienteId, todayISO()).then(({ conteos }) => setResumen(conteos)).catch(() => setResumen(null));
   }, [clienteId]);
 
-  async function cerrarJornada() {
+  async function confirmarCierre() {
+    setConfirmando(false);
     setCerrando(true);
-    const data = {
-      id: uuid(), cliente_id: clienteId, mecanico_id: user.id, fecha: todayISO(),
-      auditorias_realizadas: resumen.auditorias, cambios_realizados: resumen.cambios,
-      regulaciones_psi: resumen.regulaciones, retorqueos: resumen.retorqueos, rotaciones: resumen.rotaciones, reparaciones: resumen.reparaciones,
-      pct_receta_promedio: resumen.pct, alertas_generadas: 0, cerrado: true,
-      hora_cierre: nowHM(), observaciones: null
-    };
-    pushQueue({ id: uuid(), tipo: "cierre", clienteId, ts: Date.now(), data });
-    syncQueue();
-    setCerrando(false);
-    setCerrado(true);
+    try {
+      await cerrarJornadaConResumen({ user, clienteId, fecha: todayISO(), horaCierre: nowHM(), motivoSinCierre: null });
+      localStorage.setItem("jornada_cerrada_hoy", "true");
+      setCerrado(true);
+      if (onCerrado) onCerrado();
+    } catch (e) {
+      console.error("No se pudo cerrar la jornada", e);
+    } finally {
+      setCerrando(false);
+    }
+  }
+
+  if (cerrado) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center px-8 text-center">
+        <div className="w-14 h-14 rounded-2xl bg-[#DCFCE7] flex items-center justify-center mb-5"><Icon.check width="26" height="26" className="text-[#15803D]" /></div>
+        <p className="text-[22px] font-extrabold mb-2">¡Jornada cerrada!</p>
+        <p className="text-[15px] text-sub">Hasta mañana, {user.nombre}</p>
+      </div>
+    );
   }
 
   return (
@@ -1964,25 +1960,25 @@ function CierreDelDia({ user, clienteId }) {
       {!resumen ? <div className="flex justify-center py-10"><span className="spinner" /></div> : (
         <>
           <div className="grid grid-cols-2 gap-3 mb-4">
-            {[["Auditorías", resumen.auditorias], ["Cambios", resumen.cambios], ["Regulaciones PSI", resumen.regulaciones], ["Retorqueos", resumen.retorqueos]].map(([l, v]) => (
+            {[["Auditorías", resumen.auditorias_realizadas], ["Cambios", resumen.cambios_realizados], ["Regulaciones PSI", resumen.regulaciones_psi], ["Retorqueos", resumen.retorqueos], ["Rotaciones", resumen.rotaciones], ["Reparaciones", resumen.reparaciones]].map(([l, v]) => (
               <div key={l} className="bg-[#F9FAFB] rounded-[18px] p-4">
                 <p className="text-[11.5px] font-semibold text-muted mb-1">{l}</p>
                 <p className="text-[22px] font-extrabold">{v}</p>
               </div>
             ))}
           </div>
-          {resumen.pct != null && (
+          {resumen.pct_receta_promedio != null && (
             <Card className="mb-6">
               <p className="text-[13px] font-semibold text-sub mb-1">% promedio de instructivo seguido</p>
-              <p className="text-[26px] font-extrabold">{resumen.pct}%</p>
+              <p className="text-[26px] font-extrabold">{resumen.pct_receta_promedio}%</p>
             </Card>
           )}
-          {cerrado ? (
-            <div className="bg-[#DCFCE7] text-[#15803D] rounded-2xl px-4 py-3 text-center font-bold">Jornada cerrada correctamente</div>
-          ) : (
-            <Button className="w-full" disabled={cerrando} onClick={cerrarJornada}>{cerrando ? <span className="spinner" /> : "Cerrar jornada"}</Button>
-          )}
+          <Button className="w-full" disabled={cerrando} onClick={() => setConfirmando(true)}>{cerrando ? <span className="spinner" /> : "Cerrar jornada"}</Button>
         </>
+      )}
+      {confirmando && (
+        <Confirm title="Cerrar jornada" desc="¿Estás seguro que querés cerrar la jornada de hoy?"
+          onConfirm={confirmarCierre} onCancel={() => setConfirmando(false)} />
       )}
     </div>
   );
@@ -2221,6 +2217,94 @@ async function evaluarEstadoMecanico(user) {
   if (checks && checks.length) return { estado: "menu_principal", clienteId: checks[0].empresa_id || checks[0].cliente_id };
   return { estado: "bienvenida" };
 }
+async function contarNeumaticosPorBodega(clienteId, bodega) {
+  const { count } = await supabase.from("neumaticos").select("id_neumatico", { count: "exact", head: true }).eq("cliente_id", clienteId).eq("bodega", bodega);
+  return count || 0;
+}
+
+/* =====================================================================
+   RESUMEN Y CIERRE DE JORNADA (compartido entre el cierre normal del dia
+   y el cierre de una jornada anterior olvidada)
+===================================================================== */
+async function construirResumenJornada(mecanicoId, clienteId, fecha) {
+  const [{ data: auditorias }, { data: cambios }, { data: intervenciones }, { data: cierreActual }] = await Promise.all([
+    supabase.from("auditorias").select("id_auditoria,equipo_id,creado_en,numero_auditoria").eq("bultero_id", mecanicoId).eq("fecha", fecha),
+    supabase.from("cambios_neumaticos").select("id_cambio,equipo_id,creado_en,numero_cambio").eq("bultero_id", mecanicoId).eq("fecha", fecha),
+    supabase.from("intervenciones").select("id,tipo,equipo_id,creado_en").eq("mecanico_id", mecanicoId).eq("fecha", fecha),
+    supabase.from("cierre_dia").select("id,hora_inicio").eq("mecanico_id", mecanicoId).eq("fecha", fecha).maybeSingle()
+  ]);
+  const auds = auditorias || [], cams = cambios || [], intervs = intervenciones || [];
+
+  const equipoIds = [...new Set([...auds.map(a => a.equipo_id), ...cams.map(c => c.equipo_id)])].filter(Boolean);
+  const equiposMap = {};
+  if (equipoIds.length) {
+    const { data: eqs } = await supabase.from("equipos").select("id_equipo,patente,numero_interno").in("id_equipo", equipoIds);
+    (eqs || []).forEach(e => { equiposMap[e.id_equipo] = e.numero_interno ? `${e.numero_interno} · ${e.patente}` : e.patente; });
+  }
+
+  const regulaciones_psi = intervs.filter(i => i.tipo === "regulacion_psi").length;
+  const retorqueos = intervs.filter(i => i.tipo === "retorqueo").length;
+  const reparaciones = intervs.filter(i => i.tipo === "reparacion").length;
+
+  // Rotaciones: cambio_detalle tipo='sale' sin motivo_salida (las salidas por
+  // transito/reparacion/baja siempre tienen motivo_salida; solo las rotaciones no).
+  let rotaciones = 0;
+  const cambioIds = cams.map(c => c.id_cambio);
+  if (cambioIds.length) {
+    const { data: cd } = await supabase.from("cambio_detalle").select("id").in("cambio_id", cambioIds).eq("tipo", "sale").is("motivo_salida", null);
+    rotaciones = (cd || []).length;
+  }
+
+  // pct_receta_promedio + estado de instructivo por equipo, via auditorias_receta del dia.
+  let pct_receta_promedio = null;
+  const auditoriaIds = auds.map(a => a.id_auditoria);
+  let instructivos = [];
+  if (auditoriaIds.length) {
+    const { data: recetas } = await supabase.from("auditorias_receta").select("auditoria_id,estado,pct_receta_seguida").in("auditoria_id", auditoriaIds);
+    const vals = (recetas || []).map(r => r.pct_receta_seguida).filter(v => v != null);
+    if (vals.length) pct_receta_promedio = Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
+    instructivos = (recetas || []).map(r => {
+      const a = auds.find(x => x.id_auditoria === r.auditoria_id);
+      return { equipo: (a && equiposMap[a.equipo_id]) || "-", estado: r.estado, pct: r.pct_receta_seguida };
+    });
+  }
+
+  const [stock_nuevo, stock_transito, stock_recauchado, stock_nfu] = await Promise.all([
+    contarNeumaticosPorBodega(clienteId, "nuevo"), contarNeumaticosPorBodega(clienteId, "transito"),
+    contarNeumaticosPorBodega(clienteId, "recauchado"), contarNeumaticosPorBodega(clienteId, "nfu")
+  ]);
+
+  const conteos = { auditorias_realizadas: auds.length, cambios_realizados: cams.length, regulaciones_psi, retorqueos, rotaciones, reparaciones, pct_receta_promedio };
+  const stock = { stock_nuevo, stock_transito, stock_recauchado, stock_nfu };
+  const detalle = {
+    hora_inicio: cierreActual ? cierreActual.hora_inicio : null,
+    auditorias: auds.map(a => ({ equipo: equiposMap[a.equipo_id] || "-", numero: a.numero_auditoria, hora: (a.creado_en || "").slice(11, 19) })),
+    cambios: cams.map(c => ({ equipo: equiposMap[c.equipo_id] || "-", numero: c.numero_cambio, hora: (c.creado_en || "").slice(11, 19) })),
+    instructivos,
+    intervenciones: { regulaciones_psi, retorqueos, reparaciones, rotaciones },
+    stock
+  };
+  return { conteos, stock, detalle, cierreId: cierreActual ? cierreActual.id : null };
+}
+
+async function cerrarJornadaConResumen({ user, clienteId, fecha, horaCierre, motivoSinCierre }) {
+  const { conteos, stock, detalle, cierreId } = await construirResumenJornada(user.id, clienteId, fecha);
+  const update = { cerrado: true, hora_cierre: horaCierre, motivo_sin_cierre: motivoSinCierre || null, ...conteos, ...stock };
+  if (cierreId) {
+    await supabase.from("cierre_dia").update(update).eq("id", cierreId);
+  } else {
+    await supabase.from("cierre_dia").insert({ id: uuid(), cliente_id: clienteId, mecanico_id: user.id, fecha, hora_inicio: null, ...update });
+  }
+  await insertAlerta({
+    id: uuid(), cliente_id: clienteId, equipo_id: null, mecanico_id: user.id,
+    tipo: "cierre_dia", severidad: "info",
+    titulo: `Cierre de jornada — ${user.nombre} — ${fecha}`,
+    descripcion: JSON.stringify({ hora_inicio: detalle.hora_inicio, hora_cierre: horaCierre, ...detalle }),
+    leida_mecanico: true, leida_admin: false, leida_superadmin: false
+  });
+  return { conteos, stock, detalle };
+}
+
 async function resumenJornada(mecanicoId, fecha) {
   const [{ data: aud }, { data: cam }, { data: interv }] = await Promise.all([
     supabase.from("auditorias").select("id_auditoria").eq("bultero_id", mecanicoId).eq("fecha", fecha),
@@ -2278,7 +2362,9 @@ function MecanicoGate({ user }) {
     setState(s => ({ ...s, cerrando: true }));
     const ultima = await ultimaActividadDelDia(user.id, state.jornada.fecha);
     const horaCierre = ultima ? ultima.toTimeString().slice(0, 8) : "23:59:59";
-    await supabase.from("cierre_dia").update({ cerrado: true, hora_cierre: horaCierre, motivo_sin_cierre: "olvido_cierre" }).eq("id", state.jornada.id);
+    try {
+      await cerrarJornadaConResumen({ user, clienteId: state.jornada.cliente_id, fecha: state.jornada.fecha, horaCierre, motivoSinCierre: "olvido_cierre" });
+    } catch (e) { console.error("No se pudo cerrar la jornada anterior", e); }
     await cargar();
   }
 
@@ -2330,6 +2416,12 @@ function MecanicoApp({ user }) {
   const [tab, setTab] = useState("inicio");
   const [flow, setFlow] = useState(null);
   const [pushToast, toastNode] = useToasts();
+  // Bloqueo tras cerrar jornada: solo se levanta con un login nuevo (MecanicoGate
+  // reevalua desde la DB). En esta misma sesion, solo queda accesible Alertas.
+  const [jornadaCerrada, setJornadaCerrada] = useState(() => {
+    const t = getTurno();
+    return localStorage.getItem("jornada_cerrada_hoy") === "true" && !!t && t.fecha === todayISO();
+  });
 
   useEffect(() => {
     const turno = getTurno();
@@ -2347,7 +2439,15 @@ function MecanicoApp({ user }) {
   }
 
   let body;
-  if (flow && flow.stage === "accion") {
+  if (jornadaCerrada && tab !== "alertas") {
+    body = (
+      <div className="min-h-screen flex flex-col items-center justify-center px-8 text-center">
+        <div className="w-14 h-14 rounded-2xl bg-[#DCFCE7] flex items-center justify-center mb-5"><Icon.check width="26" height="26" className="text-[#15803D]" /></div>
+        <p className="text-[22px] font-extrabold mb-2">¡Jornada cerrada!</p>
+        <p className="text-[15px] text-sub">Hasta mañana, {user.nombre}</p>
+      </div>
+    );
+  } else if (flow && flow.stage === "accion") {
     body = (
       <>
         <SeleccionEquipo clienteId={clienteId} onPick={(eq) => setFlow({ stage: "accion", equipo: eq })} />
@@ -2400,7 +2500,7 @@ function MecanicoApp({ user }) {
         onCancel={() => setFlow(null)} onFinish={() => setFlow(null)} />
     );
   } else if (tab === "cierre") {
-    body = <CierreDelDia user={user} clienteId={clienteId} />;
+    body = <CierreDelDia user={user} clienteId={clienteId} onCerrado={() => setJornadaCerrada(true)} />;
   } else if (tab === "alertas") {
     body = <AlertasScreen user={user} clienteId={clienteId} />;
   } else if (tab === "perfil") {
@@ -2416,7 +2516,7 @@ function MecanicoApp({ user }) {
       <div className="fixed top-2 left-0 right-0 z-40"><OfflineBadge /></div>
       {toastNode}
       {body}
-      {showBottomNav && <BottomNav view={tab} setView={(t) => { setTab(t); setFlow(null); }} />}
+      {showBottomNav && <BottomNav view={tab} setView={(t) => { setTab(t); setFlow(null); }} disabledExcept={jornadaCerrada ? "alertas" : null} />}
     </div>
   );
 }
