@@ -2292,8 +2292,29 @@ async function construirPosDataDesdeEquipo(equipoId) {
   const map = {};
   data.forEach(n => {
     if (!n.posicion_actual) return;
-    map[n.posicion_actual] = { posicion: n.posicion_actual, numero_fuego: n.numero_fuego, marca: n.marca, medida: n.medida, psi: null, status: "ok", minMM: null };
+    map[n.posicion_actual] = { posicion: n.posicion_actual, numero_fuego: n.numero_fuego, marca: n.marca, medida: n.medida, psi: n.psi_actual != null ? n.psi_actual : null, status: "ok", minMM: null };
   });
+  // Completar PSI/MM con los últimos valores conocidos de la auditoría más reciente
+  // (neumaticos no guarda milimetros; psi_actual solo se setea al regular PSI).
+  try {
+    const { data: ultimaAud } = await supabase.from("auditorias").select("id_auditoria")
+      .eq("equipo_id", equipoId).order("fecha", { ascending: false }).order("creado_en", { ascending: false }).limit(1);
+    if (ultimaAud && ultimaAud.length) {
+      const numerosFuego = data.map(n => n.numero_fuego).filter(Boolean);
+      const { data: posAud } = await supabase.from("auditoria_posiciones").select("numero_fuego,milimetros,psi")
+        .eq("auditoria_id", ultimaAud[0].id_auditoria).in("numero_fuego", numerosFuego);
+      if (posAud) {
+        const porFuego = {};
+        posAud.forEach(p => { porFuego[p.numero_fuego] = p; });
+        Object.values(map).forEach(d => {
+          const ult = porFuego[d.numero_fuego];
+          if (!ult) return;
+          if (d.psi == null && ult.psi != null) d.psi = ult.psi;
+          if (ult.milimetros != null) d.minMM = ult.milimetros;
+        });
+      }
+    }
+  } catch (e) { console.error("No se pudieron cargar los últimos valores de auditoría", e); }
   return map;
 }
 
