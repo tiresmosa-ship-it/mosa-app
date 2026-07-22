@@ -370,6 +370,31 @@ function MecanicoGate({ user }) {
     if (state.status === "ready") location.replace("mecanico.html");
   }, [state.status]);
 
+  // Mientras esta bloqueado por "jornada cerrada hoy", sondea si el Admin ya
+  // aprobo un desbloqueo; si es asi, vuelve a evaluar el arbol de decision
+  // (evaluarEstadoMecanico ya ignora el turno viejo una vez que el Admin creo uno nuevo).
+  useEffect(() => {
+    if (state.status !== "jornada_cerrada_hoy") return;
+    const t = setInterval(async () => {
+      try {
+        const aprobado = await buscarDesbloqueoAprobado(user.id);
+        if (aprobado) { await marcarAlertaLeidaMecanico(aprobado.id); await cargar(); }
+      } catch (e) { /* sin conexion, se reintenta en el proximo tick */ }
+    }, 8000);
+    return () => clearInterval(t);
+  }, [state.status]);
+
+  async function pedirDesbloqueo() {
+    setState(s => ({ ...s, solicitando: true }));
+    try {
+      await solicitarDesbloqueo(user);
+      setState(s => ({ ...s, solicitando: false, solicitado: true }));
+    } catch (e) {
+      console.error("No se pudo solicitar el desbloqueo", e);
+      setState(s => ({ ...s, solicitando: false }));
+    }
+  }
+
   async function cerrarJornadaAnterior() {
     setState(s => ({ ...s, cerrando: true }));
     const ultima = await ultimaActividadDelDia(user.id, state.jornada.fecha);
@@ -409,7 +434,16 @@ function MecanicoGate({ user }) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center px-8 text-center">
         <p className="text-[20px] font-extrabold mb-2">Ya cerraste tu jornada de hoy</p>
-        <p className="text-[14px] text-sub mb-6">Contactá a tu supervisor si necesitás continuar.</p>
+        <p className="text-[14px] text-sub mb-6">
+          {state.solicitado
+            ? "Se le avisó al administrador. Esta pantalla se actualiza sola apenas te desbloquee."
+            : "Si cerraste por error o necesitás cambiar de empresa, pedile a tu administrador que te desbloquee."}
+        </p>
+        {!state.solicitado && (
+          <Button className="w-full mb-3" disabled={state.solicitando} onClick={pedirDesbloqueo}>
+            {state.solicitando ? <span className="spinner" /> : "Solicitar desbloqueo al administrador"}
+          </Button>
+        )}
         <Button variant="ghost" onClick={() => { clearSession(); location.reload(); }}>Iniciar sesión</Button>
       </div>
     );

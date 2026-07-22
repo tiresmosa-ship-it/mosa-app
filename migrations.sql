@@ -347,3 +347,13 @@ ALTER TABLE movimientos_bodega DROP CONSTRAINT IF EXISTS movimientos_bodega_orig
 -- funcionaban y no se ven afectados).
 -- =====================================================================
 ALTER TABLE intervenciones DROP CONSTRAINT IF EXISTS intervenciones_tipo_check;
+
+-- =====================================================================
+-- 22) cierre_dia tenia un UNIQUE(mecanico_id, fecha) que impedia mas de
+-- un turno por mecanico por dia. Esto bloqueaba el flujo de desbloqueo del
+-- Admin (iniciar nuevo turno / cambiar de empresa), que depende de poder
+-- insertar un cierre_dia turno=2, turno=3... para el mismo mecanico en el
+-- mismo dia. Se reemplaza por UNIQUE(mecanico_id, fecha, turno).
+-- =====================================================================
+ALTER TABLE cierre_dia DROP CONSTRAINT IF EXISTS cierre_dia_mecanico_id_fecha_key;
+CREATE UNIQUE INDEX IF NOT EXISTS cierre_dia_mecanico_fecha_turno_key ON cierre_dia (mecanico_id, fecha, turno);

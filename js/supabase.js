@@ -784,18 +784,27 @@ async function evaluarEstadoMecanico(user) {
     .order("fecha", { ascending: false }).limit(1);
   if (pendientes && pendientes.length) return { estado: "jornada_pendiente", jornada: pendientes[0] };
 
-  const { data: hoyCierres } = await sb.from("cierre_dia").select("*")
-    .eq("mecanico_id", user.id).eq("fecha", hoy).eq("cerrado", true)
+  // Turno mas reciente de HOY (cerrado o no). El Admin puede desbloquear
+  // creando un turno nuevo (cerrado=false, creado_en=ahora) sin poder
+  // borrar el anterior, asi que "el turno de hoy" siempre es el ultimo
+  // por creado_en, no simplemente "el cerrado".
+  const { data: turnosHoy } = await sb.from("cierre_dia").select("*")
+    .eq("mecanico_id", user.id).eq("fecha", hoy)
     .order("creado_en", { ascending: false }).limit(1);
-  if (hoyCierres && hoyCierres.length) {
-    const c = hoyCierres[0];
-    if (horasDesdeHoraCierre(hoy, c.hora_cierre) < 8) return { estado: "jornada_cerrada_hoy" };
+  const turnoActual = turnosHoy && turnosHoy[0];
+
+  if (turnoActual && turnoActual.cerrado) {
+    if (horasDesdeHoraCierre(hoy, turnoActual.hora_cierre) < 8) return { estado: "jornada_cerrada_hoy" };
   }
 
   const { data: checks } = await sb.from("check_diario").select("*")
     .eq("bultero_id", user.id).eq("fecha", hoy).eq("completado", true)
     .order("creado_en", { ascending: false }).limit(1);
-  if (checks && checks.length) return { estado: "menu_principal", clienteId: checks[0].empresa_id || checks[0].cliente_id };
+  // El check diario solo cuenta si es del turno ACTUAL: si el Admin abrio un
+  // turno nuevo despues de ese check (ej. tras un desbloqueo), hay que volver
+  // a pedirlo.
+  const checkValido = checks && checks.length && (!turnoActual || !turnoActual.creado_en || checks[0].creado_en >= turnoActual.creado_en);
+  if (checkValido) return { estado: "menu_principal", clienteId: checks[0].empresa_id || checks[0].cliente_id };
   return { estado: "bienvenida" };
 }
 async function contarNeumaticosPorBodega(clienteId, bodega) {
@@ -935,4 +944,236 @@ async function siguienteNumeroCambio(clienteId, cfg) {
   if (!error && data && data[0] && !isNaN(parseInt(data[0].numero_cambio, 10))) base = Math.max(base, parseInt(data[0].numero_cambio, 10) + 1);
   const pendientes = getQueue().filter(q => q.clienteId === clienteId && q.tipo === "cambio").length;
   return String(base + pendientes);
+}
+
+/* =====================================================================
+   SOLICITUD DE DESBLOQUEO (lado mecanico)
+   El mecanico, viendo la pantalla "Ya cerraste tu jornada de hoy", puede
+   pedirle al Admin que lo desbloquee (por si cerro por error o necesita
+   cambiar de empresa). Genera una alerta que el Admin ve en su dashboard.
+===================================================================== */
+async function solicitarDesbloqueo(user) {
+  await insertAlerta({
+    id: uuid(), cliente_id: user.cliente_id, equipo_id: null, mecanico_id: user.id,
+    tipo: "solicitud_desbloqueo", severidad: "info",
+    titulo: `${user.nombre} solicita desbloqueo de jornada`,
+    descripcion: "El mecánico cerró su jornada y solicita poder iniciar una nueva o cambiar de empresa.",
+    leida_mecanico: true, leida_admin: false, leida_superadmin: false
+  });
+}
+async function buscarDesbloqueoAprobado(mecanicoId) {
+  const { data } = await sb.from("alertas").select("*")
+    .eq("mecanico_id", mecanicoId).eq("tipo", "desbloqueo_aprobado").eq("leida_mecanico", false)
+    .order("creado_en", { ascending: false }).limit(1);
+  return (data && data[0]) || null;
+}
+async function marcarAlertaLeidaMecanico(id) {
+  await sb.from("alertas").update({ leida_mecanico: true }).eq("id", id);
+}
+
+/* =====================================================================
+   CAPA DE DATOS DEL ADMIN
+   clienteId === null/undefined/"todas" => sin filtro (todas las empresas).
+===================================================================== */
+function filtroCliente(q, clienteId) {
+  return (clienteId && clienteId !== "todas") ? q.eq("cliente_id", clienteId) : q;
+}
+const adminDb = {
+  async countEquiposActivos(clienteId) {
+    let q = sb.from("equipos").select("id_equipo", { count: "exact", head: true }).eq("activo", true);
+    q = filtroCliente(q, clienteId);
+    const { count } = await q;
+    return count || 0;
+  },
+  async countAuditoriasHoy(clienteId) {
+    let q = sb.from("auditorias").select("id_auditoria", { count: "exact", head: true }).eq("fecha", todayISO());
+    q = filtroCliente(q, clienteId);
+    const { count } = await q;
+    return count || 0;
+  },
+  async fetchAlertasCriticas(clienteId, soloNoLeidas) {
+    let q = sb.from("alertas").select("*").eq("severidad", "rojo").order("creado_en", { ascending: false }).limit(100);
+    if (soloNoLeidas) q = q.eq("leida_admin", false);
+    q = filtroCliente(q, clienteId);
+    const { data, error } = await q;
+    if (error) throw error;
+    return data || [];
+  },
+  async countAlertasNoLeidasTotal() {
+    // Para la campanita: todas las empresas, sin filtrar por severidad.
+    const { count } = await sb.from("alertas").select("id", { count: "exact", head: true }).eq("leida_admin", false);
+    return count || 0;
+  },
+  async fetchAlertas(clienteId, opts) {
+    opts = opts || {};
+    let q = sb.from("alertas").select("*").order("creado_en", { ascending: false }).limit(200);
+    if (opts.soloNoLeidas) q = q.eq("leida_admin", false);
+    if (opts.soloCriticas) q = q.eq("severidad", "rojo");
+    q = filtroCliente(q, clienteId);
+    const { data, error } = await q;
+    if (error) throw error;
+    return data || [];
+  },
+  async marcarAlertaLeida(id) {
+    await sb.from("alertas").update({ leida_admin: true }).eq("id", id);
+  },
+  async fetchPctInstructivoHoy(clienteId) {
+    // auditorias_receta no tiene "fecha" propia -> se filtra por creado_en del dia.
+    let q = sb.from("auditorias_receta").select("pct_receta_seguida,creado_en");
+    q = filtroCliente(q, clienteId);
+    const { data, error } = await q;
+    if (error) throw error;
+    const hoy = todayISO();
+    const vals = (data || []).filter(r => (r.creado_en || "").slice(0, 10) === hoy && r.pct_receta_seguida != null).map(r => r.pct_receta_seguida);
+    if (!vals.length) return null;
+    return Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
+  },
+  async fetchInstructivosPendientes(clienteId) {
+    let q = sb.from("auditorias_receta").select("id,auditoria_id,estado,tareas_pendientes,total_tareas").in("estado", ["pendiente", "parcial"]);
+    q = filtroCliente(q, clienteId);
+    const { data: recetas, error } = await q;
+    if (error) throw error;
+    if (!recetas || !recetas.length) return [];
+    const auditoriaIds = recetas.map(r => r.auditoria_id);
+    const { data: auds } = await sb.from("auditorias").select("id_auditoria,equipo_id,fecha").in("id_auditoria", auditoriaIds);
+    const equipoIds = [...new Set((auds || []).map(a => a.equipo_id))].filter(Boolean);
+    let equiposMap = {};
+    if (equipoIds.length) {
+      const { data: eqs } = await sb.from("equipos").select("id_equipo,patente,numero_interno").in("id_equipo", equipoIds);
+      (eqs || []).forEach(e => { equiposMap[e.id_equipo] = e; });
+    }
+    const audMap = {};
+    (auds || []).forEach(a => { audMap[a.id_auditoria] = a; });
+    return recetas.map(r => {
+      const a = audMap[r.auditoria_id] || {};
+      const eq = equiposMap[a.equipo_id] || {};
+      return { patente: eq.patente || "-", numero_interno: eq.numero_interno || null, estado: r.estado, tareas_pendientes: r.tareas_pendientes, total_tareas: r.total_tareas, fecha: a.fecha || null };
+    }).sort((x, y) => (x.fecha || "").localeCompare(y.fecha || ""));
+  },
+  async fetchStockRapido(clienteId) {
+    let q = sb.from("neumaticos").select("bodega").eq("activo", true);
+    q = filtroCliente(q, clienteId);
+    const { data } = await q;
+    const conteos = { nuevo: 0, transito: 0, recauchado: 0, reparacion: 0 };
+    (data || []).forEach(n => { if (conteos[n.bodega] !== undefined) conteos[n.bodega]++; });
+    return conteos;
+  },
+  async fetchMecanicosEnJornada(clienteId) {
+    let q = sb.from("usuarios").select("id,nombre,apellido,cliente_id").eq("rol", "mecanico").eq("activo", true);
+    q = filtroCliente(q, clienteId);
+    const { data: mecs, error } = await q;
+    if (error) throw error;
+    if (!mecs || !mecs.length) return [];
+    const ids = mecs.map(m => m.id);
+    const { data: turnos } = await sb.from("cierre_dia").select("*").eq("fecha", todayISO()).in("mecanico_id", ids).order("creado_en", { ascending: false });
+    const turnoPorMecanico = {};
+    (turnos || []).forEach(t => { if (!turnoPorMecanico[t.mecanico_id]) turnoPorMecanico[t.mecanico_id] = t; }); // el primero es el mas reciente (orden desc)
+    return mecs.map(m => {
+      const t = turnoPorMecanico[m.id] || null;
+      let estado = "sin_iniciar";
+      if (t) estado = t.cerrado ? "cerrado" : "activo";
+      // Bloqueado = tiene una solicitud de desbloqueo pendiente (leida_admin=false).
+      return { ...m, turno: t, estado };
+    });
+  },
+  async fetchSolicitudesDesbloqueoPendientes(clienteId) {
+    let q = sb.from("alertas").select("*").eq("tipo", "solicitud_desbloqueo").eq("leida_admin", false).order("creado_en", { ascending: false });
+    q = filtroCliente(q, clienteId);
+    const { data, error } = await q;
+    if (error) throw error;
+    return data || [];
+  },
+  // Opcion 1: iniciar nuevo turno para el mismo mecanico/empresa.
+  async iniciarNuevoTurno(mecanico, alertaId) {
+    const hoy = todayISO();
+    const { data: turnosHoy } = await sb.from("cierre_dia").select("turno").eq("mecanico_id", mecanico.id).eq("fecha", hoy).order("turno", { ascending: false }).limit(1);
+    const turnoSiguiente = (turnosHoy && turnosHoy[0] && turnosHoy[0].turno ? turnosHoy[0].turno : 1) + 1;
+    const { error } = await sb.from("cierre_dia").insert({
+      id: uuid(), cliente_id: mecanico.cliente_id, mecanico_id: mecanico.id, fecha: hoy,
+      turno: turnoSiguiente, hora_inicio: null, cerrado: false,
+      auditorias_realizadas: 0, cambios_realizados: 0, regulaciones_psi: 0, retorqueos: 0, rotaciones: 0, reparaciones: 0
+    });
+    if (error) throw error;
+    await aprobarDesbloqueo(mecanico, alertaId);
+  },
+  // Opcion 2: cambiar de empresa + iniciar nuevo turno en la nueva empresa.
+  async cambiarEmpresaMecanico(mecanico, nuevoClienteId, alertaId) {
+    const { error: e0 } = await sb.from("usuarios").update({ cliente_id: nuevoClienteId }).eq("id", mecanico.id);
+    if (e0) throw e0;
+    const hoy = todayISO();
+    const { data: turnosHoy } = await sb.from("cierre_dia").select("turno").eq("mecanico_id", mecanico.id).eq("fecha", hoy).order("turno", { ascending: false }).limit(1);
+    const turnoSiguiente = (turnosHoy && turnosHoy[0] && turnosHoy[0].turno ? turnosHoy[0].turno : 1) + 1;
+    const { error } = await sb.from("cierre_dia").insert({
+      id: uuid(), cliente_id: nuevoClienteId, mecanico_id: mecanico.id, fecha: hoy,
+      turno: turnoSiguiente, hora_inicio: null, cerrado: false,
+      auditorias_realizadas: 0, cambios_realizados: 0, regulaciones_psi: 0, retorqueos: 0, rotaciones: 0, reparaciones: 0
+    });
+    if (error) throw error;
+    await aprobarDesbloqueo(mecanico, alertaId);
+  }
+};
+async function aprobarDesbloqueo(mecanico, alertaId) {
+  if (alertaId) await sb.from("alertas").update({ leida_admin: true }).eq("id", alertaId);
+  await insertAlerta({
+    id: uuid(), cliente_id: mecanico.cliente_id, equipo_id: null, mecanico_id: mecanico.id,
+    tipo: "desbloqueo_aprobado", severidad: "info",
+    titulo: "Tu jornada fue desbloqueada por el administrador",
+    descripcion: "Ya podés volver a iniciar tu jornada.",
+    leida_mecanico: false, leida_admin: true, leida_superadmin: false
+  });
+}
+
+/* =====================================================================
+   JORNADA (vista admin) — actividad del dia en todas las empresas o la
+   empresa filtrada.
+===================================================================== */
+async function fetchChecksDiariosHoy(clienteId) {
+  let q = sb.from("check_diario").select("*").eq("fecha", todayISO()).eq("completado", true).order("creado_en", { ascending: false });
+  q = filtroCliente(q, clienteId);
+  const { data, error } = await q;
+  if (error) throw error;
+  const mecIds = [...new Set((data || []).map(c => c.bultero_id))].filter(Boolean);
+  let mecMap = {};
+  if (mecIds.length) {
+    const { data: mecs } = await sb.from("usuarios").select("id,nombre,apellido").in("id", mecIds);
+    (mecs || []).forEach(m => { mecMap[m.id] = m; });
+  }
+  return (data || []).map(c => ({ ...c, mecanico: mecMap[c.bultero_id] || null }));
+}
+async function fetchMovimientosHoy(clienteId) {
+  const hoy = todayISO();
+  let equipoIds = null;
+  if (clienteId && clienteId !== "todas") {
+    const { data: eqs } = await sb.from("equipos").select("id_equipo").eq("cliente_id", clienteId);
+    equipoIds = (eqs || []).map(e => e.id_equipo);
+    if (!equipoIds.length) return { auditorias: [], cambios: [] };
+  }
+  let qa = sb.from("auditorias").select("id_auditoria,equipo_id,numero_auditoria,creado_en,bultero_id").eq("fecha", hoy).order("creado_en", { ascending: false });
+  qa = filtroCliente(qa, clienteId);
+  let qc = sb.from("cambios_neumaticos").select("id_cambio,equipo_id,numero_cambio,creado_en,bultero_id").eq("fecha", hoy).order("creado_en", { ascending: false });
+  if (equipoIds) qc = qc.in("equipo_id", equipoIds);
+  const [{ data: auds }, { data: cams }] = await Promise.all([qa, qc]);
+  const equipoIdsTodos = [...new Set([...(auds || []).map(a => a.equipo_id), ...(cams || []).map(c => c.equipo_id)])].filter(Boolean);
+  const mecIdsTodos = [...new Set([...(auds || []).map(a => a.bultero_id), ...(cams || []).map(c => c.bultero_id)])].filter(Boolean);
+  const [{ data: eqs }, { data: mecs }] = await Promise.all([
+    equipoIdsTodos.length ? sb.from("equipos").select("id_equipo,patente,numero_interno").in("id_equipo", equipoIdsTodos) : Promise.resolve({ data: [] }),
+    mecIdsTodos.length ? sb.from("usuarios").select("id,nombre,apellido").in("id", mecIdsTodos) : Promise.resolve({ data: [] })
+  ]);
+  const eqMap = {}; (eqs || []).forEach(e => { eqMap[e.id_equipo] = e; });
+  const mecMap = {}; (mecs || []).forEach(m => { mecMap[m.id] = m; });
+  const conEtiquetas = (rows) => rows.map(r => ({ ...r, equipo: eqMap[r.equipo_id] || null, mecanico: mecMap[r.bultero_id] || null }));
+  return { auditorias: conEtiquetas(auds || []), cambios: conEtiquetas(cams || []) };
+}
+async function fetchCierresHoy(clienteId) {
+  let q = sb.from("cierre_dia").select("*").eq("fecha", todayISO()).order("creado_en", { ascending: false });
+  q = filtroCliente(q, clienteId);
+  const { data, error } = await q;
+  if (error) throw error;
+  const mecIds = [...new Set((data || []).map(c => c.mecanico_id))].filter(Boolean);
+  let mecMap = {};
+  if (mecIds.length) {
+    const { data: mecs } = await sb.from("usuarios").select("id,nombre,apellido").in("id", mecIds);
+    (mecs || []).forEach(m => { mecMap[m.id] = m; });
+  }
+  return (data || []).map(c => ({ ...c, mecanico: mecMap[c.mecanico_id] || null }));
 }

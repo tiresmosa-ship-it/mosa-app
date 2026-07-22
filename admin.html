@@ -120,6 +120,12 @@ const Icon = {
   wrench: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M14.7 6.3a4 4 0 10-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 005.4-5.4l-2.6 2.6-2-2z"/></svg>,
   bandage: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><rect x="3" y="9" width="18" height="6" rx="3" transform="rotate(45 12 12)"/><circle cx="9.5" cy="9.5" r=".6" fill="currentColor"/><circle cx="14.5" cy="14.5" r=".6" fill="currentColor"/></svg>,
   eye: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>,
+  building: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><rect x="4" y="3" width="16" height="18" rx="1"/><path d="M9 8h1M14 8h1M9 12h1M14 12h1M9 16h1M14 16h1"/></svg>,
+  menu: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M3 6h18M3 12h18M3 18h18"/></svg>,
+  chevronDown: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M6 9l6 6 6-6"/></svg>,
+  lock: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><rect x="4" y="11" width="16" height="9" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/></svg>,
+  box: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></svg>,
+  calendar: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>,
 };
 
 /* =====================================================================
@@ -266,23 +272,642 @@ function BottomNav({ view, setView, disabledExcept, alertasNoLeidas }) {
 }
 
 /* =====================================================================
-   DASHBOARD ADMIN (placeholder de esta primera etapa)
+   EMPRESA (filtro transversal a toda la app del admin)
 ===================================================================== */
-function AdminApp({ user, onLogout }) {
+const LS_EMPRESA_FILTRO = "empresa_filtro_admin";
+function useEmpresaFiltro() {
+  const [empresas, setEmpresas] = useState([]);
+  const [filtro, setFiltroState] = useState(() => localStorage.getItem(LS_EMPRESA_FILTRO) || "todas");
+  useEffect(() => { sb.from("clientes").select("*").eq("activo", true).order("nombre").then(({ data }) => setEmpresas(data || [])); }, []);
+  function setFiltro(v) { localStorage.setItem(LS_EMPRESA_FILTRO, v); setFiltroState(v); }
+  const nombreFiltro = filtro === "todas" ? "Todas" : ((empresas.find(e => e.id_cliente === filtro) || {}).nombre || filtro);
+  return { empresas, filtro, setFiltro, nombreFiltro };
+}
+function EmpresaSelector({ empresas, filtro, setFiltro, nombreFiltro }) {
+  const [open, setOpen] = useState(false);
   return (
-    <div className="min-h-screen px-6 pt-16 safe-top">
-      <div className="flex items-center justify-between mb-8">
-        <div>
-          <p className="text-[14px] text-muted">Dashboard de Admin</p>
-          <h1 className="text-[28px] font-extrabold">Hola, {user.nombre}</h1>
+    <div className="relative">
+      <button onClick={() => setOpen(o => !o)} className="flex items-center gap-1.5 bg-[#F3F4F6] rounded-full pl-3 pr-2.5 py-2 text-[13px] font-bold">
+        <Icon.building width="15" height="15" />
+        <span className="max-w-[100px] truncate">{nombreFiltro}</span>
+        <Icon.chevronDown width="14" height="14" />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute left-0 top-full mt-2 w-56 bg-white rounded-2xl border border-bd shadow-card z-50 overflow-hidden">
+            <button onClick={() => { setFiltro("todas"); setOpen(false); }} className={cx("w-full text-left px-4 py-3 text-[14px] font-semibold flex items-center gap-2", filtro === "todas" ? "bg-[#F3F4F6]" : "")}>
+              <span className={cx("w-3.5 h-3.5 rounded-full border-2", filtro === "todas" ? "border-ink bg-ink" : "border-[#D1D5DB]")} />
+              Todas las empresas
+            </button>
+            {empresas.map(e => (
+              <button key={e.id_cliente} onClick={() => { setFiltro(e.id_cliente); setOpen(false); }} className={cx("w-full text-left px-4 py-3 text-[14px] font-semibold flex items-center gap-2", filtro === e.id_cliente ? "bg-[#F3F4F6]" : "")}>
+                <span className={cx("w-3.5 h-3.5 rounded-full border-2", filtro === e.id_cliente ? "border-ink bg-ink" : "border-[#D1D5DB]")} />
+                {e.nombre}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* =====================================================================
+   NAV DEL ADMIN (sidebar en tablet+, hamburguesa en mobile)
+===================================================================== */
+const ADMIN_NAV = [
+  { id: "dashboard", label: "Dashboard", icon: Icon.home },
+  { id: "equipos", label: "Equipos", icon: Icon.truck },
+  { id: "jornada", label: "Jornada", icon: Icon.calendar },
+  { id: "maestros", label: "Maestros", icon: Icon.box },
+  { id: "alertas", label: "Alertas", icon: Icon.bell },
+  { id: "perfil", label: "Perfil", icon: Icon.user }
+];
+function AdminShell({ view, setView, empresaCtl, alertasNoLeidas, children }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const NavList = ({ onPick }) => (
+    <nav className="space-y-1">
+      {ADMIN_NAV.map(it => (
+        <button key={it.id} onClick={() => { setView(it.id); if (onPick) onPick(); }}
+          className={cx("w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-[14.5px] font-bold text-left relative", view === it.id ? "bg-ink text-white" : "text-[#374151] hover:bg-[#F3F4F6]")}>
+          <it.icon width="19" height="19" />
+          {it.label}
+          {it.id === "alertas" && alertasNoLeidas > 0 && (
+            <span className={cx("ml-auto min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold flex items-center justify-center", view === it.id ? "bg-white text-ink" : "bg-[#EF4444] text-white")}>{alertasNoLeidas > 99 ? "99+" : alertasNoLeidas}</span>
+          )}
+        </button>
+      ))}
+    </nav>
+  );
+  return (
+    <div className="min-h-screen md:flex">
+      <div className="hidden md:flex md:flex-col md:w-64 md:shrink-0 border-r border-bd p-5 sticky top-0 h-screen">
+        <div className="flex items-center gap-2 mb-8 px-1">
+          <div className="w-9 h-9 rounded-xl bg-ink flex items-center justify-center"><Icon.gauge width="18" height="18" className="text-white" /></div>
+          <span className="font-extrabold text-[16px]">MOSA TIRES</span>
         </div>
-        <button onClick={onLogout} className="w-10 h-10 rounded-full bg-[#F3F4F6] flex items-center justify-center"><Icon.user width="18" height="18" /></button>
+        <NavList />
       </div>
+      <div className="flex-1 min-w-0">
+        <div className="sticky top-0 z-30 bg-white/90 backdrop-blur border-b border-bd px-5 py-3 flex items-center justify-between safe-top">
+          <div className="flex items-center gap-3">
+            <button className="md:hidden w-9 h-9 rounded-full bg-[#F3F4F6] flex items-center justify-center" onClick={() => setMenuOpen(true)}><Icon.menu width="18" height="18" /></button>
+            <EmpresaSelector {...empresaCtl} />
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setView("alertas")} className="relative w-10 h-10 rounded-full bg-[#F3F4F6] flex items-center justify-center">
+              <Icon.bell width="18" height="18" />
+              {alertasNoLeidas > 0 && <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-[#EF4444] text-white text-[10px] font-bold flex items-center justify-center">{alertasNoLeidas > 99 ? "99+" : alertasNoLeidas}</span>}
+            </button>
+            <button onClick={() => setView("perfil")} className="w-10 h-10 rounded-full bg-[#F3F4F6] flex items-center justify-center"><Icon.user width="18" height="18" /></button>
+          </div>
+        </div>
+        <div className="px-5 py-6 pb-16">{children}</div>
+      </div>
+      {menuOpen && (
+        <div className="fixed inset-0 z-50 md:hidden">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setMenuOpen(false)} />
+          <div className="absolute left-0 top-0 bottom-0 w-72 bg-white p-5 safe-top">
+            <div className="flex items-center justify-between mb-8">
+              <span className="font-extrabold text-[16px]">MOSA TIRES</span>
+              <button onClick={() => setMenuOpen(false)} className="w-9 h-9 rounded-full bg-[#F3F4F6] flex items-center justify-center"><Icon.close width="16" height="16" /></button>
+            </div>
+            <NavList onPick={() => setMenuOpen(false)} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* =====================================================================
+   DASHBOARD
+===================================================================== */
+function KpiCard({ label, value }) {
+  return (
+    <div className="bg-[#F9FAFB] rounded-[18px] p-4">
+      <p className="text-[22px] font-extrabold leading-none">{value == null ? "—" : value}</p>
+      <p className="text-[11.5px] font-semibold text-muted mt-1.5">{label}</p>
+    </div>
+  );
+}
+const ALERTA_TIPO_LABELS = {
+  psi_bajo: "PSI bajo", psi_alto: "PSI alto", mm_critico: "MM crítico", mm_bajo: "MM bajo",
+  rotacion_recomendada: "Rotación recomendada", neumatico_no_registrado: "Neumático no registrado",
+  discrepancia_inventario: "Discrepancia de inventario", cierre_dia: "Cierre de jornada",
+  solicitud_desbloqueo: "Solicitud de desbloqueo", desbloqueo_aprobado: "Desbloqueo aprobado"
+};
+function AlertaRow({ a, equiposMap, onVer }) {
+  return (
+    <div className="bg-white rounded-2xl border border-bd shadow-card p-4 flex items-start gap-3">
+      <div className="flex-1 min-w-0">
+        <p className="font-bold text-[14px] truncate">{a.titulo}</p>
+        <p className="text-[12.5px] text-muted mt-0.5 line-clamp-2">{a.descripcion}</p>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-[11.5px] text-muted">
+          {a.equipo_id && equiposMap && equiposMap[a.equipo_id] && <span>{equiposMap[a.equipo_id]}</span>}
+          {a.creado_en && <span>{(a.creado_en).slice(0, 10)} · {(a.creado_en).slice(11, 16)}</span>}
+        </div>
+      </div>
+      <Button variant="subtle" className="h-9 px-3.5 text-[12.5px] shrink-0" onClick={() => onVer(a)}>Ver</Button>
+    </div>
+  );
+}
+function AlertaDetalleModal({ alerta, onClose, onMarcarLeida }) {
+  return (
+    <Modal title="Detalle de alerta" onClose={onClose}>
+      <div className="space-y-3">
+        <div>
+          <Badge color={alerta.severidad === "rojo" ? "red" : alerta.severidad === "amarillo" ? "amber" : "gray"}>{ALERTA_TIPO_LABELS[alerta.tipo] || alerta.tipo}</Badge>
+        </div>
+        <p className="font-bold text-[16px]">{alerta.titulo}</p>
+        <p className="text-[14px] text-[#374151] whitespace-pre-wrap">{alerta.descripcion}</p>
+        <p className="text-[12.5px] text-muted">{(alerta.creado_en || "").slice(0, 10)} · {(alerta.creado_en || "").slice(11, 16)}</p>
+        {!alerta.leida_admin && <Button className="w-full" onClick={() => onMarcarLeida(alerta)}>Marcar como leída</Button>}
+      </div>
+    </Modal>
+  );
+}
+function DashboardView({ empresaCtl, onAbrirMecanico }) {
+  const { filtro } = empresaCtl;
+  const [kpis, setKpis] = useState({ equipos: null, auditorias: null, alertas: null, pct: null });
+  const [criticas, setCriticas] = useState([]);
+  const [pendientes, setPendientes] = useState([]);
+  const [stock, setStock] = useState(null);
+  const [mecanicos, setMecanicos] = useState([]);
+  const [equiposMap, setEquiposMap] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [verAlerta, setVerAlerta] = useState(null);
+  const [pushToast, toastNode] = useToasts();
+
+  async function cargar() {
+    setLoading(true);
+    try {
+      const [equiposCount, auditoriasCount, criticasList, pct, pend, stk, mecs] = await Promise.all([
+        adminDb.countEquiposActivos(filtro), adminDb.countAuditoriasHoy(filtro),
+        adminDb.fetchAlertasCriticas(filtro, true), adminDb.fetchPctInstructivoHoy(filtro),
+        adminDb.fetchInstructivosPendientes(filtro), adminDb.fetchStockRapido(filtro),
+        adminDb.fetchMecanicosEnJornada(filtro)
+      ]);
+      setKpis({ equipos: equiposCount, auditorias: auditoriasCount, alertas: criticasList.length, pct });
+      setCriticas(criticasList);
+      setPendientes(pend);
+      setStock(stk);
+      setMecanicos(mecs);
+      const eqIds = [...new Set(criticasList.map(a => a.equipo_id))].filter(Boolean);
+      if (eqIds.length) {
+        const { data: eqs } = await sb.from("equipos").select("id_equipo,patente,numero_interno").in("id_equipo", eqIds);
+        const map = {}; (eqs || []).forEach(e => { map[e.id_equipo] = e.numero_interno ? `${e.numero_interno} · ${e.patente}` : e.patente; });
+        setEquiposMap(map);
+      } else setEquiposMap({});
+    } catch (e) { console.error("No se pudo cargar el dashboard", e); }
+    setLoading(false);
+  }
+  useEffect(() => { cargar(); }, [filtro]);
+
+  async function marcarLeida(a) {
+    await adminDb.marcarAlertaLeida(a.id);
+    setCriticas(cs => cs.filter(x => x.id !== a.id));
+    setKpis(k => ({ ...k, alertas: Math.max(0, k.alertas - 1) }));
+    setVerAlerta(null);
+    pushToast("✓ Alerta marcada como leída");
+  }
+
+  if (loading) return <div className="flex justify-center py-16"><span className="spinner" /></div>;
+
+  return (
+    <div>
+      {toastNode}
+      <h1 className="text-[26px] font-extrabold mb-5">Dashboard</h1>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+        <KpiCard label="Equipos activos" value={kpis.equipos} />
+        <KpiCard label="Auditorías hoy" value={kpis.auditorias} />
+        <KpiCard label="Alertas críticas" value={kpis.alertas} />
+        <KpiCard label="% instructivo prom." value={kpis.pct != null ? kpis.pct + "%" : "—"} />
+      </div>
+
+      <p className="font-bold text-[16px] mb-3">Alertas críticas activas</p>
+      <div className="space-y-2 mb-8">
+        {criticas.map(a => <AlertaRow key={a.id} a={a} equiposMap={equiposMap} onVer={setVerAlerta} />)}
+        {!criticas.length && <p className="text-[13.5px] text-muted py-4">Sin alertas críticas pendientes. 🎉</p>}
+      </div>
+
+      <p className="font-bold text-[16px] mb-3">Equipos con instructivo pendiente o parcial</p>
+      <div className="bg-white rounded-2xl border border-bd shadow-card overflow-hidden mb-8">
+        {pendientes.map((p, i) => (
+          <div key={i} className={cx("flex items-center justify-between px-4 py-3", i > 0 && "border-t border-bd")}>
+            <div>
+              <p className="font-bold text-[14px]">{p.numero_interno ? `${p.numero_interno} · ` : ""}{p.patente}</p>
+              <p className="text-[12px] text-muted">Auditoría del {p.fecha ? formatDateLong(p.fecha) : "-"} · {p.tareas_pendientes}/{p.total_tareas} tareas pendientes</p>
+            </div>
+            <Badge color={p.estado === "parcial" ? "amber" : "red"}>{p.estado === "parcial" ? "Parcial" : "Pendiente"}</Badge>
+          </div>
+        ))}
+        {!pendientes.length && <p className="text-[13.5px] text-muted p-4">No hay instructivos pendientes.</p>}
+      </div>
+
+      <p className="font-bold text-[16px] mb-3">Stock rápido</p>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
+        <KpiCard label="Nuevos" value={stock ? stock.nuevo : null} />
+        <KpiCard label="Tránsito" value={stock ? stock.transito : null} />
+        <KpiCard label="Recauchados" value={stock ? stock.recauchado : null} />
+        <KpiCard label="En reparar" value={stock ? stock.reparacion : null} />
+      </div>
+
+      <p className="font-bold text-[16px] mb-3">Mecánicos en jornada</p>
+      <div className="bg-white rounded-2xl border border-bd shadow-card overflow-hidden">
+        {mecanicos.map((m, i) => {
+          const bloqueado = m.estado === "cerrado";
+          const dot = m.estado === "activo" ? "🟢" : m.estado === "cerrado" ? "🔴" : "⏳";
+          const detalle = m.estado === "activo" ? `Activo desde ${(m.turno.hora_inicio || "").slice(0, 5) || "—"}`
+            : m.estado === "cerrado" ? `Jornada cerrada ${(m.turno.hora_cierre || "").slice(0, 5) || ""}`
+            : "Sin iniciar";
+          return (
+            <button key={m.id} onClick={() => bloqueado && onAbrirMecanico(m)}
+              className={cx("w-full flex items-center justify-between px-4 py-3 text-left", i > 0 && "border-t border-bd", !bloqueado && "cursor-default")}>
+              <div className="flex items-center gap-2">
+                <span>{dot}</span>
+                <div>
+                  <p className="font-bold text-[14px]">{m.nombre} {m.apellido || ""}</p>
+                  <p className="text-[12px] text-muted">{detalle}</p>
+                </div>
+              </div>
+              {bloqueado && <Icon.lock width="16" height="16" className="text-muted shrink-0" />}
+            </button>
+          );
+        })}
+        {!mecanicos.length && <p className="text-[13.5px] text-muted p-4">No hay mecánicos para esta empresa.</p>}
+      </div>
+
+      {verAlerta && <AlertaDetalleModal alerta={verAlerta} onClose={() => setVerAlerta(null)} onMarcarLeida={marcarLeida} />}
+    </div>
+  );
+}
+
+/* =====================================================================
+   DESBLOQUEO DE MECANICO
+===================================================================== */
+function MecanicoBloqueadoModal({ mecanico, empresas, onClose, onDone }) {
+  const [modo, setModo] = useState(null); // null | "empresa"
+  const [nuevaEmpresa, setNuevaEmpresa] = useState(mecanico.cliente_id);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function iniciarNuevoTurno() {
+    setSaving(true); setError("");
+    try {
+      const alerta = await adminDb.fetchSolicitudesDesbloqueoPendientes("todas").then(as => as.find(a => a.mecanico_id === mecanico.id));
+      await adminDb.iniciarNuevoTurno(mecanico, alerta ? alerta.id : null);
+      onDone();
+    } catch (e) { console.error("No se pudo iniciar el nuevo turno", e); setError("No se pudo iniciar el nuevo turno. Intentá de nuevo."); setSaving(false); }
+  }
+  async function cambiarEmpresa() {
+    setSaving(true); setError("");
+    try {
+      const alerta = await adminDb.fetchSolicitudesDesbloqueoPendientes("todas").then(as => as.find(a => a.mecanico_id === mecanico.id));
+      await adminDb.cambiarEmpresaMecanico(mecanico, nuevaEmpresa, alerta ? alerta.id : null);
+      onDone();
+    } catch (e) { console.error("No se pudo cambiar la empresa del mecánico", e); setError("No se pudo cambiar la empresa. Intentá de nuevo."); setSaving(false); }
+  }
+
+  if (modo === "empresa") {
+    return (
+      <Modal title="Cambiar de empresa" onClose={() => setModo(null)}>
+        <p className="text-[14px] text-[#374151] mb-4">Elegí la empresa donde {mecanico.nombre} va a trabajar hoy.</p>
+        <Field label="Empresa">
+          <Select value={nuevaEmpresa} onChange={e => setNuevaEmpresa(e.target.value)}>
+            {empresas.map(e => <option key={e.id_cliente} value={e.id_cliente}>{e.nombre}</option>)}
+          </Select>
+        </Field>
+        {error && <p className="text-[12.5px] font-semibold text-[#B91C1C] mt-3">{error}</p>}
+        <Button className="w-full mt-5" disabled={saving} onClick={cambiarEmpresa}>{saving ? <span className="spinner" /> : "Confirmar cambio de empresa"}</Button>
+      </Modal>
+    );
+  }
+
+  return (
+    <Modal title={`${mecanico.nombre} ${mecanico.apellido || ""}`} onClose={onClose}>
+      <p className="text-[14px] text-[#374151] mb-5">Esta jornada está cerrada. Elegí cómo desbloquearlo.</p>
+      {error && <p className="text-[12.5px] font-semibold text-[#B91C1C] mb-3">{error}</p>}
+      <div className="space-y-3">
+        <Button className="w-full" disabled={saving} onClick={iniciarNuevoTurno}>{saving ? <span className="spinner" /> : "Iniciar nuevo turno"}</Button>
+        <Button variant="subtle" className="w-full" disabled={saving} onClick={() => setModo("empresa")}>Cambiar empresa</Button>
+      </div>
+    </Modal>
+  );
+}
+
+/* =====================================================================
+   EQUIPOS
+===================================================================== */
+function EquiposView({ empresaCtl }) {
+  const { filtro } = empresaCtl;
+  const [equipos, setEquipos] = useState([]);
+  const [search, setSearch] = useState("");
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    setLoading(true);
+    let q = sb.from("equipos").select("*").eq("activo", true).order("numero_interno");
+    if (filtro !== "todas") q = q.eq("cliente_id", filtro);
+    q.then(({ data }) => { setEquipos(data || []); setLoading(false); });
+  }, [filtro]);
+  const filtrados = equipos.filter(eq => {
+    if (!search) return true;
+    const s = search.toLowerCase();
+    return (eq.patente || "").toLowerCase().includes(s) || (eq.numero_interno || "").toLowerCase().includes(s);
+  });
+  return (
+    <div>
+      <h1 className="text-[26px] font-extrabold mb-5">Equipos</h1>
+      <TextInput placeholder="Buscar por patente o número interno" value={search} onChange={e => setSearch(e.target.value)} className="mb-4 max-w-md" />
+      {loading ? <div className="flex justify-center py-10"><span className="spinner" /></div> : (
+        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {filtrados.map(eq => (
+            <Card key={eq.id_equipo}>
+              <p className="font-bold text-[15px]">{eq.numero_interno ? `${eq.numero_interno} · ` : ""}{eq.patente}</p>
+              <p className="text-[12.5px] text-muted mt-1">{eq.tipo === "SEMI" ? "Semirremolque" : `Tracto ${eq.configuracion_ejes || ""}`} · {eq.modelo || "-"}</p>
+              <p className="text-[12px] text-muted mt-1">{eq.kilometros ? `${eq.kilometros.toLocaleString()} km` : "Sin km registrados"}</p>
+            </Card>
+          ))}
+          {!filtrados.length && <p className="text-[13.5px] text-muted py-6 col-span-full text-center">No hay equipos que coincidan.</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* =====================================================================
+   JORNADA (3 bloques: inicio del dia, movimientos del dia, cierre del dia)
+===================================================================== */
+function JornadaView({ empresaCtl }) {
+  const { filtro } = empresaCtl;
+  const [sub, setSub] = useState(null);
+  const [checks, setChecks] = useState([]);
+  const [movs, setMovs] = useState({ auditorias: [], cambios: [] });
+  const [cierres, setCierres] = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!sub) return;
+    setLoading(true);
+    const fn = sub === "inicio" ? fetchChecksDiariosHoy(filtro).then(setChecks)
+      : sub === "movimientos" ? fetchMovimientosHoy(filtro).then(setMovs)
+      : fetchCierresHoy(filtro).then(setCierres);
+    fn.catch(e => console.error(e)).finally(() => setLoading(false));
+  }, [sub, filtro]);
+
+  if (!sub) {
+    return (
+      <div>
+        <h1 className="text-[26px] font-extrabold mb-5">Jornada</h1>
+        <div className="grid sm:grid-cols-3 gap-3">
+          <button onClick={() => setSub("inicio")} className="text-left"><Card><p className="text-[24px] mb-2">✅</p><p className="font-bold text-[15px]">Inicio del día</p><p className="text-[12.5px] text-muted mt-1">Checks diarios completados hoy</p></Card></button>
+          <button onClick={() => setSub("movimientos")} className="text-left"><Card><p className="text-[24px] mb-2">⚡</p><p className="font-bold text-[15px]">Movimientos del día</p><p className="text-[12.5px] text-muted mt-1">Auditorías y cambios de hoy</p></Card></button>
+          <button onClick={() => setSub("cierre")} className="text-left"><Card><p className="text-[24px] mb-2">🌙</p><p className="font-bold text-[15px]">Cierre del día</p><p className="text-[12.5px] text-muted mt-1">Estado de cierre por mecánico</p></Card></button>
+        </div>
+      </div>
+    );
+  }
+
+  const titulo = sub === "inicio" ? "Inicio del día" : sub === "movimientos" ? "Movimientos del día" : "Cierre del día";
+  return (
+    <div>
+      <button onClick={() => setSub(null)} className="flex items-center gap-2 text-[13.5px] font-bold text-muted mb-4"><Icon.back width="15" height="15" /> Jornada</button>
+      <h1 className="text-[26px] font-extrabold mb-5">{titulo}</h1>
+      {loading ? <div className="flex justify-center py-10"><span className="spinner" /></div> : (
+        <>
+          {sub === "inicio" && (
+            <div className="bg-white rounded-2xl border border-bd shadow-card overflow-hidden">
+              {checks.map((c, i) => (
+                <div key={c.id} className={cx("flex items-center justify-between px-4 py-3", i > 0 && "border-t border-bd")}>
+                  <p className="font-bold text-[14px]">{c.mecanico ? `${c.mecanico.nombre} ${c.mecanico.apellido || ""}` : "-"}</p>
+                  <p className="text-[12.5px] text-muted">{(c.hora_inicio || "").slice(0, 5)}</p>
+                </div>
+              ))}
+              {!checks.length && <p className="text-[13.5px] text-muted p-4">Nadie completó el check diario todavía.</p>}
+            </div>
+          )}
+          {sub === "movimientos" && (
+            <div className="space-y-6">
+              <div>
+                <p className="font-bold text-[14.5px] mb-2">Auditorías ({movs.auditorias.length})</p>
+                <div className="bg-white rounded-2xl border border-bd shadow-card overflow-hidden">
+                  {movs.auditorias.map((a, i) => (
+                    <div key={a.id_auditoria} className={cx("flex items-center justify-between px-4 py-3", i > 0 && "border-t border-bd")}>
+                      <div><p className="font-bold text-[14px]">{a.equipo ? (a.equipo.numero_interno ? `${a.equipo.numero_interno} · ${a.equipo.patente}` : a.equipo.patente) : "-"}</p><p className="text-[12px] text-muted">{a.mecanico ? `${a.mecanico.nombre} ${a.mecanico.apellido || ""}` : "-"}</p></div>
+                      <p className="text-[12.5px] text-muted">{(a.creado_en || "").slice(11, 16)}</p>
+                    </div>
+                  ))}
+                  {!movs.auditorias.length && <p className="text-[13.5px] text-muted p-4">Sin auditorías hoy.</p>}
+                </div>
+              </div>
+              <div>
+                <p className="font-bold text-[14.5px] mb-2">Cambios ({movs.cambios.length})</p>
+                <div className="bg-white rounded-2xl border border-bd shadow-card overflow-hidden">
+                  {movs.cambios.map((c, i) => (
+                    <div key={c.id_cambio} className={cx("flex items-center justify-between px-4 py-3", i > 0 && "border-t border-bd")}>
+                      <div><p className="font-bold text-[14px]">{c.equipo ? (c.equipo.numero_interno ? `${c.equipo.numero_interno} · ${c.equipo.patente}` : c.equipo.patente) : "-"}</p><p className="text-[12px] text-muted">{c.mecanico ? `${c.mecanico.nombre} ${c.mecanico.apellido || ""}` : "-"}</p></div>
+                      <p className="text-[12.5px] text-muted">{(c.creado_en || "").slice(11, 16)}</p>
+                    </div>
+                  ))}
+                  {!movs.cambios.length && <p className="text-[13.5px] text-muted p-4">Sin cambios hoy.</p>}
+                </div>
+              </div>
+            </div>
+          )}
+          {sub === "cierre" && (
+            <div className="bg-white rounded-2xl border border-bd shadow-card overflow-hidden">
+              {cierres.map((c, i) => (
+                <div key={c.id} className={cx("flex items-center justify-between px-4 py-3", i > 0 && "border-t border-bd")}>
+                  <div>
+                    <p className="font-bold text-[14px]">{c.mecanico ? `${c.mecanico.nombre} ${c.mecanico.apellido || ""}` : "-"} <span className="text-muted font-semibold">· turno {c.turno || 1}</span></p>
+                    <p className="text-[12px] text-muted">{c.cerrado ? `Cerrado ${(c.hora_cierre || "").slice(0, 5)}` : `Abierto desde ${(c.hora_inicio || "").slice(0, 5) || "—"}`}</p>
+                  </div>
+                  <Badge color={c.cerrado ? "gray" : "green"}>{c.cerrado ? "Cerrado" : "Activo"}</Badge>
+                </div>
+              ))}
+              {!cierres.length && <p className="text-[13.5px] text-muted p-4">Sin registros de cierre hoy.</p>}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/* =====================================================================
+   MAESTROS (placeholder - fuera de alcance de esta etapa)
+===================================================================== */
+function MaestrosView() {
+  return (
+    <div>
+      <h1 className="text-[26px] font-extrabold mb-5">Maestros</h1>
       <Card>
-        <p className="font-bold text-[16px] mb-2">Dashboard de Admin en construcción</p>
-        <p className="text-[14px] text-sub">El dashboard, maestros (clientes, equipos, mecánicos, neumáticos, inventario), historial, configuración y alertas llegan en la siguiente etapa del proyecto.</p>
+        <p className="font-bold text-[16px] mb-2">Maestros en construcción</p>
+        <p className="text-[14px] text-sub">Clientes, equipos, mecánicos, neumáticos e inventario (alta/edición) llegan en la siguiente etapa del proyecto.</p>
       </Card>
     </div>
+  );
+}
+
+/* =====================================================================
+   ALERTAS (admin)
+===================================================================== */
+function AlertasAdminView({ empresaCtl, onAbrirMecanico, mecanicosPorId }) {
+  const { filtro } = empresaCtl;
+  const [alertas, setAlertas] = useState([]);
+  const [filter, setFilter] = useState("noleidas");
+  const [loading, setLoading] = useState(true);
+  const [verAlerta, setVerAlerta] = useState(null);
+  const [equiposMap, setEquiposMap] = useState({});
+  const [pushToast, toastNode] = useToasts();
+
+  async function cargar() {
+    setLoading(true);
+    try {
+      const data = await adminDb.fetchAlertas(filtro, { soloNoLeidas: filter === "noleidas", soloCriticas: filter === "criticas" });
+      setAlertas(data);
+      const eqIds = [...new Set(data.map(a => a.equipo_id))].filter(Boolean);
+      if (eqIds.length) {
+        const { data: eqs } = await sb.from("equipos").select("id_equipo,patente,numero_interno").in("id_equipo", eqIds);
+        const map = {}; (eqs || []).forEach(e => { map[e.id_equipo] = e.numero_interno ? `${e.numero_interno} · ${e.patente}` : e.patente; });
+        setEquiposMap(map);
+      } else setEquiposMap({});
+    } catch (e) { console.error(e); }
+    setLoading(false);
+  }
+  useEffect(() => { cargar(); }, [filtro, filter]);
+
+  async function marcarLeida(a) {
+    await adminDb.marcarAlertaLeida(a.id);
+    setAlertas(as => as.map(x => x.id === a.id ? { ...x, leida_admin: true } : x));
+    setVerAlerta(null);
+    pushToast("✓ Alerta marcada como leída");
+  }
+
+  return (
+    <div>
+      {toastNode}
+      <h1 className="text-[26px] font-extrabold mb-5">Alertas</h1>
+      <div className="flex gap-2 mb-5">
+        {[["noleidas", "No leídas"], ["criticas", "Críticas"], ["todas", "Todas"]].map(([k, l]) => (
+          <button key={k} onClick={() => setFilter(k)} className={cx("px-4 py-2 rounded-full text-[13px] font-bold", filter === k ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{l}</button>
+        ))}
+      </div>
+      {loading ? <div className="flex justify-center py-10"><span className="spinner" /></div> : (
+        <div className="space-y-2">
+          {alertas.map(a => (
+            <div key={a.id} className="bg-white rounded-2xl border border-bd shadow-card p-4">
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex-1 min-w-0">
+                  <p className="font-bold text-[14px] truncate">{a.titulo}</p>
+                  <p className="text-[12.5px] text-muted mt-0.5 line-clamp-2">{a.descripcion}</p>
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-[11.5px] text-muted">
+                    <span>{ALERTA_TIPO_LABELS[a.tipo] || a.tipo}</span>
+                    {a.equipo_id && equiposMap[a.equipo_id] && <span>{equiposMap[a.equipo_id]}</span>}
+                    {a.creado_en && <span>{(a.creado_en).slice(0, 10)} · {(a.creado_en).slice(11, 16)}</span>}
+                  </div>
+                </div>
+                <Badge color={a.severidad === "rojo" ? "red" : a.severidad === "amarillo" ? "amber" : "gray"}>{a.severidad === "rojo" ? "Alerta" : a.severidad === "amarillo" ? "Atención" : "Info"}</Badge>
+              </div>
+              <div className="flex items-center justify-between gap-2 mt-2.5">
+                <div>{!a.leida_admin && <span className="text-[11px] font-bold text-ink">● No leída</span>}</div>
+                <div className="flex gap-2">
+                  {a.tipo === "solicitud_desbloqueo" && mecanicosPorId[a.mecanico_id] && (
+                    <button onClick={() => onAbrirMecanico(mecanicosPorId[a.mecanico_id])} className="text-[12px] font-bold text-white px-3 py-1.5 rounded-full bg-ink">Desbloquear</button>
+                  )}
+                  {!a.leida_admin && <button onClick={() => marcarLeida(a)} className="text-[12px] font-bold text-ink px-3 py-1.5 rounded-full bg-[#F3F4F6]">Marcar como leída</button>}
+                </div>
+              </div>
+            </div>
+          ))}
+          {!alertas.length && <p className="text-center text-muted py-10 text-sm">Sin alertas.</p>}
+        </div>
+      )}
+      {verAlerta && <AlertaDetalleModal alerta={verAlerta} onClose={() => setVerAlerta(null)} onMarcarLeida={marcarLeida} />}
+    </div>
+  );
+}
+
+/* =====================================================================
+   PERFIL
+===================================================================== */
+function PerfilAdminView({ user, onLogout }) {
+  const [confirming, setConfirming] = useState(false);
+  return (
+    <div>
+      <h1 className="text-[26px] font-extrabold mb-5">Perfil</h1>
+      <Card className="mb-6 max-w-md">
+        <div className="flex items-center gap-3">
+          <div className="w-12 h-12 rounded-full bg-[#F3F4F6] flex items-center justify-center"><Icon.user width="22" height="22" /></div>
+          <div>
+            <p className="font-bold text-[16px]">{user.nombre} {user.apellido || ""}</p>
+            <p className="text-[12.5px] text-muted">Usuario: {user.usuario} · Rol: {user.rol}</p>
+          </div>
+        </div>
+      </Card>
+      <Card className="mb-6 max-w-md">
+        <p className="font-bold text-[15px] mb-1">Configuración</p>
+        <p className="text-[13.5px] text-sub">La configuración por empresa (umbrales de PSI/MM, numeración) llega en la siguiente etapa del proyecto.</p>
+      </Card>
+      <Button variant="danger" className="w-full max-w-md" onClick={() => setConfirming(true)}>Cerrar sesión</Button>
+      {confirming && (
+        <Confirm title="Cerrar sesión" desc="¿Seguro que querés cerrar tu sesión?"
+          onCancel={() => setConfirming(false)} onConfirm={onLogout} />
+      )}
+    </div>
+  );
+}
+
+/* =====================================================================
+   APP DEL ADMIN
+===================================================================== */
+function AdminApp({ user, onLogout }) {
+  const empresaCtl = useEmpresaFiltro();
+  const [view, setView] = useState("dashboard");
+  const [mecanicoBloqueado, setMecanicoBloqueado] = useState(null);
+  const [alertasNoLeidas, setAlertasNoLeidas] = useState(0);
+  const [mecanicosPorId, setMecanicosPorId] = useState({});
+  const [refreshToken, setRefreshToken] = useState(0);
+
+  async function refrescarCampanita() {
+    try { setAlertasNoLeidas(await adminDb.countAlertasNoLeidasTotal()); } catch (e) {}
+  }
+  useEffect(() => {
+    refrescarCampanita();
+    const t = setInterval(refrescarCampanita, 15000);
+    return () => clearInterval(t);
+  }, []);
+  useEffect(() => {
+    sb.from("usuarios").select("id,nombre,apellido,cliente_id").eq("rol", "mecanico").then(({ data }) => {
+      const map = {}; (data || []).forEach(m => { map[m.id] = m; });
+      setMecanicosPorId(map);
+    });
+  }, []);
+
+  function handleMecanicoDesbloqueado() {
+    setMecanicoBloqueado(null);
+    refrescarCampanita();
+    setRefreshToken(t => t + 1); // fuerza remount + refetch de la vista actual
+  }
+
+  let body;
+  if (view === "equipos") body = <EquiposView key={refreshToken} empresaCtl={empresaCtl} />;
+  else if (view === "jornada") body = <JornadaView key={refreshToken} empresaCtl={empresaCtl} />;
+  else if (view === "maestros") body = <MaestrosView />;
+  else if (view === "alertas") body = <AlertasAdminView key={refreshToken} empresaCtl={empresaCtl} onAbrirMecanico={setMecanicoBloqueado} mecanicosPorId={mecanicosPorId} />;
+  else if (view === "perfil") body = <PerfilAdminView user={user} onLogout={onLogout} />;
+  else body = <DashboardView key={refreshToken} empresaCtl={empresaCtl} onAbrirMecanico={setMecanicoBloqueado} />;
+
+  return (
+    <AdminShell view={view} setView={setView} empresaCtl={empresaCtl} alertasNoLeidas={alertasNoLeidas}>
+      {body}
+      {mecanicoBloqueado && (
+        <MecanicoBloqueadoModal mecanico={mecanicoBloqueado} empresas={empresaCtl.empresas}
+          onClose={() => setMecanicoBloqueado(null)} onDone={handleMecanicoDesbloqueado} />
+      )}
+    </AdminShell>
   );
 }
 
