@@ -303,8 +303,13 @@ async function enviarItem(item) {
     case "cambio": return enviarCambio(item.data);
     case "cierre": return enviarCierre(item.data);
     case "alerta": return enviarAlerta(item.data);
+    case "discrepancia_auditoria": return enviarDiscrepanciaAuditoria(item.data);
     default: throw new Error("tipo desconocido " + item.tipo);
   }
+}
+async function enviarDiscrepanciaAuditoria(data) {
+  const { error } = await sb.from("discrepancias_inventario").insert(data);
+  if (error) throw error;
 }
 async function enviarAlerta(data) {
   const { error } = await sb.from("alertas").insert(data);
@@ -667,7 +672,7 @@ async function construirYGuardarAuditoria({ user, clienteId, equipo, cfg, posDat
 
   // Recomendaciones reales (se excluye el placeholder "Todo en orden").
   const realRecs = recsInfo.recs.filter(r => r.key);
-  const recomendacionesJSON = realRecs.map(r => ({ id: r.id, key: r.key, texto: r.texto, done: false }));
+  const recomendacionesJSON = realRecs.map(r => ({ id: r.id, key: r.key, texto: r.texto, done: !!(checklist.find(c => c.id === r.id) || {}).done }));
   const tareasExtraJSON = checklist.filter(c => c.extra).map(c => ({ texto: c.texto, done: c.done }));
   const totalTareas = realRecs.length;
 
@@ -708,7 +713,10 @@ async function construirYGuardarAuditoria({ user, clienteId, equipo, cfg, posDat
   };
 
   // Una alerta por cada discrepancia de neumatico detectada (informativa para
-  // el mecanico, pendiente de aprobacion del administrador).
+  // el mecanico, pendiente de aprobacion del administrador), y una fila en
+  // discrepancias_inventario (origen='auditoria') para que el Admin la vea
+  // en Jornada > Movimientos del día > Discrepancias.
+  const discrepanciasParaAdmin = [];
   (discrepanciasNeumaticos || []).forEach(dn => {
     alertasGeneradas.push({
       id: uuid(), cliente_id: clienteId, equipo_id: equipo.id_equipo, mecanico_id: user.id,
@@ -718,10 +726,17 @@ async function construirYGuardarAuditoria({ user, clienteId, equipo, cfg, posDat
       posicion: dn.posicion, numero_fuego: dn.valor_mecanico,
       leida_mecanico: true, leida_admin: false, leida_superadmin: false
     });
+    discrepanciasParaAdmin.push({
+      id: uuid(), cliente_id: clienteId, mecanico_id: user.id, equipo_id: equipo.id_equipo, fecha: todayISO(),
+      origen: "auditoria", tipo_item: "neumatico", item_detalle: CAMPO_LABELS[dn.campo] || dn.campo, tipo_discrepancia: dn.campo,
+      posicion: dn.posicion, valor_sistema: dn.valor_sistema == null ? null : String(dn.valor_sistema), valor_fisico: String(dn.valor_mecanico),
+      resuelta: false
+    });
   });
 
   pushQueue({ id: uuid(), tipo: "auditoria", clienteId, ts: Date.now(), data: cab });
   alertasGeneradas.forEach(a => pushQueue({ id: uuid(), tipo: "alerta", clienteId, ts: Date.now(), data: a }));
+  discrepanciasParaAdmin.forEach(d => pushQueue({ id: uuid(), tipo: "discrepancia_auditoria", clienteId, ts: Date.now(), data: d }));
   syncQueue();
   return { alertas: alertasGeneradas.length, recetaId, auditoriaId: cab.id_auditoria };
 }
@@ -1127,19 +1142,6 @@ async function aprobarDesbloqueo(mecanico, alertaId) {
    JORNADA (vista admin) — actividad del dia en todas las empresas o la
    empresa filtrada.
 ===================================================================== */
-async function fetchChecksDiariosHoy(clienteId) {
-  let q = sb.from("check_diario").select("*").eq("fecha", todayISO()).eq("completado", true).order("creado_en", { ascending: false });
-  q = filtroCliente(q, clienteId);
-  const { data, error } = await q;
-  if (error) throw error;
-  const mecIds = [...new Set((data || []).map(c => c.bultero_id))].filter(Boolean);
-  let mecMap = {};
-  if (mecIds.length) {
-    const { data: mecs } = await sb.from("usuarios").select("id,nombre,apellido").in("id", mecIds);
-    (mecs || []).forEach(m => { mecMap[m.id] = m; });
-  }
-  return (data || []).map(c => ({ ...c, mecanico: mecMap[c.bultero_id] || null }));
-}
 async function fetchMovimientosHoy(clienteId) {
   const hoy = todayISO();
   let equipoIds = null;
@@ -1176,4 +1178,239 @@ async function fetchCierresHoy(clienteId) {
     (mecs || []).forEach(m => { mecMap[m.id] = m; });
   }
   return (data || []).map(c => ({ ...c, mecanico: mecMap[c.mecanico_id] || null }));
+}
+
+/* =====================================================================
+   JORNADA (admin) — "Inicio del dia": mecanicos + check diario de hoy
+   (equivalente a un LEFT JOIN, hecho en dos consultas ya que PostgREST no
+   tiene una FK declarada entre check_diario.bultero_id y usuarios.id),
+   mas las discrepancias de inventario detectadas por ese check y su
+   resolucion (aprobar/rechazar) por el Admin.
+===================================================================== */
+async function fetchInicioDelDia(clienteId) {
+  let q = sb.from("usuarios").select("id,nombre,apellido,cliente_id").eq("rol", "mecanico").eq("activo", true);
+  q = filtroCliente(q, clienteId);
+  const { data: mecs, error } = await q;
+  if (error) throw error;
+  if (!mecs || !mecs.length) return [];
+  const ids = mecs.map(m => m.id);
+  const { data: checks } = await sb.from("check_diario").select("*").eq("fecha", todayISO()).in("bultero_id", ids);
+  const checkMap = {};
+  (checks || []).forEach(c => { checkMap[c.bultero_id] = c; });
+  return mecs.map(m => ({ ...m, check: checkMap[m.id] || null })).sort((a, b) => {
+    const ha = a.check && a.check.hora_inicio, hb = b.check && b.check.hora_inicio;
+    if (!ha && !hb) return 0;
+    if (!ha) return 1;
+    if (!hb) return -1;
+    return ha.localeCompare(hb);
+  });
+}
+async function fetchHerramientasCheck(novedadId) {
+  const { data, error } = await sb.from("check_diario_herramientas").select("*").eq("novedad_id", novedadId).order("herramienta");
+  if (error) throw error;
+  return data || [];
+}
+async function fetchDiscrepanciasPendientes(mecanicoId, fecha) {
+  const { data, error } = await sb.from("discrepancias_inventario").select("*")
+    .eq("mecanico_id", mecanicoId).eq("fecha", fecha).eq("resuelta", false).eq("origen", "check_diario")
+    .order("creado_en", { ascending: true });
+  if (error) throw error;
+  return data || [];
+}
+async function resolverDiscrepancia(discrepancia, aprobar, justificacion, adminUserId) {
+  const { error } = await sb.from("discrepancias_inventario").update({
+    resuelta: true,
+    observacion_admin: aprobar ? justificacion : "Rechazado por Admin",
+    resuelto_por: adminUserId, resuelto_en: new Date().toISOString()
+  }).eq("id", discrepancia.id);
+  if (error) throw error;
+  // El inventario de neumaticos se recalcula solo (se lee en vivo desde
+  // neumaticos, no hay tabla de stock separada) - nada que actualizar acá.
+  // Insumos/herramientas: el check diario actual no genera discrepancias de
+  // ese tipo (compararInventarioNeumaticos solo compara neumaticos), asi que
+  // no hay un campo de "cantidad" que ajustar todavia.
+  await insertAlerta({
+    id: uuid(), cliente_id: discrepancia.cliente_id, equipo_id: discrepancia.equipo_id || null, mecanico_id: discrepancia.mecanico_id,
+    tipo: "discrepancia_resuelta", severidad: "info",
+    titulo: aprobar ? "Tu discrepancia del check diario fue aprobada" : "Tu discrepancia del check diario fue rechazada",
+    descripcion: `${discrepancia.item_detalle}: sistema ${discrepancia.valor_sistema} · físico ${discrepancia.valor_fisico}`,
+    leida_mecanico: false, leida_admin: true, leida_superadmin: false
+  });
+}
+async function countDiscrepanciasPendientes(clienteId) {
+  let q = sb.from("discrepancias_inventario").select("id", { count: "exact", head: true }).eq("resuelta", false).eq("origen", "check_diario");
+  q = filtroCliente(q, clienteId);
+  const { count } = await q;
+  return count || 0;
+}
+async function countDiscrepanciasResueltasHoy(clienteId) {
+  const hoy = todayISO();
+  let q = sb.from("discrepancias_inventario").select("resuelto_en").eq("resuelta", true).eq("origen", "check_diario");
+  q = filtroCliente(q, clienteId);
+  const { data, error } = await q;
+  if (error) throw error;
+  return (data || []).filter(d => (d.resuelto_en || "").slice(0, 10) === hoy).length;
+}
+
+/* =====================================================================
+   JORNADA · MOVIMIENTOS DEL DIA (admin) — alertas criticas, discrepancias
+   de auditoria, instructivos en curso y hoja de cambio/intervenciones,
+   todo filtrado al dia de hoy.
+===================================================================== */
+async function fetchAlertasCriticasHoy(clienteId) {
+  let q = sb.from("alertas").select("*").eq("severidad", "rojo").eq("leida_admin", false).order("creado_en", { ascending: false });
+  q = filtroCliente(q, clienteId);
+  const { data, error } = await q;
+  if (error) throw error;
+  const hoy = todayISO();
+  const hoyAlertas = (data || []).filter(a => (a.creado_en || "").slice(0, 10) === hoy);
+  const eqIds = [...new Set(hoyAlertas.map(a => a.equipo_id))].filter(Boolean);
+  let eqMap = {};
+  if (eqIds.length) {
+    const { data: eqs } = await sb.from("equipos").select("id_equipo,patente,numero_interno").in("id_equipo", eqIds);
+    (eqs || []).forEach(e => { eqMap[e.id_equipo] = e; });
+  }
+  return hoyAlertas.map(a => ({ ...a, equipo: eqMap[a.equipo_id] || null }));
+}
+
+async function fetchDiscrepanciasAuditoriaHoy(clienteId) {
+  let q = sb.from("discrepancias_inventario").select("*").eq("origen", "auditoria").eq("fecha", todayISO()).eq("resuelta", false).order("creado_en", { ascending: false });
+  q = filtroCliente(q, clienteId);
+  const { data, error } = await q;
+  if (error) throw error;
+  if (!data || !data.length) return [];
+  const equipoIds = [...new Set(data.map(d => d.equipo_id))].filter(Boolean);
+  const mecIds = [...new Set(data.map(d => d.mecanico_id))].filter(Boolean);
+  const [{ data: eqs }, { data: mecs }] = await Promise.all([
+    equipoIds.length ? sb.from("equipos").select("id_equipo,patente,numero_interno").in("id_equipo", equipoIds) : Promise.resolve({ data: [] }),
+    mecIds.length ? sb.from("usuarios").select("id,nombre,apellido").in("id", mecIds) : Promise.resolve({ data: [] })
+  ]);
+  const eqMap = {}; (eqs || []).forEach(e => { eqMap[e.id_equipo] = e; });
+  const mecMap = {}; (mecs || []).forEach(m => { mecMap[m.id] = m; });
+  return data.map(d => ({ ...d, equipo: eqMap[d.equipo_id] || null, mecanico: mecMap[d.mecanico_id] || null }));
+}
+
+async function resolverDiscrepanciaAuditoria(discrepancia, aprobar, justificacion, adminUser) {
+  if (aprobar) {
+    const campo = discrepancia.tipo_discrepancia || "numero_fuego";
+    if (campo === "numero_fuego") {
+      // El neumatico que el sistema tenia en esa posicion sale sin registro formal -> transito.
+      if (discrepancia.valor_sistema) {
+        await sb.from("neumaticos").update({ equipo_actual: null, posicion_actual: null, bodega: "transito" })
+          .eq("cliente_id", discrepancia.cliente_id).eq("numero_fuego", discrepancia.valor_sistema);
+      }
+      // El neumatico que el mecanico encontro queda montado en esa posicion.
+      const { data: existente } = await sb.from("neumaticos").select("id_neumatico").eq("cliente_id", discrepancia.cliente_id).eq("numero_fuego", discrepancia.valor_fisico).maybeSingle();
+      if (existente) {
+        await sb.from("neumaticos").update({ equipo_actual: discrepancia.equipo_id, posicion_actual: discrepancia.posicion, estado_actual: "en_uso", bodega: null }).eq("id_neumatico", existente.id_neumatico);
+      } else {
+        await sb.from("neumaticos").insert({
+          id_neumatico: uuid(), numero_fuego: discrepancia.valor_fisico, cliente_id: discrepancia.cliente_id,
+          equipo_actual: discrepancia.equipo_id, posicion_actual: discrepancia.posicion, estado_actual: "en_uso", bodega: null,
+          fecha_ingreso: todayISO(), activo: true
+        });
+      }
+    } else {
+      // marca / medida: corrige el dato del neumatico que esta montado en esa posicion.
+      await sb.from("neumaticos").update({ [campo]: discrepancia.valor_fisico })
+        .eq("cliente_id", discrepancia.cliente_id).eq("equipo_actual", discrepancia.equipo_id).eq("posicion_actual", discrepancia.posicion);
+    }
+  }
+  const { error } = await sb.from("discrepancias_inventario").update({
+    resuelta: true, observacion_admin: aprobar ? justificacion : "Rechazado",
+    resuelto_por: adminUser.id, resuelto_en: new Date().toISOString()
+  }).eq("id", discrepancia.id);
+  if (error) throw error;
+
+  // Best-effort: reflejar la resolucion en el JSONB de la auditoria (no bloquea si falla).
+  try {
+    const { data: auds } = await sb.from("auditorias").select("id_auditoria").eq("equipo_id", discrepancia.equipo_id).eq("fecha", discrepancia.fecha).order("creado_en", { ascending: false }).limit(1);
+    if (auds && auds.length) {
+      const { data: recetas } = await sb.from("auditorias_receta").select("id,posiciones_alerta").eq("auditoria_id", auds[0].id_auditoria).limit(1);
+      if (recetas && recetas.length) {
+        const pa = recetas[0].posiciones_alerta || {};
+        const lista = Array.isArray(pa.discrepancias_neumaticos) ? pa.discrepancias_neumaticos : [];
+        const actualizada = lista.map(d => (d.posicion === discrepancia.posicion && (CAMPO_LABELS[d.campo] || d.campo) === discrepancia.item_detalle)
+          ? { ...d, aprobada: aprobar, aprobada_por: adminUser.nombre, justificacion }
+          : d);
+        await sb.from("auditorias_receta").update({ posiciones_alerta: { ...pa, discrepancias_neumaticos: actualizada }, discrepancias_neumaticos: actualizada }).eq("id", recetas[0].id);
+      }
+    }
+  } catch (e) { console.error("No se pudo actualizar el detalle de la receta", e); }
+}
+
+async function fetchInstructivosHoy(clienteId) {
+  let q = sb.from("auditorias_receta").select("*");
+  q = filtroCliente(q, clienteId);
+  const { data: recetas, error } = await q;
+  if (error) throw error;
+  const hoy = todayISO();
+  const hoyRecetas = (recetas || []).filter(r => (r.creado_en || "").slice(0, 10) === hoy);
+  if (!hoyRecetas.length) return [];
+  const auditoriaIds = hoyRecetas.map(r => r.auditoria_id);
+  const { data: auds } = await sb.from("auditorias").select("id_auditoria,equipo_id,bultero_id,fecha,creado_en").in("id_auditoria", auditoriaIds);
+  const audMap = {}; (auds || []).forEach(a => { audMap[a.id_auditoria] = a; });
+  const equipoIds = [...new Set((auds || []).map(a => a.equipo_id))].filter(Boolean);
+  const mecIds = [...new Set((auds || []).map(a => a.bultero_id))].filter(Boolean);
+  const [{ data: eqs }, { data: mecs }] = await Promise.all([
+    equipoIds.length ? sb.from("equipos").select("id_equipo,patente,numero_interno").in("id_equipo", equipoIds) : Promise.resolve({ data: [] }),
+    mecIds.length ? sb.from("usuarios").select("id,nombre,apellido").in("id", mecIds) : Promise.resolve({ data: [] })
+  ]);
+  const eqMap = {}; (eqs || []).forEach(e => { eqMap[e.id_equipo] = e; });
+  const mecMap = {}; (mecs || []).forEach(m => { mecMap[m.id] = m; });
+  return hoyRecetas.map(r => {
+    const a = audMap[r.auditoria_id] || {};
+    return { ...r, equipo: eqMap[a.equipo_id] || null, mecanico: mecMap[a.bultero_id] || null, hora: (a.creado_en || "").slice(11, 16) };
+  }).sort((x, y) => (y.creado_en || "").localeCompare(x.creado_en || ""));
+}
+
+async function fetchMovimientosEnVivoHoy(clienteId) {
+  const hoy = todayISO();
+  let equipoIds = null;
+  if (clienteId && clienteId !== "todas") {
+    const { data: eqs } = await sb.from("equipos").select("id_equipo").eq("cliente_id", clienteId);
+    equipoIds = (eqs || []).map(e => e.id_equipo);
+    if (!equipoIds.length) return [];
+  }
+  // cambio_detalle no tiene cliente_id/fecha propia: se ubica via cambios_neumaticos.
+  let qCambios = sb.from("cambios_neumaticos").select("id_cambio,equipo_id,bultero_id,fecha").eq("fecha", hoy);
+  if (equipoIds) qCambios = qCambios.in("equipo_id", equipoIds);
+  const { data: cambios } = await qCambios;
+  const cambioMap = {}; (cambios || []).forEach(c => { cambioMap[c.id_cambio] = c; });
+  const cambioIds = Object.keys(cambioMap);
+
+  let detalle = [];
+  if (cambioIds.length) {
+    const { data } = await sb.from("cambio_detalle").select("*").in("cambio_id", cambioIds);
+    detalle = data || [];
+  }
+
+  let qInterv = sb.from("intervenciones").select("*").eq("fecha", hoy);
+  qInterv = filtroCliente(qInterv, clienteId);
+  const { data: intervenciones } = await qInterv;
+
+  const equipoIdsTodos = [...new Set([...detalle.map(d => cambioMap[d.cambio_id] && cambioMap[d.cambio_id].equipo_id), ...(intervenciones || []).map(i => i.equipo_id)])].filter(Boolean);
+  const mecIdsTodos = [...new Set([...detalle.map(d => cambioMap[d.cambio_id] && cambioMap[d.cambio_id].bultero_id), ...(intervenciones || []).map(i => i.mecanico_id)])].filter(Boolean);
+  const [{ data: eqs2 }, { data: mecs2 }] = await Promise.all([
+    equipoIdsTodos.length ? sb.from("equipos").select("id_equipo,patente,numero_interno").in("id_equipo", equipoIdsTodos) : Promise.resolve({ data: [] }),
+    mecIdsTodos.length ? sb.from("usuarios").select("id,nombre,apellido").in("id", mecIdsTodos) : Promise.resolve({ data: [] })
+  ]);
+  const eqMap = {}; (eqs2 || []).forEach(e => { eqMap[e.id_equipo] = e; });
+  const mecMap = {}; (mecs2 || []).forEach(m => { mecMap[m.id] = m; });
+
+  const cambiosFeed = detalle.map(d => {
+    const c = cambioMap[d.cambio_id] || {};
+    return {
+      kind: "cambio", id: d.id, creado_en: d.creado_en,
+      equipo: eqMap[c.equipo_id] || null, mecanico: mecMap[c.bultero_id] || null,
+      tipo: d.tipo, numero_fuego: d.numero_fuego, posicion: d.posicion,
+      motivo_salida: d.motivo_salida, estado: d.estado, milimetros: d.milimetros, psi: d.psi
+    };
+  });
+  const intervFeed = (intervenciones || []).map(i => ({
+    kind: "intervencion", id: i.id, creado_en: i.creado_en,
+    equipo: eqMap[i.equipo_id] || null, mecanico: mecMap[i.mecanico_id] || null,
+    tipo: i.tipo, posicion: i.posicion, numero_fuego: i.numero_fuego, psi_nuevo: i.psi_nuevo
+  }));
+  return [...cambiosFeed, ...intervFeed].sort((a, b) => (b.creado_en || "").localeCompare(a.creado_en || ""));
 }

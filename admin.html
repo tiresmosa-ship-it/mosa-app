@@ -638,23 +638,507 @@ function EquiposView({ empresaCtl }) {
 }
 
 /* =====================================================================
-   JORNADA (3 bloques: inicio del dia, movimientos del dia, cierre del dia)
+   JORNADA · INICIO DEL DIA (check diario por mecanico + discrepancias)
 ===================================================================== */
-function JornadaView({ empresaCtl }) {
+const CONTEO_ROWS = [
+  { label: "Direccional · Nuevos", campo: "neu_dir_nuevo", bodega: "nuevo" },
+  { label: "Direccional · Tránsito", campo: "neu_dir_transito", bodega: "transito" },
+  { label: "Direccional · Por reparar", campo: "neu_dir_reparar", bodega: "reparacion" },
+  { label: "Direccional · Recauchados", campo: "neu_dir_recauchado", bodega: "recauchado" },
+  { label: "Traccional · Nuevos", campo: "neu_trac_nuevo", bodega: "nuevo" },
+  { label: "Traccional · Tránsito", campo: "neu_trac_transito", bodega: "transito" },
+  { label: "Traccional · Por reparar", campo: "neu_trac_reparar", bodega: "reparacion" },
+  { label: "Traccional · Recauchados", campo: "neu_trac_recauchado", bodega: "recauchado" }
+];
+const LLANTAS_ROWS = [
+  { label: "Llanta americana aluminio", campo: "llantas_am_aluminio" },
+  { label: "Llanta americana fierro", campo: "llantas_am_fierro" },
+  { label: "Llanta europea aluminio", campo: "llantas_eu_aluminio" },
+  { label: "Llanta europea fierro", campo: "llantas_eu_fierro" }
+];
+
+function DiscrepanciaCard({ d, onResolver }) {
+  const [justificacion, setJustificacion] = useState("");
+  const [saving, setSaving] = useState(false);
+  async function resolver(aprobar) {
+    if (aprobar && !justificacion.trim()) return;
+    setSaving(true);
+    try { await onResolver(d, aprobar, justificacion.trim()); }
+    finally { setSaving(false); }
+  }
+  return (
+    <div className="bg-[#FFFBEB] border border-[#FDE68A] rounded-2xl p-4 space-y-3">
+      <div>
+        <p className="font-bold text-[14px] text-[#92400E]">⚠ Discrepancia — {d.item_detalle}</p>
+        <p className="text-[13px] text-[#92400E]">Sistema: {d.valor_sistema} · Físico: {d.valor_fisico} · Diferencia: {d.diferencia > 0 ? "+" : ""}{d.diferencia}</p>
+      </div>
+      {d.observacion_mecanico && <p className="text-[12.5px] text-[#374151] italic">Observación del mecánico: "{d.observacion_mecanico}"</p>}
+      <Field label="Justificación del Admin" required hint="Obligatoria para aprobar el ajuste">
+        <TextArea value={justificacion} onChange={e => setJustificacion(e.target.value)} placeholder="Explicá por qué se aprueba o se rechaza este ajuste..." />
+      </Field>
+      <div className="flex gap-2">
+        <Button className="flex-1 h-11 text-[13.5px]" disabled={saving || !justificacion.trim()} onClick={() => resolver(true)}>{saving ? <span className="spinner" /> : "✅ Aprobar ajuste"}</Button>
+        <Button variant="danger" className="flex-1 h-11 text-[13.5px]" disabled={saving} onClick={() => resolver(false)}>❌ Rechazar</Button>
+      </div>
+    </div>
+  );
+}
+
+function DetalleCheckModal({ mecanico, filtro, empresas, adminUser, onClose, pushToast, onResuelto }) {
+  const [stock, setStock] = useState(null);
+  const [herramientas, setHerramientas] = useState([]);
+  const [discrepancias, setDiscrepancias] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const check = mecanico.check;
+
+  async function cargar() {
+    setLoading(true);
+    try {
+      const [stk, herr, disc] = await Promise.all([
+        adminDb.fetchStockRapido(filtro),
+        check ? fetchHerramientasCheck(check.id) : Promise.resolve([]),
+        fetchDiscrepanciasPendientes(mecanico.id, todayISO())
+      ]);
+      setStock(stk); setHerramientas(herr); setDiscrepancias(disc);
+    } catch (e) { console.error("No se pudo cargar el detalle del check diario", e); }
+    setLoading(false);
+  }
+  useEffect(() => { cargar(); }, []);
+
+  async function resolver(d, aprobar, justificacion) {
+    await resolverDiscrepancia(d, aprobar, justificacion, adminUser.id);
+    setDiscrepancias(ds => ds.filter(x => x.id !== d.id));
+    pushToast(aprobar ? "✓ Ajuste aprobado" : "✓ Discrepancia rechazada");
+    onResuelto();
+  }
+
+  const empresaNombre = ((empresas || []).find(e => e.id_cliente === mecanico.cliente_id) || {}).nombre || mecanico.cliente_id;
+
+  return (
+    <Modal title={`${mecanico.nombre} ${mecanico.apellido || ""}`} onClose={onClose} wide>
+      {loading ? <div className="flex justify-center py-10"><span className="spinner" /></div> : (
+        <div className="space-y-6">
+          <div>
+            <p className="text-[13px] text-muted">Empresa: {empresaNombre}</p>
+            <p className="text-[13px] text-muted">Fecha: {formatDateLong(todayISO())}{check ? ` · Hora inicio: ${(check.hora_inicio || "").slice(0, 5)}` : ""}</p>
+          </div>
+
+          {!check ? (
+            <p className="text-[13.5px] text-muted">Todavía no completó el check diario de hoy.</p>
+          ) : (
+            <>
+              <div>
+                <p className="font-bold text-[14.5px] mb-2">Conteo de neumáticos</p>
+                <div className="overflow-x-auto -mx-1">
+                  <table className="w-full text-[13px]">
+                    <thead>
+                      <tr className="text-left text-muted">
+                        <th className="font-semibold pb-2 px-1">Tipo</th>
+                        <th className="font-semibold pb-2 px-1 text-right">Sistema</th>
+                        <th className="font-semibold pb-2 px-1 text-right">Físico</th>
+                        <th className="font-semibold pb-2 px-1 text-right">Diferencia</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {CONTEO_ROWS.map(r => {
+                        const sistema = stock ? stock[r.bodega] : null;
+                        const fisico = check[r.campo] != null ? check[r.campo] : 0;
+                        const diff = sistema != null ? fisico - sistema : null;
+                        return (
+                          <tr key={r.label} className="border-t border-bd">
+                            <td className="py-2 px-1 font-semibold">{r.label}</td>
+                            <td className="py-2 px-1 text-right">{sistema != null ? sistema : "—"}</td>
+                            <td className="py-2 px-1 text-right">{fisico}</td>
+                            <td className="py-2 px-1 text-right font-bold">{diff == null ? "—" : diff === 0 ? "✅ 0" : `🔴 ${diff > 0 ? "+" : ""}${diff}`}</td>
+                          </tr>
+                        );
+                      })}
+                      {LLANTAS_ROWS.map(r => (
+                        <tr key={r.label} className="border-t border-bd">
+                          <td className="py-2 px-1 font-semibold">{r.label}</td>
+                          <td className="py-2 px-1 text-right text-muted">—</td>
+                          <td className="py-2 px-1 text-right">{check[r.campo] != null ? check[r.campo] : 0}</td>
+                          <td className="py-2 px-1 text-right text-muted">—</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div>
+                <p className="font-bold text-[14.5px] mb-2">Checklist de herramientas</p>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                  {herramientas.filter(h => h.cantidad > 0).map(h => (
+                    <div key={h.id} className="rounded-xl px-3 py-2 text-[12.5px] font-semibold flex items-center justify-between bg-[#F3F4F6] text-[#1F2937]">
+                      <span>{h.herramienta}</span><span>{h.cantidad}</span>
+                    </div>
+                  ))}
+                  {herramientas.filter(h => !h.cantidad).map(h => (
+                    <div key={h.id} className="rounded-xl px-3 py-2 text-[12.5px] font-semibold flex items-center justify-between bg-[#F9FAFB] text-muted">
+                      <span>{h.herramienta}</span><span>0</span>
+                    </div>
+                  ))}
+                  {!herramientas.length && <p className="text-[13px] text-muted col-span-full">Sin checklist registrado.</p>}
+                </div>
+              </div>
+            </>
+          )}
+
+          <div>
+            <p className="font-bold text-[14.5px] mb-2">Discrepancias</p>
+            {discrepancias.length === 0 ? (
+              <p className="text-[13.5px] font-semibold text-[#15803D]">✅ Sin discrepancias</p>
+            ) : (
+              <div className="space-y-3">
+                {discrepancias.map(d => <DiscrepanciaCard key={d.id} d={d} onResolver={resolver} />)}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+function InicioDelDiaView({ empresaCtl, adminUser, pushToast }) {
+  const { filtro, empresas } = empresaCtl;
+  const [lista, setLista] = useState([]);
+  const [stats, setStats] = useState({ pendientes: 0, resueltas: 0 });
+  const [loading, setLoading] = useState(true);
+  const [verMecanico, setVerMecanico] = useState(null);
+
+  async function cargar() {
+    setLoading(true);
+    try {
+      const [data, pendientes, resueltas] = await Promise.all([
+        fetchInicioDelDia(filtro), countDiscrepanciasPendientes(filtro), countDiscrepanciasResueltasHoy(filtro)
+      ]);
+      setLista(data);
+      setStats({ pendientes, resueltas });
+    } catch (e) { console.error("No se pudo cargar el inicio del día", e); }
+    setLoading(false);
+  }
+  useEffect(() => { cargar(); }, [filtro]);
+
+  const completados = lista.filter(m => m.check && m.check.completado).length;
+
+  if (loading) return <div className="flex justify-center py-10"><span className="spinner" /></div>;
+
+  return (
+    <div>
+      <div className="bg-white rounded-2xl border border-bd shadow-card overflow-hidden mb-5">
+        {lista.map((m, i) => {
+          const done = m.check && m.check.completado;
+          return (
+            <button key={m.id} onClick={() => done && setVerMecanico(m)}
+              className={cx("w-full flex items-center justify-between px-4 py-3 text-left", i > 0 && "border-t border-bd", !done && "cursor-default")}>
+              <div className="flex items-center gap-2">
+                <span>{done ? "✅" : "⏳"}</span>
+                <div>
+                  <p className="font-bold text-[14px]">{m.nombre} {m.apellido || ""}</p>
+                  <p className="text-[12px] text-muted">{done ? `Completó ${(m.check.hora_inicio || "").slice(0, 5)}` : "Sin completar"}</p>
+                </div>
+              </div>
+              {done && <span className="text-[12px] font-bold text-ink shrink-0">Ver detalle</span>}
+            </button>
+          );
+        })}
+        {!lista.length && <p className="text-[13.5px] text-muted p-4">No hay mecánicos para esta empresa.</p>}
+      </div>
+
+      <div className="grid grid-cols-3 gap-3">
+        <KpiCard label={`Completaron el check`} value={`${completados}/${lista.length}`} />
+        <KpiCard label="Discrepancias pendientes" value={stats.pendientes} />
+        <KpiCard label="Resueltas hoy" value={stats.resueltas} />
+      </div>
+
+      {verMecanico && (
+        <DetalleCheckModal mecanico={verMecanico} filtro={filtro} empresas={empresas} adminUser={adminUser}
+          onClose={() => setVerMecanico(null)} pushToast={pushToast} onResuelto={cargar} />
+      )}
+    </div>
+  );
+}
+
+/* =====================================================================
+   JORNADA · MOVIMIENTOS DEL DIA (alertas / discrepancias / instructivos /
+   hoja de cambio en vivo)
+===================================================================== */
+function AlertaCriticaRow({ a, onVer, onMarcarLeida }) {
+  return (
+    <div className="bg-white rounded-2xl border border-bd shadow-card p-4 flex items-start gap-3">
+      <div className="flex-1 min-w-0">
+        <p className="font-bold text-[14px]">🔴 {ALERTA_TIPO_LABELS[a.tipo] || a.tipo}{a.equipo ? ` — ${a.equipo.numero_interno ? a.equipo.numero_interno + " · " : ""}${a.equipo.patente}` : ""}</p>
+        <p className="text-[12.5px] text-muted mt-0.5 line-clamp-2">{a.descripcion}</p>
+        <p className="text-[11.5px] text-muted mt-1">{(a.creado_en || "").slice(11, 16)}</p>
+      </div>
+      <div className="flex flex-col gap-2 shrink-0">
+        <Button variant="subtle" className="h-9 px-3.5 text-[12.5px]" onClick={() => onVer(a)}>Ver detalle</Button>
+        <button onClick={() => onMarcarLeida(a)} className="text-[11.5px] font-bold text-ink px-3 py-1.5 rounded-full bg-[#F3F4F6]">Marcar leída</button>
+      </div>
+    </div>
+  );
+}
+function AlertasCriticasTab({ filtro, pushToast, onCambio }) {
+  const [alertas, setAlertas] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [ver, setVer] = useState(null);
+
+  async function cargar() {
+    setLoading(true);
+    try { setAlertas(await fetchAlertasCriticasHoy(filtro)); } catch (e) { console.error(e); }
+    setLoading(false);
+    onCambio && onCambio();
+  }
+  useEffect(() => { cargar(); }, [filtro]);
+
+  async function marcarLeida(a) {
+    await adminDb.marcarAlertaLeida(a.id);
+    setAlertas(as => as.filter(x => x.id !== a.id));
+    setVer(null);
+    pushToast("✓ Alerta marcada como leída");
+    onCambio && onCambio();
+  }
+
+  if (loading) return <div className="flex justify-center py-10"><span className="spinner" /></div>;
+  return (
+    <div className="space-y-2">
+      {alertas.map(a => <AlertaCriticaRow key={a.id} a={a} onVer={setVer} onMarcarLeida={marcarLeida} />)}
+      {!alertas.length && <p className="text-[13.5px] font-semibold text-[#15803D] py-4">✅ Sin alertas críticas en este momento</p>}
+      {ver && <AlertaDetalleModal alerta={ver} onClose={() => setVer(null)} onMarcarLeida={marcarLeida} />}
+    </div>
+  );
+}
+
+function DiscrepanciaAuditoriaCard({ d, onResolver }) {
+  const [justificacion, setJustificacion] = useState("");
+  const [saving, setSaving] = useState(false);
+  async function resolver(aprobar) {
+    if (aprobar && !justificacion.trim()) return;
+    setSaving(true);
+    try { await onResolver(d, aprobar, justificacion.trim()); }
+    finally { setSaving(false); }
+  }
+  return (
+    <div className="bg-[#FFFBEB] border border-[#FDE68A] rounded-2xl p-4 space-y-3">
+      <div>
+        <p className="font-bold text-[14px] text-[#92400E]">🔴 Discrepancia — {d.equipo ? `${d.equipo.patente} (${d.equipo.numero_interno || "-"})` : "-"} — Posición {d.posicion}</p>
+        <p className="text-[12.5px] text-[#92400E]">Mecánico: {d.mecanico ? `${d.mecanico.nombre} ${d.mecanico.apellido || ""}` : "-"} — {(d.creado_en || "").slice(11, 16)}</p>
+      </div>
+      <div className="text-[13px] text-[#374151] space-y-0.5">
+        <p><span className="font-semibold">Campo:</span> {d.item_detalle}</p>
+        <p><span className="font-semibold">Sistema registra:</span> {d.valor_sistema == null ? "sin registro" : d.valor_sistema}</p>
+        <p><span className="font-semibold">Mecánico encontró:</span> {d.valor_fisico}</p>
+      </div>
+      <Field label="Justificación" required hint="Obligatoria para aprobar">
+        <TextArea value={justificacion} onChange={e => setJustificacion(e.target.value)} placeholder="Explicá por qué se aprueba o se rechaza..." />
+      </Field>
+      <div className="flex gap-2">
+        <Button className="flex-1 h-11 text-[13.5px]" disabled={saving || !justificacion.trim()} onClick={() => resolver(true)}>{saving ? <span className="spinner" /> : "✅ Aprobar"}</Button>
+        <Button variant="danger" className="flex-1 h-11 text-[13.5px]" disabled={saving} onClick={() => resolver(false)}>❌ Rechazar</Button>
+      </div>
+    </div>
+  );
+}
+function DiscrepanciasAuditoriaTab({ filtro, adminUser, pushToast, onCambio }) {
+  const [lista, setLista] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  async function cargar() {
+    setLoading(true);
+    try { setLista(await fetchDiscrepanciasAuditoriaHoy(filtro)); } catch (e) { console.error(e); }
+    setLoading(false);
+    onCambio && onCambio();
+  }
+  useEffect(() => { cargar(); }, [filtro]);
+
+  async function resolver(d, aprobar, justificacion) {
+    await resolverDiscrepanciaAuditoria(d, aprobar, justificacion, adminUser);
+    setLista(ds => ds.filter(x => x.id !== d.id));
+    pushToast(aprobar ? "✓ Discrepancia aprobada — neumaticos actualizado" : "✓ Discrepancia rechazada");
+    onCambio && onCambio();
+  }
+
+  if (loading) return <div className="flex justify-center py-10"><span className="spinner" /></div>;
+  return (
+    <div className="space-y-3">
+      {lista.map(d => <DiscrepanciaAuditoriaCard key={d.id} d={d} onResolver={resolver} />)}
+      {!lista.length && <p className="text-[13.5px] font-semibold text-[#15803D] py-4">✅ Sin discrepancias de auditoría pendientes</p>}
+    </div>
+  );
+}
+
+const INSTRUCTIVO_ESTADO = {
+  completado: { label: "COMPLETADO", color: "green" },
+  parcial: { label: "PARCIAL", color: "amber" },
+  pendiente: { label: "PENDIENTE", color: "gray" },
+  en_proceso: { label: "EN PROCESO", color: "black" },
+  sin_cambio: { label: "SIN CAMBIO", color: "gray" }
+};
+function InstructivoCard({ r }) {
+  const pa = r.posiciones_alerta || {};
+  const recs = Array.isArray(pa.recomendaciones) ? pa.recomendaciones : [];
+  const extras = Array.isArray(pa.tareas_extra) ? pa.tareas_extra : [];
+  const est = INSTRUCTIVO_ESTADO[r.estado] || { label: (r.estado || "-").toUpperCase(), color: "gray" };
+  return (
+    <div className="bg-white rounded-2xl border border-bd shadow-card p-4">
+      <div className="flex items-start justify-between gap-2 mb-2">
+        <div>
+          <p className="font-bold text-[14px]">{r.equipo ? `${r.equipo.patente} (${r.equipo.numero_interno || "-"})` : "-"} — {r.mecanico ? `${r.mecanico.nombre} ${r.mecanico.apellido || ""}` : "-"} — {r.hora}</p>
+          <p className="text-[12.5px] text-muted mt-0.5">Estado: <span className="font-bold">{est.label}</span> · {r.tareas_cumplidas}/{r.total_tareas} tareas · {r.pct_receta_seguida != null ? r.pct_receta_seguida : 0}%</p>
+        </div>
+        <Badge color={est.color}>{est.label}</Badge>
+      </div>
+      <div className="space-y-1.5 mt-3">
+        {recs.map(t => (
+          <p key={t.id} className={cx("text-[13px]", t.done ? "text-[#15803D]" : "text-[#92400E]")}>{t.done ? "✅" : "⏳"} {t.texto} <span className="text-muted">{t.done ? "(cumplida)" : "(pendiente)"}</span></p>
+        ))}
+        {extras.map((t, i) => (
+          <p key={i} className={cx("text-[13px]", t.done ? "text-[#15803D]" : "text-[#92400E]")}>➕ {t.texto} {t.done ? "✅" : "⏳"} <span className="text-muted">(extra)</span></p>
+        ))}
+        {!recs.length && !extras.length && <p className="text-[13px] text-muted">Sin tareas registradas.</p>}
+      </div>
+    </div>
+  );
+}
+function InstructivosTab({ filtro, onCambio }) {
+  const [lista, setLista] = useState([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    setLoading(true);
+    fetchInstructivosHoy(filtro).then(data => { setLista(data); onCambio && onCambio(data); }).catch(e => console.error(e)).finally(() => setLoading(false));
+  }, [filtro]);
+  if (loading) return <div className="flex justify-center py-10"><span className="spinner" /></div>;
+  return (
+    <div className="space-y-3">
+      {lista.map(r => <InstructivoCard key={r.id} r={r} />)}
+      {!lista.length && <p className="text-[13.5px] text-muted py-4">Sin auditorías hoy.</p>}
+    </div>
+  );
+}
+
+const CAMBIO_TIPO_ICON = { entra: "↗", sale: "↙" };
+function MovimientoRow({ m }) {
+  const equipoLabel = m.equipo ? `${m.equipo.numero_interno ? m.equipo.numero_interno + " · " : ""}${m.equipo.patente}` : "-";
+  const mecanicoLabel = m.mecanico ? `${m.mecanico.nombre} ${m.mecanico.apellido || ""}` : "-";
+  let linea;
+  if (m.kind === "intervencion") {
+    const labels = { regulacion_psi: "Regulación PSI", retorqueo: "Retorqueo", reparacion: "Reparación", giro_neumatico: "Giro de neumático", checkpoint: "Checkpoint" };
+    linea = <p className="text-[13.5px]">⚙ {labels[m.tipo] || m.tipo}{m.posicion != null ? ` pos ${m.posicion}` : ""}{m.psi_nuevo != null ? ` → ${m.psi_nuevo} PSI` : ""}</p>;
+  } else if (m.motivo_salida === "rotacion") {
+    linea = <p className="text-[13.5px]">↺ Rotación{m.posicion != null ? ` pos ${m.posicion}` : ""}: N° fuego {m.numero_fuego || "-"}</p>;
+  } else if (m.tipo === "entra") {
+    linea = <p className="text-[13.5px]">↗ Entrada pos {m.posicion}: N° fuego {m.numero_fuego}{m.estado ? ` (${m.estado})` : ""}</p>;
+  } else {
+    linea = <p className="text-[13.5px]">↙ Salida pos {m.posicion}: N° fuego {m.numero_fuego} → {m.motivo_salida || "-"}</p>;
+  }
+  return (
+    <div className="bg-white rounded-2xl border border-bd shadow-card p-4">
+      <p className="text-[11.5px] text-muted font-semibold">{(m.creado_en || "").slice(11, 16)} — {mecanicoLabel} — {equipoLabel}</p>
+      {linea}
+    </div>
+  );
+}
+function HojaDeCambioTab({ filtro, onCambio }) {
+  const [lista, setLista] = useState([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    setLoading(true);
+    fetchMovimientosEnVivoHoy(filtro).then(data => { setLista(data); onCambio && onCambio(data); }).catch(e => console.error(e)).finally(() => setLoading(false));
+  }, [filtro]);
+  if (loading) return <div className="flex justify-center py-10"><span className="spinner" /></div>;
+  return (
+    <div className="space-y-2">
+      {lista.map(m => <MovimientoRow key={m.kind + m.id} m={m} />)}
+      {!lista.length && <p className="text-[13.5px] text-muted py-4">Sin movimientos hoy.</p>}
+    </div>
+  );
+}
+
+const MOVIMIENTOS_TABS = [
+  { id: "alertas", label: "Alertas", icon: "🔴" },
+  { id: "discrepancias", label: "Discrepancias", icon: "⚠" },
+  { id: "instructivos", label: "Instructivos", icon: "📋" },
+  { id: "cambio", label: "Hoja de cambio", icon: "🔄" }
+];
+function MovimientosDelDiaView({ empresaCtl, adminUser }) {
   const { filtro } = empresaCtl;
-  const [sub, setSub] = useState(null);
-  const [checks, setChecks] = useState([]);
-  const [movs, setMovs] = useState({ auditorias: [], cambios: [] });
-  const [cierres, setCierres] = useState([]);
-  const [loading, setLoading] = useState(false);
+  const [tab, setTab] = useState("alertas");
+  const [pushToast, toastNode] = useToasts();
+  const [badges, setBadges] = useState({ alertas: null, discrepancias: null, instructivos: null, cambio: null });
+  const [sinActividad, setSinActividad] = useState(false);
+  const [checking, setChecking] = useState(true);
 
   useEffect(() => {
-    if (!sub) return;
+    setChecking(true);
+    setBadges({ alertas: null, discrepancias: null, instructivos: null, cambio: null });
+    (async () => {
+      if (filtro && filtro !== "todas") {
+        try {
+          const mecs = await adminDb.fetchMecanicosEnJornada(filtro);
+          setSinActividad(!mecs.some(m => m.estado !== "sin_iniciar"));
+        } catch (e) { setSinActividad(false); }
+      } else setSinActividad(false);
+      setChecking(false);
+      // Precarga los 4 badges de una para que se vean sin tener que visitar cada tab.
+      try {
+        const [alertas, discrepancias, instructivos, cambio] = await Promise.all([
+          fetchAlertasCriticasHoy(filtro), fetchDiscrepanciasAuditoriaHoy(filtro),
+          fetchInstructivosHoy(filtro), fetchMovimientosEnVivoHoy(filtro)
+        ]);
+        setBadges({
+          alertas: alertas.length, discrepancias: discrepancias.length,
+          instructivos: instructivos.filter(r => r.estado === "pendiente" || r.estado === "parcial").length,
+          cambio: cambio.length
+        });
+      } catch (e) { console.error("No se pudieron precargar los badges de Movimientos del día", e); }
+    })();
+  }, [filtro]);
+
+  function setBadge(key, list) { setBadges(b => ({ ...b, [key]: list.length })); }
+  async function refrescarAlertasBadge() { try { setBadge("alertas", await fetchAlertasCriticasHoy(filtro)); } catch (e) {} }
+  async function refrescarDiscrepanciasBadge() { try { setBadge("discrepancias", await fetchDiscrepanciasAuditoriaHoy(filtro)); } catch (e) {} }
+
+  if (checking) return <div className="flex justify-center py-10"><span className="spinner" /></div>;
+  if (sinActividad) return <p className="text-[13.5px] text-muted py-6 text-center">Sin actividad hoy en esta empresa</p>;
+
+  return (
+    <div>
+      {toastNode}
+      <div className="flex gap-2 mb-5 overflow-x-auto">
+        {MOVIMIENTOS_TABS.map(t => (
+          <button key={t.id} onClick={() => setTab(t.id)}
+            className={cx("px-4 py-2 rounded-full text-[13px] font-bold whitespace-nowrap flex items-center gap-1.5", tab === t.id ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>
+            <span>{t.icon}</span>{t.label}
+            {badges[t.id] != null && badges[t.id] > 0 && (
+              <span className={cx("min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold flex items-center justify-center", tab === t.id ? "bg-white text-ink" : "bg-[#EF4444] text-white")}>{badges[t.id] > 99 ? "99+" : badges[t.id]}</span>
+            )}
+          </button>
+        ))}
+      </div>
+      {tab === "alertas" && <AlertasCriticasTab filtro={filtro} pushToast={pushToast} onCambio={refrescarAlertasBadge} />}
+      {tab === "discrepancias" && <DiscrepanciasAuditoriaTab filtro={filtro} adminUser={adminUser} pushToast={pushToast} onCambio={refrescarDiscrepanciasBadge} />}
+      {tab === "instructivos" && <InstructivosTab filtro={filtro} onCambio={(data) => setBadge("instructivos", data.filter(r => r.estado === "pendiente" || r.estado === "parcial"))} />}
+      {tab === "cambio" && <HojaDeCambioTab filtro={filtro} onCambio={(data) => setBadge("cambio", data)} />}
+    </div>
+  );
+}
+
+/* =====================================================================
+   JORNADA (3 bloques: inicio del dia, movimientos del dia, cierre del dia)
+===================================================================== */
+function JornadaView({ empresaCtl, adminUser }) {
+  const { filtro } = empresaCtl;
+  const [sub, setSub] = useState(null);
+  const [cierres, setCierres] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [pushToast, toastNode] = useToasts();
+
+  useEffect(() => {
+    if (sub !== "cierre") return;
     setLoading(true);
-    const fn = sub === "inicio" ? fetchChecksDiariosHoy(filtro).then(setChecks)
-      : sub === "movimientos" ? fetchMovimientosHoy(filtro).then(setMovs)
-      : fetchCierresHoy(filtro).then(setCierres);
-    fn.catch(e => console.error(e)).finally(() => setLoading(false));
+    fetchCierresHoy(filtro).then(setCierres).catch(e => console.error(e)).finally(() => setLoading(false));
   }, [sub, filtro]);
 
   if (!sub) {
@@ -673,49 +1157,13 @@ function JornadaView({ empresaCtl }) {
   const titulo = sub === "inicio" ? "Inicio del día" : sub === "movimientos" ? "Movimientos del día" : "Cierre del día";
   return (
     <div>
+      {toastNode}
       <button onClick={() => setSub(null)} className="flex items-center gap-2 text-[13.5px] font-bold text-muted mb-4"><Icon.back width="15" height="15" /> Jornada</button>
       <h1 className="text-[26px] font-extrabold mb-5">{titulo}</h1>
+      {sub === "inicio" && <InicioDelDiaView empresaCtl={empresaCtl} adminUser={adminUser} pushToast={pushToast} />}
+      {sub === "movimientos" && <MovimientosDelDiaView empresaCtl={empresaCtl} adminUser={adminUser} />}
       {loading ? <div className="flex justify-center py-10"><span className="spinner" /></div> : (
         <>
-          {sub === "inicio" && (
-            <div className="bg-white rounded-2xl border border-bd shadow-card overflow-hidden">
-              {checks.map((c, i) => (
-                <div key={c.id} className={cx("flex items-center justify-between px-4 py-3", i > 0 && "border-t border-bd")}>
-                  <p className="font-bold text-[14px]">{c.mecanico ? `${c.mecanico.nombre} ${c.mecanico.apellido || ""}` : "-"}</p>
-                  <p className="text-[12.5px] text-muted">{(c.hora_inicio || "").slice(0, 5)}</p>
-                </div>
-              ))}
-              {!checks.length && <p className="text-[13.5px] text-muted p-4">Nadie completó el check diario todavía.</p>}
-            </div>
-          )}
-          {sub === "movimientos" && (
-            <div className="space-y-6">
-              <div>
-                <p className="font-bold text-[14.5px] mb-2">Auditorías ({movs.auditorias.length})</p>
-                <div className="bg-white rounded-2xl border border-bd shadow-card overflow-hidden">
-                  {movs.auditorias.map((a, i) => (
-                    <div key={a.id_auditoria} className={cx("flex items-center justify-between px-4 py-3", i > 0 && "border-t border-bd")}>
-                      <div><p className="font-bold text-[14px]">{a.equipo ? (a.equipo.numero_interno ? `${a.equipo.numero_interno} · ${a.equipo.patente}` : a.equipo.patente) : "-"}</p><p className="text-[12px] text-muted">{a.mecanico ? `${a.mecanico.nombre} ${a.mecanico.apellido || ""}` : "-"}</p></div>
-                      <p className="text-[12.5px] text-muted">{(a.creado_en || "").slice(11, 16)}</p>
-                    </div>
-                  ))}
-                  {!movs.auditorias.length && <p className="text-[13.5px] text-muted p-4">Sin auditorías hoy.</p>}
-                </div>
-              </div>
-              <div>
-                <p className="font-bold text-[14.5px] mb-2">Cambios ({movs.cambios.length})</p>
-                <div className="bg-white rounded-2xl border border-bd shadow-card overflow-hidden">
-                  {movs.cambios.map((c, i) => (
-                    <div key={c.id_cambio} className={cx("flex items-center justify-between px-4 py-3", i > 0 && "border-t border-bd")}>
-                      <div><p className="font-bold text-[14px]">{c.equipo ? (c.equipo.numero_interno ? `${c.equipo.numero_interno} · ${c.equipo.patente}` : c.equipo.patente) : "-"}</p><p className="text-[12px] text-muted">{c.mecanico ? `${c.mecanico.nombre} ${c.mecanico.apellido || ""}` : "-"}</p></div>
-                      <p className="text-[12.5px] text-muted">{(c.creado_en || "").slice(11, 16)}</p>
-                    </div>
-                  ))}
-                  {!movs.cambios.length && <p className="text-[13.5px] text-muted p-4">Sin cambios hoy.</p>}
-                </div>
-              </div>
-            </div>
-          )}
           {sub === "cierre" && (
             <div className="bg-white rounded-2xl border border-bd shadow-card overflow-hidden">
               {cierres.map((c, i) => (
@@ -894,7 +1342,7 @@ function AdminApp({ user, onLogout }) {
 
   let body;
   if (view === "equipos") body = <EquiposView key={refreshToken} empresaCtl={empresaCtl} />;
-  else if (view === "jornada") body = <JornadaView key={refreshToken} empresaCtl={empresaCtl} />;
+  else if (view === "jornada") body = <JornadaView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} />;
   else if (view === "maestros") body = <MaestrosView />;
   else if (view === "alertas") body = <AlertasAdminView key={refreshToken} empresaCtl={empresaCtl} onAbrirMecanico={setMecanicoBloqueado} mecanicosPorId={mecanicosPorId} />;
   else if (view === "perfil") body = <PerfilAdminView user={user} onLogout={onLogout} />;

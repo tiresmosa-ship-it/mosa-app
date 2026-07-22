@@ -357,3 +357,13 @@ ALTER TABLE intervenciones DROP CONSTRAINT IF EXISTS intervenciones_tipo_check;
 -- =====================================================================
 ALTER TABLE cierre_dia DROP CONSTRAINT IF EXISTS cierre_dia_mecanico_id_fecha_key;
 CREATE UNIQUE INDEX IF NOT EXISTS cierre_dia_mecanico_fecha_turno_key ON cierre_dia (mecanico_id, fecha, turno);
+
+-- =====================================================================
+-- 23) discrepancias_inventario.tipo_discrepancia tenia un CHECK con una
+-- lista fija que no incluia 'numero_fuego'/'marca'/'medida' (los valores
+-- que usa el Admin en Jornada > Movimientos del día > Discrepancias para
+-- distinguir que campo del neumatico corregir al aprobar un ajuste de
+-- auditoria). Mismo criterio que los bloques 15/20b/21: se elimina el
+-- CHECK en vez de mantener la lista sincronizada a mano.
+-- =====================================================================
+ALTER TABLE discrepancias_inventario DROP CONSTRAINT IF EXISTS discrepancias_inventario_tipo_discrepancia_check;
