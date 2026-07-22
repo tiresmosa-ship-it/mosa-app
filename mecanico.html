@@ -1,0 +1,1678 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+<title>MOSA TIRES</title>
+<meta name="description" content="MOSA TIRES - Gestión de neumáticos de flota" />
+<meta name="theme-color" content="#FFFFFF" />
+<link rel="manifest" href="manifest.json" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+<link rel="icon" href="icon-192.png" />
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          ink: '#0A0A0A',
+          sub: '#6B7280',
+          muted: '#9CA3AF',
+          card: '#FFFFFF',
+          subtlebg: '#F7F7F7',
+          bd: '#EFEFEF',
+          bdstrong: '#E5E7EB'
+        },
+        boxShadow: {
+          card: '0 1px 2px rgba(0,0,0,0.03), 0 6px 16px rgba(0,0,0,0.04)'
+        },
+        borderRadius: { card: '16px' }
+      }
+    }
+  }
+</script>
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone@7/babel.min.js" crossorigin></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" crossorigin></script>
+
+<style>
+  html, body { font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Inter, sans-serif; background:#FFFFFF; -webkit-tap-highlight-color: transparent; }
+  * { -webkit-font-smoothing: antialiased; }
+  ::-webkit-scrollbar { height: 8px; width: 8px; }
+  ::-webkit-scrollbar-thumb { background: #E5E7EB; border-radius: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+  .safe-top { padding-top: env(safe-area-inset-top); }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.4} }
+  .anim-blink { animation: blink 1s ease-in-out infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spinner { border: 3px solid #E5E7EB; border-top-color: #111111; border-radius: 50%; width: 22px; height: 22px; animation: spin 0.7s linear infinite; }
+  .field-alert { border-color:#EF4444 !important; background:#FEE2E2 !important; }
+  .field-warn { border-color:#F59E0B !important; background:#FEF3C7 !important; }
+  input, select, textarea { font-family: inherit; }
+  .strike { text-decoration: line-through; color:#9CA3AF; }
+</style>
+</head>
+<body class="bg-white text-ink">
+<div id="root"></div>
+
+<script src="js/supabase.js"></script>
+<script type="text/babel" data-presets="react">
+/* =====================================================================
+   MOSA TIRES — kit de UI compartido (JSX). Cargado con Babel en modo
+   clásico (sin módulos) antes del script propio de cada página, así que
+   todo lo declarado acá (Icon, Button, Card, Modal, BottomNav, hooks...)
+   queda disponible como global. Depende de React (CDN) y de
+   js/supabase.js (LS, getQueue, db) ya cargados antes que este archivo.
+===================================================================== */
+const { useState, useEffect, useCallback, createContext, useContext } = React;
+
+/* =====================================================================
+   CONTEXTO GLOBAL
+===================================================================== */
+const AppCtx = createContext(null);
+function useApp() { return useContext(AppCtx); }
+function useOnline() {
+  const [online, setOnline] = useState(navigator.onLine);
+  useEffect(() => {
+    const on = () => setOnline(true), off = () => setOnline(false);
+    window.addEventListener("online", on); window.addEventListener("offline", off);
+    return () => { window.removeEventListener("online", on); window.removeEventListener("offline", off); };
+  }, []);
+  return online;
+}
+function useQueueCount() {
+  const [count, setCount] = useState(getQueue().length);
+  useEffect(() => {
+    const upd = () => setCount(getQueue().length);
+    window.addEventListener("mosa-queue-changed", upd);
+    const t = setInterval(upd, 3000);
+    return () => { window.removeEventListener("mosa-queue-changed", upd); clearInterval(t); };
+  }, []);
+  return count;
+}
+function useAlertasNoLeidas(clienteId, mecanicoId) {
+  const [count, setCount] = useState(0);
+  const queuePending = useQueueCount();
+  useEffect(() => {
+    if (!clienteId || !mecanicoId) return;
+    let cancel = false;
+    const cargar = () => db.fetchAlertas(clienteId, mecanicoId).then(as => { if (!cancel) setCount(as.filter(a => !a.leida_mecanico).length); }).catch(() => {});
+    cargar();
+    window.addEventListener("mosa-alertas-changed", cargar);
+    const t = setInterval(cargar, 15000);
+    return () => { cancel = true; window.removeEventListener("mosa-alertas-changed", cargar); clearInterval(t); };
+  }, [clienteId, mecanicoId, queuePending]);
+  return count;
+}
+
+/* =====================================================================
+   ICONOS (inline SVG, 24px, stroke)
+===================================================================== */
+const Icon = {
+  home: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg>,
+  audit: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/></svg>,
+  swap: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M17 2l4 4-4 4"/><path d="M3 11V9a4 4 0 014-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>,
+  clipboard: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><rect x="6" y="4" width="12" height="16" rx="2"/><path d="M9 4V3a1 1 0 011-1h4a1 1 0 011 1v1"/><path d="M9 12h6M9 16h6"/></svg>,
+  bell: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M18 8a6 6 0 00-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 01-3.4 0"/></svg>,
+  search: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>,
+  back: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M15 18l-6-6 6-6"/></svg>,
+  truck: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><rect x="1" y="7" width="14" height="10"/><path d="M15 10h4l3 3v4h-7z"/><circle cx="6" cy="19" r="1.6"/><circle cx="17.5" cy="19" r="1.6"/></svg>,
+  trash: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M3 6h18"/><path d="M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2m2 0-1 14a1 1 0 01-1 1H7a1 1 0 01-1-1L5 6"/></svg>,
+  check: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M20 6L9 17l-5-5"/></svg>,
+  pencil: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z"/></svg>,
+  close: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M18 6L6 18M6 6l12 12"/></svg>,
+  user: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>,
+  gauge: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M12 15l3-3"/><circle cx="12" cy="14" r="8"/><path d="M6 8l1.5 1.5M18 8l-1.5 1.5M4 14h2M18 14h2M12 5v2"/></svg>,
+  wrench: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M14.7 6.3a4 4 0 10-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 005.4-5.4l-2.6 2.6-2-2z"/></svg>,
+  bandage: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><rect x="3" y="9" width="18" height="6" rx="3" transform="rotate(45 12 12)"/><circle cx="9.5" cy="9.5" r=".6" fill="currentColor"/><circle cx="14.5" cy="14.5" r=".6" fill="currentColor"/></svg>,
+  eye: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>,
+};
+
+/* =====================================================================
+   UI BASICOS
+===================================================================== */
+function Button({ variant = "primary", className = "", children, ...props }) {
+  const base = "h-14 px-5 rounded-2xl font-bold text-[15px] transition active:scale-[0.98] disabled:opacity-50 disabled:active:scale-100 flex items-center justify-center gap-2";
+  const variants = {
+    primary: "bg-ink text-white",
+    ghost: "bg-transparent text-ink border border-bdstrong",
+    danger: "bg-[#FEE2E2] text-[#B91C1C]",
+    subtle: "bg-[#F3F4F6] text-ink"
+  };
+  return <button className={cx(base, variants[variant], className)} {...props}>{children}</button>;
+}
+function Field({ label, required, children, hint }) {
+  return (
+    <label className="block">
+      <span className="block text-[13px] font-semibold text-[#374151] mb-1.5">{label}{required && <span className="text-red-500"> *</span>}</span>
+      {children}
+      {hint && <span className="block text-xs text-muted mt-1">{hint}</span>}
+    </label>
+  );
+}
+function TextInput({ className = "", alert, warn, ...props }) {
+  return <input className={cx("w-full h-[52px] px-4 rounded-2xl border bg-[#F3F4F6] border-[#E5E7EB] focus:outline-none focus:ring-2 focus:ring-ink/20 placeholder:text-muted", alert && "field-alert", warn && !alert && "field-warn", className)} {...props} />;
+}
+function Select({ className = "", children, ...props }) {
+  return <select className={cx("w-full h-[52px] px-4 rounded-2xl border bg-[#F3F4F6] border-[#E5E7EB] focus:outline-none focus:ring-2 focus:ring-ink/20", className)} {...props}>{children}</select>;
+}
+function MarcaSelect({ value, onChange }) {
+  const isOtra = value && !MARCAS_NEUMATICOS.slice(0, -1).includes(value);
+  const [otra, setOtra] = useState(isOtra ? value : "");
+  return (
+    <div>
+      <Select value={isOtra ? "Otra" : value} onChange={e => { if (e.target.value === "Otra") { onChange(otra); } else { onChange(e.target.value); } }}>
+        <option value="">Seleccionar</option>
+        {MARCAS_NEUMATICOS.map(m => <option key={m} value={m}>{m}</option>)}
+      </Select>
+      {isOtra && (
+        <TextInput className="mt-2" placeholder="Escribí la marca" value={otra}
+          onChange={e => { setOtra(e.target.value); onChange(e.target.value); }} />
+      )}
+    </div>
+  );
+}
+function TextArea({ className = "", ...props }) {
+  return <textarea className={cx("w-full min-h-[90px] px-4 py-3 rounded-2xl border bg-[#F3F4F6] border-[#E5E7EB] focus:outline-none focus:ring-2 focus:ring-ink/20", className)} {...props} />;
+}
+function Card({ className = "", children }) {
+  return <div className={cx("bg-white rounded-card shadow-card border border-bd p-5", className)}>{children}</div>;
+}
+function Badge({ children, color = "gray" }) {
+  const colors = {
+    gray: "bg-[#F3F4F6] text-[#374151]", green: "bg-[#DCFCE7] text-[#15803D]",
+    red: "bg-[#FEE2E2] text-[#B91C1C]", amber: "bg-[#FEF3C7] text-[#92400E]", black: "bg-ink text-white"
+  };
+  return <span className={cx("px-3 py-1 rounded-full text-[12px] font-bold", colors[color])}>{children}</span>;
+}
+function Modal({ title, onClose, children, wide, footer }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 p-0 sm:p-4" onClick={(e) => { if (e.target === e.currentTarget && onClose) onClose(); }}>
+      <div className={cx("bg-white w-full sm:rounded-card rounded-t-[24px] max-h-[92vh] overflow-y-auto", wide ? "sm:max-w-2xl" : "sm:max-w-md")}>
+        <div className="sticky top-0 bg-white border-b border-bd px-5 py-4 flex items-center justify-between z-10">
+          <h3 className="text-lg font-extrabold">{title}</h3>
+          {onClose && <button onClick={onClose} className="w-9 h-9 rounded-full hover:bg-[#F3F4F6] flex items-center justify-center text-sub"><Icon.close width="18" height="18"/></button>}
+        </div>
+        <div className="p-5">{children}</div>
+        {footer && <div className="sticky bottom-0 bg-white border-t border-bd p-4">{footer}</div>}
+      </div>
+    </div>
+  );
+}
+function Toast({ msg, onDone }) {
+  useEffect(() => { const t = setTimeout(onDone, 2000); return () => clearTimeout(t); }, []);
+  return (
+    <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[80] px-4 py-3 rounded-2xl shadow-lg text-sm font-semibold flex items-center gap-3" style={{ background: "#DCFCE7", color: "#15803D" }}>
+      <span>{msg}</span>
+      <button onClick={onDone} className="opacity-60">✕</button>
+    </div>
+  );
+}
+function useToasts() {
+  const [toasts, setToasts] = useState([]);
+  const push = useCallback((msg) => setToasts(t => [...t, { id: uuid(), msg }]), []);
+  const remove = (id) => setToasts(t => t.filter(x => x.id !== id));
+  const node = <div>{toasts.map(t => <Toast key={t.id} msg={t.msg} onDone={() => remove(t.id)} />)}</div>;
+  return [push, node];
+}
+function Confirm({ title, desc, onConfirm, onCancel }) {
+  return (
+    <Modal title={title} onClose={onCancel}>
+      <p className="text-[14px] text-[#374151] mb-5">{desc}</p>
+      <div className="flex gap-3">
+        <Button variant="subtle" className="flex-1" onClick={onCancel}>Cancelar</Button>
+        <Button className="flex-1" onClick={onConfirm}>Confirmar</Button>
+      </div>
+    </Modal>
+  );
+}
+function OfflineBadge() {
+  const online = useOnline();
+  const pending = useQueueCount();
+  if (online && pending === 0) return null;
+  return (
+    <div className="px-4">
+      {!online && <div className="mb-2 rounded-xl bg-[#FEE2E2] text-[#B91C1C] text-xs font-bold px-3 py-2 text-center">Sin conexión</div>}
+      {pending > 0 && <div className="mb-2 rounded-xl bg-[#FEF3C7] text-[#92400E] text-xs font-bold px-3 py-2 text-center">{pending} registro{pending !== 1 ? "s" : ""} pendiente{pending !== 1 ? "s" : ""} de sincronizar</div>}
+    </div>
+  );
+}
+
+/* =====================================================================
+   NAV
+===================================================================== */
+function BottomNav({ view, setView, disabledExcept, alertasNoLeidas }) {
+  const items = [
+    { id: "inicio", label: "Inicio", icon: Icon.home },
+    { id: "cierre", label: "Cierre", icon: Icon.clipboard },
+    { id: "alertas", label: "Alertas", icon: Icon.bell },
+    { id: "perfil", label: "Perfil", icon: Icon.user }
+  ];
+  return (
+    <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-bd safe-bottom z-30">
+      <div className="flex">
+        {items.map(it => {
+          const active = view === it.id;
+          const disabled = disabledExcept && !disabledExcept.includes(it.id);
+          return (
+            <button key={it.id} disabled={disabled} onClick={() => setView(it.id)} className={cx("relative flex-1 flex flex-col items-center gap-1 py-2.5", disabled && "opacity-30")}>
+              <span className="relative">
+                <it.icon width="24" height="24" className={active ? "text-ink" : "text-[#B0B3B8]"} />
+                {it.id === "alertas" && alertasNoLeidas > 0 && (
+                  <span className="absolute -top-1 -right-2.5 min-w-[16px] h-4 px-1 rounded-full bg-[#EF4444] text-white text-[10px] font-bold flex items-center justify-center">{alertasNoLeidas > 99 ? "99+" : alertasNoLeidas}</span>
+                )}
+              </span>
+              <span className={cx("text-[10.5px] font-semibold", active ? "text-ink" : "text-[#B0B3B8]")}>{it.label}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+const { useRef } = React;
+
+/* =====================================================================
+   SELECCION DE EMPRESA
+===================================================================== */
+function SeleccionEmpresa({ user, onConfirm }) {
+  const [cliente, setCliente] = useState(null);
+  useEffect(() => { db.fetchCliente(user.cliente_id).then(setCliente).catch(() => setCliente({ nombre: user.cliente_id })); }, []);
+  function confirmar() {
+    localStorage.setItem("empresa_activa_hoy", user.cliente_id);
+    onConfirm(user.cliente_id);
+  }
+  return (
+    <div className="min-h-screen flex flex-col px-6 pt-16 safe-top">
+      <p className="text-[14px] text-muted mb-2">Antes de comenzar</p>
+      <h1 className="text-[28px] font-extrabold leading-tight mb-8">¿En qué empresa vas a trabajar hoy?</h1>
+      <Card className="mb-4">
+        <div className="flex items-center gap-3">
+          <div className="w-12 h-12 rounded-2xl bg-[#F3F4F6] flex items-center justify-center"><Icon.truck width="24" height="24" /></div>
+          <div>
+            <p className="font-extrabold text-[16px]">{cliente ? cliente.nombre : "Cargando..."}</p>
+            <p className="text-[12.5px] text-muted">Empresa asignada</p>
+          </div>
+        </div>
+      </Card>
+      <div className="flex-1" />
+      <Button className="w-full mb-8" disabled={!cliente} onClick={confirmar}>Confirmar empresa</Button>
+    </div>
+  );
+}
+
+/* =====================================================================
+   PANTALLA 2 - BIENVENIDA + CHECK DIARIO
+===================================================================== */
+function Stepper({ value, onChange }) {
+  const [editing, setEditing] = useState(false);
+  const [tmp, setTmp] = useState(String(value));
+  if (editing) {
+    return (
+      <input autoFocus inputMode="numeric" pattern="[0-9]*" value={tmp}
+        onChange={e => setTmp(e.target.value.replace(/[^0-9]/g, ""))}
+        onBlur={() => { setEditing(false); onChange(Math.max(0, parseInt(tmp || "0", 10))); }}
+        onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
+        className="w-14 h-9 text-center rounded-lg border border-bdstrong font-bold" />
+    );
+  }
+  return (
+    <div className="flex items-center gap-2">
+      <button type="button" onClick={() => onChange(Math.max(0, value - 1))} className="w-9 h-9 rounded-lg bg-[#F3F4F6] font-bold text-lg">−</button>
+      <button type="button" onClick={() => { setTmp(String(value)); setEditing(true); }} className="w-10 text-center font-bold">{value}</button>
+      <button type="button" onClick={() => onChange(value + 1)} className="w-9 h-9 rounded-lg bg-[#F3F4F6] font-bold text-lg">+</button>
+    </div>
+  );
+}
+
+function CheckDiario({ user, clienteId, onDone }) {
+  const [stock, setStock] = useState(() => Object.fromEntries(ALL_STOCK_FIELDS.map(f => [f.key, { value: 0, touched: false }])));
+  const [tools, setTools] = useState(() => Object.fromEntries(TOOLS_CHECKLIST.map(t => [t, { checked: false, cantidad: 0 }])));
+  const [saving, setSaving] = useState(false);
+  const [discrepancias, setDiscrepancias] = useState(null); // null = no evaluado, [] = sin diferencias, [...] = con diferencias
+  const [observacion, setObservacion] = useState("");
+  const [pushToast, toastNode] = useToasts();
+
+  const toolsFilled = TOOLS_CHECKLIST.filter(t => tools[t].checked).length;
+  const stockFilled = ALL_STOCK_FIELDS.filter(f => stock[f.key].touched).length;
+  const totalItems = TOOLS_CHECKLIST.length + ALL_STOCK_FIELDS.length;
+  const progress = Math.round(((toolsFilled + stockFilled) / totalItems) * 100);
+  const complete = toolsFilled === TOOLS_CHECKLIST.length && stockFilled === ALL_STOCK_FIELDS.length;
+
+  function setStockVal(key, v) { setStock(s => ({ ...s, [key]: { value: v, touched: true } })); }
+  function setToolQty(t, v) { setTools(s => ({ ...s, [t]: { checked: true, cantidad: v } })); }
+  function toggleTool(t) { setTools(s => ({ ...s, [t]: { ...s[t], checked: !s[t].checked } })); }
+
+  function renderSeccion(titulo, fields) {
+    return (
+      <>
+        <p className="font-bold text-[15px] mb-2">{titulo}</p>
+        <Card className="mb-4 space-y-3">
+          {fields.map(f => (
+            <div key={f.key} className="flex items-center justify-between">
+              <span className={cx("text-[14px] font-semibold", stock[f.key].touched ? "text-[#1F2937]" : "text-[#92400E]")}>{f.label}</span>
+              <Stepper value={stock[f.key].value} onChange={v => setStockVal(f.key, v)} />
+            </div>
+          ))}
+        </Card>
+      </>
+    );
+  }
+
+  async function continuar() {
+    setSaving(true);
+    const id = uuid();
+    const horaInicio = nowHM();
+    const totales = {
+      nuevo: stock.nuevos.value + stock.tra_nuevos.value + stock.libre_nuevos.value,
+      transito: stock.transito.value + stock.tra_transito.value + stock.libre_transito.value,
+      recauchado: stock.recauchados.value + stock.tra_recauchados.value + stock.libre_recauchados.value
+    };
+    const data = {
+      id, cliente_id: clienteId, empresa_id: clienteId, bultero_id: user.id, fecha: todayISO(), hora_inicio: horaInicio,
+      numero_hoja: uuid().slice(0, 8), completado: true,
+      nuevos: stock.nuevos.value, transito: stock.transito.value, reparar: stock.reparar.value, recauchados: stock.recauchados.value,
+      tra_nuevos: stock.tra_nuevos.value, tra_transito: stock.tra_transito.value, tra_reparar: stock.tra_reparar.value, tra_recauchados: stock.tra_recauchados.value,
+      llantas_am_aluminio: stock.llantas_am_aluminio.value, llantas_am_fierro: stock.llantas_am_fierro.value,
+      llantas_eu_aluminio: stock.llantas_eu_aluminio.value, llantas_eu_fierro: stock.llantas_eu_fierro.value,
+      neu_dir_nuevo: stock.nuevos.value, neu_dir_transito: stock.transito.value, neu_dir_reparar: stock.reparar.value, neu_dir_recauchado: stock.recauchados.value,
+      neu_trac_nuevo: stock.tra_nuevos.value, neu_trac_transito: stock.tra_transito.value, neu_trac_reparar: stock.tra_reparar.value, neu_trac_recauchado: stock.tra_recauchados.value,
+      neu_libre_nuevo: stock.libre_nuevos.value, neu_libre_transito: stock.libre_transito.value, neu_libre_reparar: stock.libre_reparar.value, neu_libre_recauchado: stock.libre_recauchados.value,
+      checklist: TOOLS_CHECKLIST.map(t => ({ herramienta: t, cantidad: tools[t].cantidad }))
+    };
+    pushQueue({ id: uuid(), tipo: "novedad", clienteId, ts: Date.now(), data });
+    syncQueue();
+    setTurno({ clienteId, fecha: todayISO(), checkDone: true });
+    localStorage.setItem("check_completado_hoy", "true");
+
+    try {
+      await marcarInicioJornada(clienteId, user.id, todayISO(), horaInicio);
+      const diffs = await compararInventarioNeumaticos(clienteId, totales);
+      if (diffs.length) {
+        const ids = await registrarDiscrepancias(clienteId, user.id, todayISO(), diffs);
+        setDiscrepancias({ diffs, ids });
+        setSaving(false);
+        return;
+      }
+    } catch (e) { console.error("No se pudo comparar el inventario", e); }
+
+    pushToast("✓ Check diario completado");
+    setSaving(false);
+    setTimeout(onDone, 700);
+  }
+
+  if (discrepancias) {
+    return (
+      <div className="min-h-screen flex flex-col px-6 pt-16 safe-top">
+        {toastNode}
+        <div className="w-14 h-14 rounded-2xl bg-[#FEE2E2] flex items-center justify-center mb-5 text-2xl">⚠</div>
+        <h1 className="text-[22px] font-extrabold leading-tight mb-2">Tu conteo difiere del inventario registrado</h1>
+        <p className="text-[13.5px] text-sub mb-5">Podés seguir trabajando igual. Se le enviará una alerta a tu supervisor.</p>
+        <div className="space-y-2 mb-5">
+          {discrepancias.diffs.map(d => (
+            <div key={d.bucket} className="bg-[#FEF3C7] rounded-2xl px-4 py-3">
+              <p className="font-bold text-[14px] text-[#92400E]">{d.label}</p>
+              <p className="text-[12.5px] text-[#92400E]">Sistema: {d.sistema} · Contado: {d.fisico}</p>
+            </div>
+          ))}
+        </div>
+        <Field label="Observación (opcional)">
+          <TextArea placeholder="Contanos si sabés por qué difiere..." value={observacion} onChange={e => setObservacion(e.target.value)} />
+        </Field>
+        <div className="flex-1" />
+        <Button className="w-full mt-5 mb-8" onClick={() => { guardarObservacionDiscrepancia(discrepancias.ids, observacion).catch(() => {}); onDone(); }}>Entendido, continuar</Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen pb-28 px-5 safe-top">
+      {toastNode}
+      <div className="sticky top-0 z-30 bg-white px-5 pt-14 pb-3">
+        <p className="text-[14px] text-muted mb-1">{formatDateLong()}</p>
+        <h1 className="text-[30px] font-extrabold leading-none">Hola, {user.nombre}</h1>
+        <p className="text-[14px] text-sub mt-2 mb-4">Para iniciar tenés que completar el check del día</p>
+        <div className="bg-[#F9FAFB] rounded-[20px] p-5">
+          <div className="flex items-center justify-between mb-2">
+            <span className="font-bold text-[16px]">Progreso del check</span>
+            <span className="text-[13px] font-bold">{toolsFilled + stockFilled}/{totalItems}</span>
+          </div>
+          <div className="h-2 rounded-full bg-[#E5E7EB] overflow-hidden">
+            <div className="h-full bg-ink transition-all" style={{ width: progress + "%" }} />
+          </div>
+        </div>
+      </div>
+
+      <div className="px-0 pt-4">
+        <p className="font-extrabold text-[17px] mb-3">Conteo de neumáticos</p>
+        {renderSeccion("Direccionales", DIRECCIONAL_FIELDS)}
+        {renderSeccion("Traccionales", TRACCIONAL_FIELDS)}
+        {renderSeccion("Ejes libres", LIBRE_FIELDS)}
+        {renderSeccion("Llantas en patio", PATIO_FIELDS)}
+
+        <p className="font-bold text-[15px] mb-2">Checklist de herramientas</p>
+        <p className="text-[12.5px] text-muted mb-3">Marcá el check para confirmar que revisaste la herramienta, aunque tengas 0.</p>
+        <div className="space-y-2 mb-6">
+          {TOOLS_CHECKLIST.map(t => (
+            <div key={t} className={cx("bg-white rounded-2xl border shadow-card px-4 py-3 flex items-center gap-3", tools[t].checked ? "border-bd" : "border-[#F59E0B]")}>
+              <button type="button" onClick={() => toggleTool(t)} className={cx("w-7 h-7 rounded-lg flex items-center justify-center shrink-0 border", tools[t].checked ? "bg-ink border-ink" : "bg-white border-[#D1D5DB]")}>
+                {tools[t].checked && <Icon.check width="15" height="15" className="text-white" />}
+              </button>
+              <span className="text-[14px] font-semibold text-[#1F2937] flex-1">{t}</span>
+              <Stepper value={tools[t].cantidad} onChange={v => setToolQty(t, v)} />
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-bd p-4 safe-bottom">
+        <Button className="w-full" disabled={!complete || saving} onClick={continuar}>
+          {saving ? <span className="spinner" /> : "Confirmar check diario"}
+        </Button>
+        {!complete && <p className="text-center text-[12px] text-muted mt-2">Completá el conteo de neumáticos y confirmá las {TOOLS_CHECKLIST.length} herramientas</p>}
+      </div>
+    </div>
+  );
+}
+
+/* =====================================================================
+   PANTALLA 3 - SELECCION DE EQUIPO
+===================================================================== */
+function SeleccionEquipo({ clienteId, onPick }) {
+  const [equipos, setEquipos] = useState(() => getCache(LS.equipos(clienteId), []));
+  const [alertasByEquipo, setAlertasByEquipo] = useState({});
+  const [auditadosHoy, setAuditadosHoy] = useState({});
+  const [filter, setFilter] = useState("todos");
+  const [search, setSearch] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancel = false;
+    (async () => {
+      try {
+        const eqs = await db.fetchEquipos(clienteId);
+        if (cancel) return;
+        setEquipos(eqs);
+        const alertas = await db.fetchAlertas(clienteId);
+        const map = {};
+        alertas.filter(a => !a.leida_mecanico && a.equipo_id).forEach(a => { map[a.equipo_id] = map[a.equipo_id] === "alerta" ? "alerta" : (a.severidad === "rojo" ? "alerta" : "atencion"); });
+        setAlertasByEquipo(map);
+        const hoy = await db.fetchAuditoriasHoy(clienteId);
+        const hm = {}; hoy.forEach(h => hm[h.equipo_id] = true);
+        setAuditadosHoy(hm);
+      } catch (e) { console.error(e); } finally { if (!cancel) setLoading(false); }
+    })();
+    return () => { cancel = true; };
+  }, [clienteId]);
+
+  const filtered = equipos.filter(eq => {
+    if (filter === "alertas" && !alertasByEquipo[eq.id_equipo]) return false;
+    if (filter === "hoy" && !auditadosHoy[eq.id_equipo]) return false;
+    if (search) {
+      const s = search.toLowerCase();
+      if (!(eq.patente || "").toLowerCase().includes(s) && !(eq.numero_interno || "").toLowerCase().includes(s)) return false;
+    }
+    return true;
+  });
+
+  return (
+    <div className="min-h-screen pb-24 px-5 pt-14 safe-top">
+      <div className="flex items-center justify-between mb-4">
+        <h1 className="text-[30px] font-extrabold">Equipos</h1>
+        <div className="w-10 h-10 rounded-full bg-[#F3F4F6] flex items-center justify-center"><Icon.search width="18" height="18" /></div>
+      </div>
+      <TextInput placeholder="Buscar por patente o número interno" value={search} onChange={e => setSearch(e.target.value)} className="mb-4" />
+      <div className="flex gap-2 mb-5 overflow-x-auto">
+        {[["todos", "Todos"], ["alertas", "Con alertas"], ["hoy", "Auditados hoy"]].map(([k, l]) => (
+          <button key={k} onClick={() => setFilter(k)} className={cx("px-4 py-2 rounded-full text-[13px] font-bold whitespace-nowrap", filter === k ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{l}</button>
+        ))}
+      </div>
+      {loading && <div className="flex justify-center py-10"><span className="spinner" /></div>}
+      <div className="space-y-3">
+        {filtered.map(eq => {
+          const st = alertasByEquipo[eq.id_equipo] || "ok";
+          return (
+            <button key={eq.id_equipo} onClick={() => onPick(eq)} className="w-full text-left bg-white rounded-[20px] border border-bd shadow-card p-4 flex items-center gap-3">
+              <div className="w-[52px] h-[52px] rounded-2xl bg-[#F3F4F6] flex items-center justify-center shrink-0"><Icon.truck width="26" height="26" /></div>
+              <div className="flex-1 min-w-0">
+                <p className="font-bold text-[15.5px] truncate">{eq.numero_interno ? `${eq.numero_interno} · ` : ""}{eq.patente}</p>
+                <p className="text-[12.5px] text-muted truncate">{eq.tipo === "SEMI" ? "Semirremolque" : `Tracto ${eq.configuracion_ejes || ""}`} · {eq.modelo || ""}</p>
+              </div>
+              <Badge color={statusColor(st)}>{statusLabel(st)}</Badge>
+            </button>
+          );
+        })}
+        {!loading && filtered.length === 0 && <p className="text-center text-muted py-10 text-sm">No hay equipos que coincidan.</p>}
+      </div>
+    </div>
+  );
+}
+
+function AccionEquipo({ equipo, onClose, onAuditoria, onCambio }) {
+  return (
+    <Modal title={`${equipo.numero_interno || ""} · ${equipo.patente}`} onClose={onClose}>
+      <div className="space-y-3">
+        <Button className="w-full" onClick={onAuditoria}><Icon.audit width="20" height="20" /> Auditoría</Button>
+        <Button variant="subtle" className="w-full" onClick={onCambio}><Icon.swap width="20" height="20" /> Hoja de cambio</Button>
+      </div>
+    </Modal>
+  );
+}
+
+/* =====================================================================
+   MAPA DE NEUMATICOS (compartido entre Auditoria / Instructivo / Cambio)
+===================================================================== */
+function TireCircle({ pos, filled, status, mm, psi, fuego, selected, onTap, dragHandlers }) {
+  const styles = {
+    empty: "border-2 border-dashed border-[#D1D5DB] bg-[#F9FAFB] text-muted",
+    ok: "border-2 border-[#D1D5DB] bg-white text-ink",
+    atencion: "border-2 border-[#F59E0B] bg-[#FEF3C7] text-[#92400E]",
+    alerta: "border-2 border-[#EF4444] bg-[#FEE2E2] text-[#B91C1C]"
+  };
+  const key = !filled ? "empty" : (status || "ok");
+  return (
+    <button type="button" data-pos={pos} onClick={onTap} {...dragHandlers}
+      style={dragHandlers ? { touchAction: "none" } : undefined}
+      className={cx("w-[54px] h-[54px] rounded-full flex flex-col items-center justify-center shrink-0 shadow-sm transition",
+        styles[key], selected && "ring-2 ring-ink anim-blink")}>
+      <span className="text-[9.5px] font-bold opacity-70 leading-none">P{pos}</span>
+      {filled ? (
+        <>
+          <span className="text-[13px] font-extrabold leading-none mt-0.5">{mm != null ? mm : "—"}</span>
+          <span className="text-[8.5px] font-semibold opacity-70 leading-none">{psi ? psi + "psi" : ""}</span>
+        </>
+      ) : <span className="text-[11px] font-bold text-[#D1D5DB] mt-0.5">— —</span>}
+    </button>
+  );
+}
+
+function AxleMap({ cfg, posData, selectedPos, onTap, getDragHandlers }) {
+  return (
+    <div className="space-y-6">
+      {cfg.rows.map(row => (
+        <div key={row.label} className={cx("relative", row.type === "auxilio" && "mt-4 pt-4 border-t border-dashed border-bdstrong")}>
+          <div className="flex items-center gap-3">
+            <span className="text-[12px] font-bold text-muted w-6 shrink-0">{row.label}</span>
+            <div className="flex-1 relative flex items-center justify-around">
+              <div className="absolute left-0 right-0 h-[1.5px] bg-[#E5E7EB]" />
+              {row.positions.map(p => {
+                const d = posData[p] || {};
+                return (
+                  <div key={p} className="relative z-10">
+                    <TireCircle pos={p} filled={!!d.numero_fuego} status={d.status} mm={d.minMM} psi={d.psi} fuego={d.numero_fuego}
+                      selected={selectedPos === p} onTap={() => onTap(p)}
+                      dragHandlers={getDragHandlers ? getDragHandlers(p) : undefined} />
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function GhostTire({ x, y }) {
+  return (
+    <div className="fixed z-[90] pointer-events-none rounded-full w-[54px] h-[54px] -translate-x-1/2 -translate-y-1/2 shadow-lg flex items-center justify-center"
+      style={{ left: x, top: y, background: "#111", border: "3px solid #333" }}>
+      <div className="w-7 h-7 rounded-full border-2 border-[#666]" />
+    </div>
+  );
+}
+
+/* =====================================================================
+   PANTALLA 4 - AUDITORIA
+===================================================================== */
+function KmModal({ kmActual, km, setKm, onContinue }) {
+  const kmNum = parseInt(km, 10);
+  const invalid = km !== "" && !isNaN(kmNum) && kmActual && kmNum < kmActual;
+  return (
+    <Modal title="Kilometraje actual">
+      <Field label="Kilómetros" required hint={kmActual ? `Último registrado: ${kmActual} km` : null}>
+        <TextInput type="number" inputMode="numeric" value={km} alert={invalid} onChange={e => setKm(e.target.value.replace(/[^0-9]/g, ""))} placeholder="Ej: 154200" />
+      </Field>
+      {invalid && <p className="text-[12.5px] font-bold text-[#B91C1C] mt-2">Los km no pueden ser menores a los {kmActual} km ya registrados.</p>}
+      <Button className="w-full mt-5" disabled={!km || invalid} onClick={onContinue}>Continuar</Button>
+    </Modal>
+  );
+}
+
+function AuditoriaForm({ user, clienteId, equipo, cfg, onCancel, onGenerarInstructivo }) {
+  const [frioConfirmado, setFrioConfirmado] = useState(false);
+  const [km, setKm] = useState(equipo.kilometros || "");
+  const [kmSet, setKmSet] = useState(false);
+  const axleCfg = axleConfigFor(equipo);
+  const allPositions = axleCfg.rows.flatMap(r => r.positions);
+  const [posData, setPosData] = useState({});
+  const [editingPos, setEditingPos] = useState(null);
+  const [generando, setGenerando] = useState(false);
+  const startedAt = useRef(Date.now());
+
+  function abrirPosicion(p) { setEditingPos(p); }
+
+  function guardarPosicion(p, data) {
+    const ev = evaluarPosicion(axleCfg, cfg, p, equipo.tipo, data);
+    setPosData(s => ({ ...s, [p]: { ...data, posicion: p, status: ev.status, minMM: ev.minMM, motivos: ev.motivos } }));
+    setEditingPos(null);
+  }
+
+  const completas = allPositions.filter(p => posData[p] && posData[p].numero_fuego).length;
+  const todasCompletas = completas === allPositions.length;
+
+  if (!frioConfirmado) {
+    return (
+      <Modal title="Antes de empezar">
+        <p className="text-[14px] text-[#374151] mb-5">Las presiones de aire deben controlarse en frío. ¿Confirmás que los neumáticos están fríos?</p>
+        <div className="flex gap-3">
+          <Button variant="subtle" className="flex-1" onClick={onCancel}>Cancelar</Button>
+          <Button className="flex-1" onClick={() => setFrioConfirmado(true)}>Confirmar</Button>
+        </div>
+      </Modal>
+    );
+  }
+  if (!kmSet) {
+    return <KmModal kmActual={equipo.kilometros} km={km} setKm={setKm} onContinue={() => setKmSet(true)} />;
+  }
+
+  return (
+    <div className="min-h-screen pb-40 px-5 pt-14 safe-top">
+      <div className="flex items-center gap-3 mb-1">
+        <button onClick={onCancel} className="w-9 h-9 rounded-full bg-[#F3F4F6] flex items-center justify-center"><Icon.back width="18" height="18" /></button>
+        <div>
+          <h1 className="text-[20px] font-extrabold">Auditoría · {equipo.patente}</h1>
+          <p className="text-[12.5px] text-muted">{equipo.tipo === "SEMI" ? "Semirremolque" : `Tracto ${equipo.configuracion_ejes}`} · {axleCfg.total} posiciones</p>
+        </div>
+      </div>
+
+      <Card className="mt-6 mb-4">
+        <p className="text-[13px] mb-4"><span className="font-bold">{equipo.numero_interno ? equipo.numero_interno + " · " : ""}{equipo.patente}</span> <span className="text-muted">· {equipo.configuracion_ejes || "semi"} · Interno {equipo.numero_interno || "-"}</span></p>
+        <AxleMap cfg={axleCfg} posData={posData} selectedPos={editingPos} onTap={abrirPosicion} />
+      </Card>
+
+      <p className="text-[12.5px] text-muted px-1">{completas}/{allPositions.length} posiciones cargadas</p>
+
+      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-bd p-4 safe-bottom">
+        <Button className="w-full" disabled={!todasCompletas || generando}
+          onClick={async () => { setGenerando(true); try { await onGenerarInstructivo(posData, axleCfg, km, startedAt.current); } catch (e) { setGenerando(false); } }}>
+          {generando ? <span className="spinner" /> : "Generar Instructivo"}
+        </Button>
+      </div>
+
+      {editingPos != null && (
+        <PosicionModal
+          pos={editingPos} equipo={equipo} cfg={cfg} axleCfg={axleCfg}
+          existing={posData[editingPos]}
+          onClose={() => setEditingPos(null)}
+          onSave={(data) => guardarPosicion(editingPos, data)}
+        />
+      )}
+    </div>
+  );
+}
+
+function PosicionModal({ pos, equipo, cfg, axleCfg, existing, onClose, onSave }) {
+  const sugerido = generarFuegoLaPortada(equipo.numero_interno, pos, todayISO());
+  const [form, setForm] = useState(() => existing || { numero_fuego: sugerido, marca: "", medida: "", psi: "", mm_borde_izq: "", mm_centro: "", mm_borde_der: "" });
+  const ev = evaluarPosicion(axleCfg, cfg, pos, equipo.tipo, form);
+  const mmAlert = ["mm_borde_izq", "mm_centro", "mm_borde_der"].some(k => form[k] !== "" && parseFloat(form[k]) < ev.mmMin);
+  const mmWarn = ["mm_borde_izq", "mm_centro", "mm_borde_der"].some(k => form[k] !== "" && parseFloat(form[k]) < ev.mmAmarillo);
+  const psiVal = parseFloat(form.psi);
+  const psiAlert = form.psi !== "" && Math.abs(psiVal - ev.psiObjetivo) > (ev.psiObjetivo * cfg.psi_tolerancia_pct / 100) * 2;
+  const psiWarn = form.psi !== "" && Math.abs(psiVal - ev.psiObjetivo) > (ev.psiObjetivo * cfg.psi_tolerancia_pct / 100);
+
+  return (
+    <Modal title={`Posición P${pos}`} onClose={onClose}>
+      <div className="space-y-4">
+        <Field label="N° de fuego" required hint="Sugerido automáticamente, podés modificarlo (solo números)">
+          <TextInput inputMode="numeric" value={form.numero_fuego} onChange={e => setForm(f => ({ ...f, numero_fuego: e.target.value.replace(/[^0-9]/g, "") }))} className="font-extrabold" />
+        </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Marca"><MarcaSelect value={form.marca} onChange={v => setForm(f => ({ ...f, marca: v }))} /></Field>
+          <Field label="Medida"><TextInput placeholder="295/80R22.5" value={form.medida} onChange={e => setForm(f => ({ ...f, medida: e.target.value }))} /></Field>
+        </div>
+        <Field label="PSI" required>
+          <TextInput type="number" inputMode="numeric" value={form.psi} alert={psiAlert} warn={psiWarn}
+            onChange={e => setForm(f => ({ ...f, psi: e.target.value }))} placeholder={`Objetivo ${ev.psiObjetivo}`} />
+        </Field>
+        <div className="grid grid-cols-3 gap-2">
+          <Field label="MM izq" required><TextInput type="number" step="0.1" value={form.mm_borde_izq} alert={form.mm_borde_izq !== "" && parseFloat(form.mm_borde_izq) < ev.mmMin} warn={form.mm_borde_izq !== "" && parseFloat(form.mm_borde_izq) < ev.mmAmarillo} onChange={e => setForm(f => ({ ...f, mm_borde_izq: e.target.value }))} /></Field>
+          <Field label="MM centro" required><TextInput type="number" step="0.1" value={form.mm_centro} alert={form.mm_centro !== "" && parseFloat(form.mm_centro) < ev.mmMin} warn={form.mm_centro !== "" && parseFloat(form.mm_centro) < ev.mmAmarillo} onChange={e => setForm(f => ({ ...f, mm_centro: e.target.value }))} /></Field>
+          <Field label="MM der" required><TextInput type="number" step="0.1" value={form.mm_borde_der} alert={form.mm_borde_der !== "" && parseFloat(form.mm_borde_der) < ev.mmMin} warn={form.mm_borde_der !== "" && parseFloat(form.mm_borde_der) < ev.mmAmarillo} onChange={e => setForm(f => ({ ...f, mm_borde_der: e.target.value }))} /></Field>
+        </div>
+        {(mmAlert || psiAlert) && <p className="text-[12.5px] font-bold text-[#B91C1C]">⚠ Valor por debajo del mínimo permitido</p>}
+        {!mmAlert && !psiAlert && (mmWarn || psiWarn) && <p className="text-[12.5px] font-bold text-[#92400E]">⚠ Cerca del límite recomendado</p>}
+        <Button className="w-full" disabled={!form.numero_fuego || form.psi === "" || form.mm_borde_izq === "" || form.mm_centro === "" || form.mm_borde_der === ""}
+          onClick={() => onSave(form)}>Guardar posición</Button>
+      </div>
+    </Modal>
+  );
+}
+
+/* =====================================================================
+   PANTALLA 5 - INSTRUCTIVO
+===================================================================== */
+function Instructivo({ equipo, axleCfg, posData, recsInfo, checklist, setChecklist, discrepancias, onContinuar, onCerrar }) {
+  const [nuevaTarea, setNuevaTarea] = useState("");
+  const sistemaTotal = checklist.filter(c => !c.extra).length;
+  const cumplidas = checklist.filter(c => !c.extra && c.done).length;
+  const extra = checklist.filter(c => c.extra).length;
+  const pct = sistemaTotal ? Math.round((cumplidas / sistemaTotal) * 100) : 100;
+
+  function toggle(id) { setChecklist(cs => cs.map(c => c.id === id ? { ...c, done: !c.done } : c)); }
+  function agregar() {
+    if (!nuevaTarea.trim()) return;
+    setChecklist(cs => [...cs, { id: uuid(), texto: nuevaTarea.trim(), done: false, extra: true }]);
+    setNuevaTarea("");
+  }
+
+  return (
+    <div className="min-h-screen pb-8 px-5 pt-14 safe-top">
+      <h1 className="text-[20px] font-extrabold mb-1">Instructivo · {equipo.patente}</h1>
+      <p className="text-[12.5px] text-muted mb-5">Revisá el mapa y marcá las tareas cumplidas</p>
+
+      <Card className="mb-4">
+        <AxleMap cfg={axleCfg} posData={posData} selectedPos={null} onTap={() => {}} />
+        <div className="flex items-center gap-4 mt-5 pt-4 border-t border-bd">
+          {[["#D1D5DB", "OK"], ["#F59E0B", "Atención"], ["#EF4444", "Alerta"]].map(([c, l]) => (
+            <div key={l} className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full" style={{ border: `2px solid ${c}` }} /><span className="text-[11.5px] text-sub">{l}</span></div>
+          ))}
+        </div>
+      </Card>
+
+      <div className="flex items-center justify-between mb-2">
+        <p className="font-bold text-[15px]">Recomendaciones</p>
+        <span className="text-[12.5px] font-bold text-muted">{pct}% cumplido</span>
+      </div>
+      <div className="space-y-2 mb-3">
+        {checklist.map(c => (
+          <button key={c.id} onClick={() => toggle(c.id)} className="w-full text-left bg-white rounded-2xl border border-bd shadow-card px-4 py-3 flex items-center gap-3">
+            <span className={cx("w-6 h-6 rounded-lg flex items-center justify-center shrink-0", c.done ? "bg-ink" : "bg-white border border-[#D1D5DB]")}>
+              {c.done && <Icon.check width="14" height="14" className="text-white" />}
+            </span>
+            <span className={cx("text-[14px] font-semibold flex-1", c.done && "strike")}>{c.texto}</span>
+            {c.extra && <Icon.pencil width="15" height="15" className="text-muted shrink-0" />}
+          </button>
+        ))}
+      </div>
+      <div className="flex gap-2 mb-6">
+        <TextInput placeholder="Agregar tarea personalizada" value={nuevaTarea} onChange={e => setNuevaTarea(e.target.value)} onKeyDown={e => { if (e.key === "Enter") agregar(); }} />
+        <Button variant="subtle" onClick={agregar}>+ Agregar</Button>
+      </div>
+
+      <p className="text-[12.5px] text-muted mb-6">Recomendadas: {sistemaTotal} · Cumplidas: {cumplidas} · Extra agregadas: {extra}</p>
+
+      {discrepancias && discrepancias.length > 0 && (
+        <div className="bg-[#FEE2E2] rounded-2xl p-4 mb-6">
+          <p className="font-extrabold text-[15px] text-[#B91C1C] mb-3">⚠ Neumáticos que no coinciden</p>
+          <div className="space-y-2">
+            {discrepancias.map((d, i) => (
+              <div key={i} className="bg-white rounded-xl px-3 py-2 border border-[#FCA5A5]">
+                <p className="text-[13px] font-semibold text-[#7F1D1D]">
+                  Posición {d.posicion}: {CAMPO_LABELS[d.campo] || d.campo} registrado {d.valor_sistema == null ? "sin registro" : d.valor_sistema}, mecánico encontró {d.valor_mecanico}
+                </p>
+              </div>
+            ))}
+          </div>
+          <p className="text-[12px] text-[#92400E] mt-3 font-semibold">Pendiente de aprobación por administrador</p>
+        </div>
+      )}
+
+      <div className="space-y-3">
+        <Button className="w-full" onClick={() => onContinuar({ pct, cumplidas, sistemaTotal, extra })}>Continuar a hoja de cambio</Button>
+        <Button variant="ghost" className="w-full" onClick={() => onCerrar({ pct, cumplidas, sistemaTotal, extra })}>Cerrar sin cambios</Button>
+      </div>
+    </div>
+  );
+}
+
+/* =====================================================================
+   PANTALLAS 6-7 - HOJA DE CAMBIO
+   Interacción: arrastre real con Pointer Events. Los 3 botones de
+   "Entrada" y cada neumático montado son fuentes de arrastre; un ghost
+   con forma de neumático sigue el dedo/cursor. Soltar sobre una posición
+   vacía monta (o abre el buscador si es tránsito); soltar un neumático
+   montado sobre otra posición del mismo grupo de rotación la rota.
+   Un tap corto (sin arrastre) sobre un neumático montado solo abre el
+   modal de información/intervenciones.
+===================================================================== */
+function BajaModal({ pos, fuego, onClose, onConfirm }) {
+  const [sel, setSel] = useState("desgaste_normal");
+  return (
+    <Modal title="Motivo de baja" onClose={onClose}>
+      <p className="text-[13.5px] text-sub mb-4">Neumático <span className="font-bold text-ink">{fuego}</span> · Posición P{pos}</p>
+      <div className="space-y-2 mb-5">
+        {BAJA_MOTIVOS.map(m => (
+          <button key={m.slug} type="button" onClick={() => setSel(m.slug)}
+            className={cx("w-full text-left rounded-2xl border px-4 py-3 flex items-center gap-3", sel === m.slug ? "border-ink bg-[#F3F4F6]" : "border-bd bg-white")}>
+            <span className={cx("w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0", sel === m.slug ? "border-ink" : "border-[#D1D5DB]")}>
+              {sel === m.slug && <span className="w-2.5 h-2.5 rounded-full bg-ink" />}
+            </span>
+            <span className="text-[14px] font-semibold">{m.label}</span>
+          </button>
+        ))}
+      </div>
+      <Button variant="danger" className="w-full" onClick={() => onConfirm(sel)}>Confirmar baja</Button>
+    </Modal>
+  );
+}
+function InstructivoPendienteModal({ pendiente, onUsar, onLimpia }) {
+  const fecha = pendiente.auditorias ? pendiente.auditorias.fecha : null;
+  const pend = pendiente.tareas_pendientes != null ? pendiente.tareas_pendientes : (pendiente.total_tareas || 0);
+  return (
+    <Modal title="Instructivo pendiente">
+      <p className="text-[14px] text-[#374151] mb-5">
+        Este equipo tiene un instructivo pendiente de la auditoría del <span className="font-bold">{fecha ? formatDateLong(fecha) : "—"}</span> con <span className="font-bold">{pend}</span> tarea{pend !== 1 ? "s" : ""} sin completar. ¿Querés trabajar sobre ese instructivo?
+      </p>
+      <div className="space-y-3">
+        <Button className="w-full" onClick={onUsar}>Sí, usar ese instructivo</Button>
+        <Button variant="ghost" className="w-full" onClick={onLimpia}>No, abrir hoja limpia</Button>
+      </div>
+    </Modal>
+  );
+}
+
+function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, checklistInicial, kmInicial, recetaIdInicial, pendiente, onFinish, onCancel }) {
+  const [km, setKm] = useState(kmInicial || equipo.kilometros || "");
+  const [kmSet, setKmSet] = useState(!!kmInicial);
+  const [posData, setPosData] = useState(() => ({ ...posDataInicial }));
+  const [checklist, setChecklist] = useState(checklistInicial);
+  const [nuevaTarea, setNuevaTarea] = useState("");
+  const [infoPos, setInfoPos] = useState(null);
+  const [montaje, setMontaje] = useState(null); // { tipo, pos }
+  const [bajaSel, setBajaSel] = useState(null); // { pos }
+  const [confirmDlg, setConfirmDlg] = useState(null); // { title, desc, onConfirm }
+  const [ghost, setGhost] = useState(null); // { x, y }
+  const [pushToast, toastNode] = useToasts();
+  // Instructivo pendiente (solo entrada directa a la hoja, no viniendo de auditoria):
+  // null = ya resuelto / no hay; objeto = falta que el mecanico elija.
+  const [pendienteDlg, setPendienteDlg] = useState(pendiente || null);
+  const recetaId = useRef(recetaIdInicial || null);
+  const startedAt = useRef(Date.now());
+  const entra = useRef([]);
+  const sale = useRef([]);
+  const rotaciones = useRef([]);
+  const intervenciones = useRef([]);
+  const dragRef = useRef(null);
+  const [saving, setSaving] = useState(false);
+
+  function registrarIntervencion(tipo, pos, extra) {
+    intervenciones.current.push({
+      id: uuid(), equipo_id: equipo.id_equipo, mecanico_id: user.id, cliente_id: clienteId,
+      fecha: todayISO(), tipo, posicion: pos, numero_fuego: posData[pos] ? posData[pos].numero_fuego : null,
+      psi_nuevo: extra && extra.psi_nuevo != null ? extra.psi_nuevo : null,
+      observaciones: (extra && extra.observaciones) || null, foto_url: (extra && extra.foto_url) || null,
+      timestamp_inicio: (extra && extra.timestamp_inicio) || null, timestamp_fin: (extra && extra.timestamp_fin) || null
+    });
+  }
+
+  function ejecutarSalida(pos, motivo) {
+    const d = posData[pos];
+    // Baja: pide motivo con radio buttons (modal aparte). Transito/reparacion: confirmacion directa.
+    if (motivo === "baja") { setBajaSel({ pos }); return; }
+    const label = motivo === "transito" ? "tránsito" : "reparación";
+    setConfirmDlg({
+      title: "Confirmar salida",
+      desc: `¿Enviar el neumático ${d.numero_fuego} (P${pos}) a ${label}?`,
+      onConfirm: () => {
+        sale.current.push({ numero_fuego: d.numero_fuego, posicion: pos, milimetros: d.minMM || null, psi: d.psi || null, motivo, motivo_salida: motivo, origen_mov: motivo });
+        setPosData(s => { const n = { ...s }; delete n[pos]; return n; });
+        pushToast("✓ Salida registrada");
+        setConfirmDlg(null); setInfoPos(null);
+      }
+    });
+  }
+  function confirmarBaja(pos, reason) {
+    const d = posData[pos];
+    sale.current.push({ numero_fuego: d.numero_fuego, posicion: pos, milimetros: d.minMM || null, psi: d.psi || null, motivo: "baja", motivo_salida: reason, origen_mov: "baja_" + reason });
+    setPosData(s => { const n = { ...s }; delete n[pos]; return n; });
+    pushToast("✓ Baja registrada");
+    setBajaSel(null); setInfoPos(null);
+  }
+
+  function montarNeumatico(pos, data, tipo) {
+    setPosData(s => ({ ...s, [pos]: { ...data, posicion: pos, status: "ok", minMM: data.mm ? parseFloat(data.mm) : null } }));
+    entra.current.push({ numero_fuego: data.numero_fuego, posicion: pos, milimetros: data.mm ? parseFloat(data.mm) : null, psi: data.psi ? parseInt(data.psi, 10) : null, estado: tipo });
+    if (tipo === "nuevo") registrarIntervencion("checkpoint", pos, { foto_url: data.fotoUrl, observaciones: "Montaje de neumático nuevo, torqueado y checkpoint confirmado" });
+    pushToast("✓ Montaje registrado");
+    setMontaje(null);
+  }
+
+  function confirmarRotacion(origen, destino) {
+    const grupo = axleCfg.groups.find(g => g.includes(origen));
+    if (!grupo || !grupo.includes(destino)) {
+      if (navigator.vibrate) navigator.vibrate(150);
+      pushToast("✕ Movimiento no permitido entre esos ejes");
+      return;
+    }
+    // Ejes traccionales (M, banda caluga) tienen sentido de giro obligatorio:
+    // solo pueden rotar dentro de su mismo lado (izq/der), nunca cruzando.
+    // Direccionales (D) y libres/flotantes (T) no tienen esta restriccion.
+    if (ejeTipoDePosicion(axleCfg, origen) === "M" && ladoDePosicion(axleCfg, origen) !== ladoDePosicion(axleCfg, destino)) {
+      if (navigator.vibrate) navigator.vibrate(150);
+      pushToast("✕ No se puede cruzar de lado: se pierde el sentido de giro");
+      return;
+    }
+    const destFuego = posData[destino] ? posData[destino].numero_fuego : null;
+    setConfirmDlg({
+      title: "Confirmar rotación",
+      desc: destFuego ? `¿Intercambiar el neumático de P${origen} con el de P${destino}?` : `¿Mover el neumático de P${origen} a la posición P${destino}?`,
+      onConfirm: () => {
+        const a = posData[origen], b = posData[destino];
+        // Registrar la rotacion para persistirla (4 filas de cambio_detalle si es
+        // intercambio, 2 si es mover a posicion vacia). No cambia inventario.
+        rotaciones.current.push({
+          origen, destino,
+          a: { numero_fuego: a.numero_fuego, mm: a.minMM != null ? a.minMM : null, psi: a.psi || null },
+          b: b ? { numero_fuego: b.numero_fuego, mm: b.minMM != null ? b.minMM : null, psi: b.psi || null } : null
+        });
+        setPosData(s => {
+          const next = { ...s };
+          const na = next[origen], nb = next[destino];
+          if (nb) next[origen] = { ...nb, posicion: origen }; else delete next[origen];
+          next[destino] = { ...na, posicion: destino };
+          return next;
+        });
+        pushToast("✓ Rotación registrada");
+        setConfirmDlg(null);
+      }
+    });
+  }
+
+  function resolverDrop(clientX, clientY) {
+    const el = document.elementFromPoint(clientX, clientY);
+    const salidaEl = el && el.closest("[data-salida]");
+    if (salidaEl) return { salida: salidaEl.getAttribute("data-salida") };
+    const posEl = el && el.closest("[data-pos]");
+    return posEl ? { pos: parseInt(posEl.getAttribute("data-pos"), 10) } : null;
+  }
+
+  function onPointerDownTire(pos, e) {
+    if (!posData[pos]) return;
+    dragRef.current = { sub: "rotate", payload: pos, startX: e.clientX, startY: e.clientY, moved: false };
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) {}
+  }
+  function onPointerDownEntrada(tipo, e) {
+    dragRef.current = { sub: "mount", payload: tipo, startX: e.clientX, startY: e.clientY, moved: false };
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) {}
+  }
+  function onDragMove(e) {
+    const d = dragRef.current;
+    if (!d) return;
+    const dx = e.clientX - d.startX, dy = e.clientY - d.startY;
+    if (!d.moved && Math.hypot(dx, dy) > 10) d.moved = true;
+    if (d.moved) {
+      e.preventDefault();
+      setGhost({ x: e.clientX, y: e.clientY });
+      if (e.clientY < 90) window.scrollBy(0, -14);
+      else if (e.clientY > window.innerHeight - 90) window.scrollBy(0, 14);
+    }
+  }
+  function onDragEnd(e) {
+    const d = dragRef.current;
+    dragRef.current = null;
+    setGhost(null);
+    if (!d) return;
+    if (!d.moved) {
+      if (d.sub === "rotate") setInfoPos(d.payload);
+      else pushToast("Arrastrá este botón hasta una posición vacía del mapa");
+      return;
+    }
+    const dest = resolverDrop(e.clientX, e.clientY);
+    if (d.sub === "mount") {
+      if (dest && dest.pos != null && !posData[dest.pos]) setMontaje({ tipo: d.payload, pos: dest.pos });
+      else pushToast("Soltá sobre una posición vacía del mapa");
+    } else if (d.sub === "rotate") {
+      if (!dest) return;
+      if (dest.salida) { ejecutarSalida(d.payload, dest.salida); return; }
+      if (dest.pos == null || dest.pos === d.payload) return;
+      confirmarRotacion(d.payload, dest.pos);
+    }
+  }
+
+  function agregarTarea() {
+    if (!nuevaTarea.trim()) return;
+    setChecklist(cs => [...cs, { id: uuid(), texto: nuevaTarea.trim(), done: false, extra: true }]);
+    setNuevaTarea("");
+  }
+
+  async function finalizar() {
+    setSaving(true);
+    const numero_cambio = await siguienteNumeroCambio(clienteId, cfg).catch(() => String(Date.now()).slice(-6));
+    const sistemaTotal = checklist.filter(c => !c.extra).length;
+    const cumplidas = checklist.filter(c => !c.extra && c.done).length;
+    const pendientesTareas = sistemaTotal - cumplidas;
+    // Cierre del instructivo: parcial si quedan tareas, completado si no. Sin alerta.
+    const recetaUpdate = recetaId.current ? {
+      id: recetaId.current, estado: pendientesTareas > 0 ? "parcial" : "completado",
+      tareas_cumplidas: cumplidas, tareas_pendientes: pendientesTareas
+    } : null;
+    const cab = {
+      id_cambio: uuid(), equipo_id: equipo.id_equipo, bultero_id: user.id, cliente_id: clienteId,
+      fecha: todayISO(), kilometraje: parseInt(km, 10) || equipo.kilometros,
+      hora_ingreso: new Date(startedAt.current).toTimeString().slice(0, 8), hora_salida: nowHM(),
+      psi_regulados: intervenciones.current.some(i => i.tipo === "regulacion_psi"),
+      ruedas_torqueadas: intervenciones.current.filter(i => i.tipo === "retorqueo" || i.tipo === "checkpoint").length,
+      observaciones: `Instructivo seguido: ${sistemaTotal ? Math.round((cumplidas / sistemaTotal) * 100) : 100}%`,
+      numero_cambio,
+      sale: sale.current, entra: entra.current, rotaciones: rotaciones.current, intervenciones: intervenciones.current,
+      recetaUpdate
+    };
+    pushQueue({ id: uuid(), tipo: "cambio", clienteId, ts: Date.now(), data: cab });
+    syncQueue();
+    setSaving(false);
+    onFinish();
+  }
+
+  // Instructivo pendiente: elegir usar el existente (carga el checklist) o abrir limpia.
+  if (pendienteDlg) {
+    return (
+      <InstructivoPendienteModal pendiente={pendienteDlg}
+        onUsar={async () => {
+          const pa = pendienteDlg.posiciones_alerta || {};
+          const recs = Array.isArray(pa.recomendaciones) ? pa.recomendaciones : [];
+          const extras = Array.isArray(pa.tareas_extra) ? pa.tareas_extra : (Array.isArray(pendienteDlg.tareas_extra) ? pendienteDlg.tareas_extra : []);
+          const cl = [
+            ...recs.map(r => ({ id: r.id || uuid(), texto: r.texto, done: !!r.done, extra: false })),
+            ...extras.map(t => ({ id: uuid(), texto: t.texto, done: !!t.done, extra: true }))
+          ];
+          setChecklist(cl);
+          recetaId.current = pendienteDlg.id;
+          try { await sb.from("auditorias_receta").update({ estado: "en_proceso" }).eq("id", pendienteDlg.id); } catch (e) { console.error(e); }
+          setPendienteDlg(null);
+        }}
+        onLimpia={async () => {
+          try { await sb.from("auditorias_receta").update({ estado: "sin_cambio" }).eq("id", pendienteDlg.id); } catch (e) { console.error(e); }
+          recetaId.current = null;
+          setPendienteDlg(null);
+        }} />
+    );
+  }
+
+  if (!kmSet) {
+    return <KmModal kmActual={equipo.kilometros} km={km} setKm={setKm} onContinue={async () => {
+      // Entrada directa (sin venir de auditoria): persistir los km en el equipo.
+      try { await sb.from("equipos").update({ kilometros: parseInt(km, 10) }).eq("id_equipo", equipo.id_equipo); } catch (e) { console.error(e); }
+      setKmSet(true);
+    }} />;
+  }
+
+  return (
+    <div className="min-h-screen pb-[260px] px-5 pt-14 safe-top">
+      {toastNode}
+      {ghost && <GhostTire x={ghost.x} y={ghost.y} />}
+      <div className="flex items-center gap-3 mb-4">
+        <button onClick={onCancel} className="w-9 h-9 rounded-full bg-[#F3F4F6] flex items-center justify-center"><Icon.back width="18" height="18" /></button>
+        <div>
+          <h1 className="text-[20px] font-extrabold">Hoja de cambio · {equipo.patente}</h1>
+          <p className="text-[12.5px] text-muted">Tocá un neumático para verlo, o arrastralo para rotarlo o sacarlo</p>
+        </div>
+      </div>
+
+      <Card className="mb-4">
+        <AxleMap cfg={axleCfg} posData={posData} selectedPos={null} onTap={() => {}}
+          getDragHandlers={(p) => posData[p] ? { onPointerDown: (e) => onPointerDownTire(p, e), onPointerMove: onDragMove, onPointerUp: onDragEnd, onPointerCancel: onDragEnd } : undefined} />
+      </Card>
+
+      <p className="font-bold text-[15px] mb-2">Instructivo</p>
+      <div className="space-y-2 mb-3">
+        {checklist.map(c => (
+          <button key={c.id} onClick={() => setChecklist(cs => cs.map(x => x.id === c.id ? { ...x, done: !x.done } : x))} className="w-full text-left bg-white rounded-2xl border border-bd shadow-card px-4 py-3 flex items-center gap-3">
+            <span className={cx("w-6 h-6 rounded-lg flex items-center justify-center shrink-0", c.done ? "bg-ink" : "bg-white border border-[#D1D5DB]")}>
+              {c.done && <Icon.check width="14" height="14" className="text-white" />}
+            </span>
+            <span className={cx("text-[14px] font-semibold flex-1", c.done && "strike")}>{c.texto}</span>
+            {c.extra && <Icon.pencil width="15" height="15" className="text-muted shrink-0" />}
+          </button>
+        ))}
+      </div>
+      <div className="flex gap-2 mb-6">
+        <TextInput placeholder="Agregar tarea personalizada" value={nuevaTarea} onChange={e => setNuevaTarea(e.target.value)} onKeyDown={e => { if (e.key === "Enter") agregarTarea(); }} />
+        <Button variant="subtle" onClick={agregarTarea}>+ Agregar</Button>
+      </div>
+
+      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-bd p-4 safe-bottom space-y-3">
+        <Button className="w-full" disabled={saving} onClick={finalizar}>{saving ? <span className="spinner" /> : "Finalizar hoja de cambio"}</Button>
+        <div>
+          <p className="text-[11.5px] font-bold text-muted tracking-wide uppercase mb-1.5">Entrada · arrastrá al mapa</p>
+          <div className="grid grid-cols-3 gap-2">
+            <button onPointerDown={(e) => onPointerDownEntrada("nuevo", e)} onPointerMove={onDragMove} onPointerUp={onDragEnd} onPointerCancel={onDragEnd}
+              style={{ touchAction: "none" }} className="h-12 rounded-2xl text-[13.5px] font-bold bg-ink text-white">Nuevo</button>
+            <button onPointerDown={(e) => onPointerDownEntrada("transito", e)} onPointerMove={onDragMove} onPointerUp={onDragEnd} onPointerCancel={onDragEnd}
+              style={{ touchAction: "none" }} className="h-12 rounded-2xl text-[13.5px] font-bold bg-[#F3F4F6]">Tránsito</button>
+            <button onPointerDown={(e) => onPointerDownEntrada("recauchado", e)} onPointerMove={onDragMove} onPointerUp={onDragEnd} onPointerCancel={onDragEnd}
+              style={{ touchAction: "none" }} className="h-12 rounded-2xl text-[13.5px] font-bold bg-[#F3F4F6]">Recauchado</button>
+          </div>
+        </div>
+        <div>
+          <p className="text-[11.5px] font-bold text-muted tracking-wide uppercase mb-1.5">Salida · arrastrá el neumático acá</p>
+          <div className="grid grid-cols-3 gap-2">
+            <div data-salida="transito" className="h-12 rounded-2xl text-[13.5px] font-bold bg-[#F3F4F6] flex items-center justify-center">Tránsito</div>
+            <div data-salida="reparacion" className="h-12 rounded-2xl text-[13.5px] font-bold bg-[#F3F4F6] flex items-center justify-center">Reparación</div>
+            <div data-salida="baja" className="h-12 rounded-2xl text-[13.5px] font-bold bg-[#FEE2E2] text-[#B91C1C] flex items-center justify-center gap-1"><Icon.trash width="14" height="14" />Baja</div>
+          </div>
+        </div>
+      </div>
+
+      {infoPos != null && posData[infoPos] && (
+        <TireInfoModal pos={infoPos} data={posData[infoPos]} cfg={cfg} equipo={equipo} axleCfg={axleCfg}
+          onClose={() => setInfoPos(null)}
+          onGirar={() => {
+            setConfirmDlg({
+              title: "Confirmar giro de neumático",
+              desc: `¿Registrar el giro (inversión de cara) del neumático en P${infoPos} (${posData[infoPos].numero_fuego})?`,
+              onConfirm: () => { registrarIntervencion("giro_neumatico", infoPos, {}); pushToast("✓ Giro registrado"); setConfirmDlg(null); setInfoPos(null); }
+            });
+          }}
+          onRegularPsi={(nuevoPsi) => {
+            setConfirmDlg({
+              title: "Confirmar regulación de PSI",
+              desc: `Ajustar P${infoPos} (${posData[infoPos].numero_fuego}) a ${nuevoPsi} psi.`,
+              onConfirm: () => {
+                const ahora = new Date().toISOString();
+                setPosData(s => ({ ...s, [infoPos]: { ...s[infoPos], psi: nuevoPsi } }));
+                registrarIntervencion("regulacion_psi", infoPos, { psi_nuevo: parseInt(nuevoPsi, 10), timestamp_inicio: ahora, timestamp_fin: ahora });
+                const ev = evaluarPosicion(axleCfg, cfg, infoPos, equipo.tipo, { ...posData[infoPos], psi: nuevoPsi });
+                if (ev.status !== "ok") pushQueue({ id: uuid(), tipo: "alerta", clienteId, ts: Date.now(), data: { id: uuid(), cliente_id: clienteId, equipo_id: equipo.id_equipo, mecanico_id: user.id, tipo: parseInt(nuevoPsi, 10) < ev.psiObjetivo ? "psi_bajo" : "psi_alto", severidad: ev.status === "alerta" ? "rojo" : "amarillo", titulo: "PSI fuera de rango tras regulación", descripcion: `P${infoPos} quedó en ${nuevoPsi} psi (objetivo ${ev.psiObjetivo})`, posicion: infoPos, numero_fuego: posData[infoPos].numero_fuego, leida_mecanico: false, leida_admin: false, leida_superadmin: false } });
+                pushToast("✓ Regulación guardada");
+                setConfirmDlg(null); setInfoPos(null);
+              }
+            });
+          }}
+          onRetorqueo={() => {
+            setConfirmDlg({
+              title: "Confirmar retorqueo",
+              desc: `¿Registrar retorqueo en P${infoPos} (${posData[infoPos].numero_fuego})? Se confirma que se tomó la foto de checkpoint.`,
+              onConfirm: () => { registrarIntervencion("retorqueo", infoPos, {}); pushToast("✓ Retorqueo registrado"); setConfirmDlg(null); setInfoPos(null); }
+            });
+          }}
+          onReparacion={() => {
+            setConfirmDlg({
+              title: "Confirmar reparación",
+              desc: `¿Registrar una reparación en P${infoPos} (${posData[infoPos].numero_fuego})?`,
+              onConfirm: () => { registrarIntervencion("reparacion", infoPos, {}); pushToast("✓ Reparación registrada"); setConfirmDlg(null); setInfoPos(null); }
+            });
+          }}
+        />
+      )}
+
+      {montaje && (
+        <MontajeModal tipo={montaje.tipo} pos={montaje.pos} equipo={equipo} clienteId={clienteId}
+          onClose={() => setMontaje(null)}
+          onConfirm={(data) => setConfirmDlg({
+            title: "Confirmar montaje",
+            desc: `¿Montar el neumático ${data.numero_fuego} en la posición P${montaje.pos}?`,
+            onConfirm: () => { montarNeumatico(montaje.pos, data, montaje.tipo); setConfirmDlg(null); }
+          })}
+        />
+      )}
+
+      {bajaSel && posData[bajaSel.pos] && (
+        <BajaModal pos={bajaSel.pos} fuego={posData[bajaSel.pos].numero_fuego}
+          onClose={() => setBajaSel(null)}
+          onConfirm={(reason) => confirmarBaja(bajaSel.pos, reason)} />
+      )}
+
+      {confirmDlg && <Confirm title={confirmDlg.title} desc={confirmDlg.desc} onConfirm={confirmDlg.onConfirm} onCancel={() => setConfirmDlg(null)} />}
+    </div>
+  );
+}
+
+function TireInfoModal({ pos, data, cfg, equipo, axleCfg, onClose, onRegularPsi, onRetorqueo, onReparacion, onGirar }) {
+  const [psiField, setPsiField] = useState(String(data.psi || ""));
+  const [showPsi, setShowPsi] = useState(false);
+  const esDireccional = axleCfg && ejeTipoDePosicion(axleCfg, pos) === "D";
+  return (
+    <Modal title={`Posición P${pos}`} onClose={onClose}>
+      <div className="mb-4">
+        <p className="text-[22px] font-extrabold leading-none">{data.numero_fuego}</p>
+        <p className="text-[13px] text-muted mt-1">{data.marca || "Sin marca"} · {data.medida || "-"}</p>
+        <div className="flex gap-4 mt-3">
+          <div><p className="text-[11px] text-muted font-semibold">PSI actual</p><p className="font-extrabold text-[16px]">{data.psi || "-"}</p></div>
+          <div><p className="text-[11px] text-muted font-semibold">MM</p><p className="font-extrabold text-[16px]">{data.minMM != null ? data.minMM : "-"}</p></div>
+          <div><p className="text-[11px] text-muted font-semibold">Estado</p><Badge color={statusColor(data.status)}>{statusLabel(data.status)}</Badge></div>
+        </div>
+      </div>
+      {showPsi ? (
+        <div className="space-y-3 mb-2">
+          <Field label="Nuevo valor de PSI" required><TextInput type="number" inputMode="numeric" value={psiField} onChange={e => setPsiField(e.target.value)} /></Field>
+          <Button className="w-full" disabled={!psiField} onClick={() => onRegularPsi(parseInt(psiField, 10))}>Guardar regulación</Button>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 gap-2">
+          <Button variant="subtle" onClick={() => setShowPsi(true)}><Icon.gauge width="18" height="18" /> Regulación PSI</Button>
+          <Button variant="subtle" onClick={onRetorqueo}><Icon.wrench width="18" height="18" /> Retorqueo</Button>
+          <Button variant="subtle" onClick={onReparacion}><Icon.bandage width="18" height="18" /> Reparación</Button>
+          {esDireccional && (
+            <Button variant="subtle" onClick={onGirar}><Icon.gauge width="18" height="18" /> Girar neumático (invertir cara)</Button>
+          )}
+          <p className="text-[11.5px] text-muted text-center mt-2">
+            {esDireccional ? "Direccional: girá la cara si hay desgaste irregular, o cerrá esta ventana y arrastralo hasta la otra posición para cambiar de lado." : "Para rotarlo o sacarlo, cerrá esta ventana y arrastralo desde el mapa hasta otra posición o hasta Salida."}
+          </p>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+function MontajeModal({ tipo, pos, equipo, clienteId, onClose, onConfirm }) {
+  const sugerido = tipo === "nuevo" ? generarFuegoLaPortada(equipo.numero_interno, pos, todayISO()) : "";
+  const [fuego, setFuego] = useState(sugerido);
+  const [marca, setMarca] = useState("");
+  const [medida, setMedida] = useState("");
+  const [psi, setPsi] = useState("");
+  const [mm, setMm] = useState("");
+  const [torqueado, setTorqueado] = useState(false);
+  const [fotoUrl, setFotoUrl] = useState(null);
+  const [fotoNombre, setFotoNombre] = useState("");
+  const [subiendoFoto, setSubiendoFoto] = useState(false);
+  const [fotoError, setFotoError] = useState("");
+  const [search, setSearch] = useState("");
+  const [buscando, setBuscando] = useState(tipo === "transito");
+  const [opciones, setOpciones] = useState([]);
+
+  useEffect(() => {
+    if (tipo === "transito") fetchNeumaticosBodega(clienteId, "transito").then(setOpciones).catch(() => setOpciones([]));
+  }, [tipo]);
+
+  const filtradas = opciones.filter(o => {
+    if (!search) return true;
+    const s = search.toLowerCase();
+    return (o.numero_fuego || "").toLowerCase().includes(s) || (o.marca || "").toLowerCase().includes(s) || (o.modelo || "").toLowerCase().includes(s);
+  });
+
+  async function onFotoChange(e) {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    setFotoNombre(file.name); setSubiendoFoto(true); setFotoError(""); setFotoUrl(null);
+    try {
+      const url = await subirFotoCheckpoint(clienteId, pos, file);
+      setFotoUrl(url);
+    } catch (err) {
+      setFotoError("No se pudo subir la foto. Verificá que exista el bucket público 'checkpoints' en Supabase Storage.");
+    } finally {
+      setSubiendoFoto(false);
+    }
+  }
+
+  if (tipo === "transito" && buscando) {
+    return (
+      <Modal title="Montar desde tránsito" onClose={onClose}>
+        <TextInput placeholder="Buscar por N° fuego, marca o modelo" value={search} onChange={e => setSearch(e.target.value)} className="mb-3" />
+        <div className="space-y-2 max-h-72 overflow-y-auto">
+          {filtradas.map(o => (
+            <button key={o.id_neumatico} onClick={() => { setFuego(o.numero_fuego); setMarca(o.marca || ""); setMedida(o.medida || ""); setBuscando(false); }}
+              className="w-full text-left bg-[#F9FAFB] rounded-xl px-3 py-2.5 flex items-center justify-between">
+              <div><p className="font-bold text-[14px]">{o.numero_fuego}</p><p className="text-[12px] text-muted">{o.marca} {o.modelo}</p></div>
+              <span className="text-[12px] text-muted">P{o.posicion_actual || "-"}</span>
+            </button>
+          ))}
+          {filtradas.length === 0 && <p className="text-center text-muted text-sm py-6">No hay neumáticos en tránsito que coincidan.</p>}
+        </div>
+      </Modal>
+    );
+  }
+
+  const titulo = tipo === "nuevo" ? "Montar neumático nuevo" : tipo === "transito" ? "Confirmar montaje" : "Montar recauchado";
+  const disabled = !fuego || psi === "" || mm === "" || (tipo === "nuevo" && (!torqueado || !fotoUrl || subiendoFoto));
+
+  return (
+    <Modal title={titulo} onClose={onClose}>
+      <div className="space-y-4">
+        <Field label="N° de fuego" required hint={tipo === "nuevo" ? "Sugerido automáticamente, podés modificarlo (solo números)" : null}>
+          <TextInput inputMode="numeric" value={fuego} onChange={e => setFuego(e.target.value.replace(/[^0-9]/g, ""))} className="font-extrabold" disabled={tipo === "transito"} />
+        </Field>
+        {tipo !== "transito" && (
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Marca"><MarcaSelect value={marca} onChange={setMarca} /></Field>
+            <Field label="Medida"><TextInput value={medida} onChange={e => setMedida(e.target.value)} /></Field>
+          </div>
+        )}
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="PSI actual" required><TextInput type="number" inputMode="numeric" value={psi} onChange={e => setPsi(e.target.value)} /></Field>
+          <Field label="MM actual" required><TextInput type="number" step="0.1" value={mm} onChange={e => setMm(e.target.value)} /></Field>
+        </div>
+        {tipo === "nuevo" && (
+          <div className="space-y-3">
+            <label className="flex items-center gap-2 text-[13.5px] font-semibold"><input type="checkbox" checked={torqueado} onChange={e => setTorqueado(e.target.checked)} /> Ruedas torqueadas</label>
+            <Field label="Foto de checkpoint" required hint="Obligatoria para completar el montaje">
+              <label className="h-14 px-5 rounded-2xl font-bold text-[15px] bg-ink text-white flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98] transition w-full">
+                <span className="text-[18px]">📷</span> Tomar foto
+                <input type="file" accept="image/*" capture="environment" onChange={onFotoChange} className="hidden" />
+              </label>
+            </Field>
+            {subiendoFoto && <p className="text-[12.5px] text-muted">Subiendo foto...</p>}
+            {fotoUrl && <p className="text-[12.5px] font-bold text-[#15803D]">✓ Foto subida: {fotoNombre}</p>}
+            {fotoError && <p className="text-[12.5px] font-bold text-[#B91C1C]">{fotoError}</p>}
+          </div>
+        )}
+        <Button className="w-full" disabled={disabled} onClick={() => onConfirm({ numero_fuego: fuego, marca, medida, psi, mm, fotoUrl })}>Continuar</Button>
+      </div>
+    </Modal>
+  );
+}
+
+/* =====================================================================
+   PANTALLA 8 - CIERRE DEL DIA
+===================================================================== */
+function CierreDelDia({ user, clienteId, onCerrado }) {
+  const [resumen, setResumen] = useState(null);
+  const [cerrando, setCerrando] = useState(false);
+  const [confirmando, setConfirmando] = useState(false);
+  const [cerrado, setCerrado] = useState(false);
+
+  useEffect(() => {
+    construirResumenJornada(user.id, clienteId, todayISO()).then(({ conteos }) => setResumen(conteos)).catch(() => setResumen(null));
+  }, [clienteId]);
+
+  async function confirmarCierre() {
+    setConfirmando(false);
+    setCerrando(true);
+    try {
+      await cerrarJornadaConResumen({ user, clienteId, fecha: todayISO(), horaCierre: nowHM(), motivoSinCierre: null });
+      localStorage.setItem("jornada_cerrada_hoy", "true");
+      setCerrado(true);
+      if (onCerrado) onCerrado();
+    } catch (e) {
+      console.error("No se pudo cerrar la jornada", e);
+    } finally {
+      setCerrando(false);
+    }
+  }
+
+  if (cerrado) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center px-8 text-center">
+        <div className="w-14 h-14 rounded-2xl bg-[#DCFCE7] flex items-center justify-center mb-5"><Icon.check width="26" height="26" className="text-[#15803D]" /></div>
+        <p className="text-[22px] font-extrabold mb-2">¡Jornada cerrada!</p>
+        <p className="text-[15px] text-sub">Hasta mañana, {user.nombre}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen pb-24 px-5 pt-14 safe-top">
+      <h1 className="text-[30px] font-extrabold mb-6">Cierre del día</h1>
+      {!resumen ? <div className="flex justify-center py-10"><span className="spinner" /></div> : (
+        <>
+          <div className="grid grid-cols-2 gap-3 mb-4">
+            {[["Auditorías", resumen.auditorias_realizadas], ["Cambios", resumen.cambios_realizados], ["Regulaciones PSI", resumen.regulaciones_psi], ["Retorqueos", resumen.retorqueos], ["Rotaciones", resumen.rotaciones], ["Reparaciones", resumen.reparaciones]].map(([l, v]) => (
+              <div key={l} className="bg-[#F9FAFB] rounded-[18px] p-4">
+                <p className="text-[11.5px] font-semibold text-muted mb-1">{l}</p>
+                <p className="text-[22px] font-extrabold">{v}</p>
+              </div>
+            ))}
+          </div>
+          {resumen.pct_receta_promedio != null && (
+            <Card className="mb-6">
+              <p className="text-[13px] font-semibold text-sub mb-1">% promedio de instructivo seguido</p>
+              <p className="text-[26px] font-extrabold">{resumen.pct_receta_promedio}%</p>
+            </Card>
+          )}
+          <Button className="w-full" disabled={cerrando} onClick={() => setConfirmando(true)}>{cerrando ? <span className="spinner" /> : "Cerrar jornada"}</Button>
+        </>
+      )}
+      {confirmando && (
+        <Confirm title="Cerrar jornada" desc="¿Estás seguro que querés cerrar la jornada de hoy?"
+          onConfirm={confirmarCierre} onCancel={() => setConfirmando(false)} />
+      )}
+    </div>
+  );
+}
+
+/* =====================================================================
+   ALERTAS
+===================================================================== */
+function AlertasScreen({ user, clienteId }) {
+  const [remotas, setRemotas] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState("todas");
+  const [equiposMap, setEquiposMap] = useState({});
+  const pendientesCount = useQueueCount();
+
+  useEffect(() => {
+    db.fetchAlertas(clienteId, user.id).then(setRemotas).catch(() => {}).finally(() => setLoading(false));
+  }, [clienteId, user.id, pendientesCount]);
+
+  useEffect(() => {
+    db.fetchEquipos(clienteId).then(eqs => {
+      const map = {};
+      (eqs || []).forEach(e => { map[e.id_equipo] = e.numero_interno ? `${e.numero_interno} · ${e.patente}` : e.patente; });
+      setEquiposMap(map);
+    }).catch(() => {});
+  }, [clienteId]);
+
+  // Alertas propias pendientes de sincronizar (aun en la cola offline) tambien
+  // son del mecanico actual, ya que se generan siempre con mecanico_id=user.id.
+  const pendientes = getQueue().filter(q => q.tipo === "alerta" && q.clienteId === clienteId && q.data.mecanico_id === user.id && q.data.tipo !== "discrepancia_inventario").map(q => ({ ...q.data, __pendiente: true }));
+  const alertas = [...pendientes, ...remotas.filter(r => !pendientes.some(p => p.id === r.id))]
+    .sort((a, b) => (b.creado_en || "").localeCompare(a.creado_en || ""));
+
+  async function marcarLeida(a) {
+    if (a.__pendiente || a.leida_mecanico) return;
+    setRemotas(as => as.map(x => x.id === a.id ? { ...x, leida_mecanico: true } : x));
+    await sb.from("alertas").update({ leida_mecanico: true }).eq("id", a.id);
+    window.dispatchEvent(new Event("mosa-alertas-changed"));
+  }
+
+  const filtradas = alertas.filter(a => filter === "todas" ? true : filter === "noleidas" ? !a.leida_mecanico : true);
+
+  return (
+    <div className="min-h-screen pb-24 px-5 pt-14 safe-top">
+      <h1 className="text-[30px] font-extrabold mb-4">Alertas</h1>
+      <div className="flex gap-2 mb-5">
+        {[["todas", "Todas"], ["noleidas", "No leídas"]].map(([k, l]) => (
+          <button key={k} onClick={() => setFilter(k)} className={cx("px-4 py-2 rounded-full text-[13px] font-bold", filter === k ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{l}</button>
+        ))}
+      </div>
+      {loading && <div className="flex justify-center py-10"><span className="spinner" /></div>}
+      <div className="space-y-3">
+        {filtradas.map(a => (
+          <div key={a.id} className="w-full text-left bg-white rounded-2xl border border-bd shadow-card p-4">
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex-1">
+                <p className="font-bold text-[14.5px]">{a.titulo}</p>
+                <p className="text-[12.5px] text-muted mt-0.5">{a.descripcion}</p>
+              </div>
+              <Badge color={a.severidad === "rojo" ? "red" : a.severidad === "amarillo" ? "amber" : "gray"}>{a.severidad === "rojo" ? "Alerta" : a.severidad === "amarillo" ? "Atención" : "Info"}</Badge>
+            </div>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-[12px] text-muted">
+              {a.equipo_id && <span>{equiposMap[a.equipo_id] || "Equipo"}</span>}
+              {a.posicion != null && <span>P{a.posicion}</span>}
+              {a.creado_en && <span>{(a.creado_en).slice(0, 10)} · {(a.creado_en).slice(11, 16)}</span>}
+            </div>
+            <div className="flex items-center justify-between gap-2 mt-2.5">
+              <div className="flex items-center gap-2">
+                {!a.leida_mecanico && <span className="text-[11px] font-bold text-ink">● No leída</span>}
+                {a.__pendiente && <span className="text-[11px] font-bold text-[#92400E]">Sincronizando...</span>}
+              </div>
+              {!a.leida_mecanico && !a.__pendiente && (
+                <button onClick={() => marcarLeida(a)} className="text-[12px] font-bold text-ink px-3 py-1.5 rounded-full bg-[#F3F4F6]">Marcar como leída</button>
+              )}
+            </div>
+          </div>
+        ))}
+        {!loading && filtradas.length === 0 && <p className="text-center text-muted py-10 text-sm">Sin alertas.</p>}
+      </div>
+    </div>
+  );
+}
+
+/* =====================================================================
+   APP DEL MECANICO
+===================================================================== */
+function MecanicoApp({ user }) {
+  const [clienteId, setClienteId] = useState(null);
+  const [empresaConfirmada, setEmpresaConfirmada] = useState(false);
+  const [checkDone, setCheckDone] = useState(false);
+  const [cfg, setCfg] = useState(DEFAULT_CFG);
+  const [tab, setTab] = useState("inicio");
+  const [flow, setFlow] = useState(null);
+  const [pushToast, toastNode] = useToasts();
+  const alertasNoLeidas = useAlertasNoLeidas(clienteId, user.id);
+  // Bloqueo tras cerrar jornada: solo se levanta con un login nuevo (MecanicoGate
+  // reevalua desde la DB). En esta misma sesion, solo queda accesible Alertas.
+  const [jornadaCerrada, setJornadaCerrada] = useState(() => {
+    const t = getTurno();
+    return localStorage.getItem("jornada_cerrada_hoy") === "true" && !!t && t.fecha === todayISO();
+  });
+
+  useEffect(() => {
+    const turno = getTurno();
+    if (turno && turno.fecha === todayISO()) {
+      setClienteId(turno.clienteId); setEmpresaConfirmada(true); setCheckDone(!!turno.checkDone);
+    }
+  }, []);
+  useEffect(() => { if (clienteId) db.fetchConfig(clienteId).then(setCfg).catch(() => setCfg(getCache(LS.cfg(clienteId), DEFAULT_CFG))); }, [clienteId]);
+
+  if (!empresaConfirmada) {
+    return <SeleccionEmpresa user={user} onConfirm={(cid) => { setClienteId(cid); setEmpresaConfirmada(true); setTurno({ clienteId: cid, fecha: todayISO(), checkDone: false }); }} />;
+  }
+  if (!checkDone) {
+    return <CheckDiario user={user} clienteId={clienteId} onDone={() => setCheckDone(true)} />;
+  }
+
+  let body;
+  if (jornadaCerrada && tab !== "alertas" && tab !== "perfil") {
+    body = (
+      <div className="min-h-screen flex flex-col items-center justify-center px-8 text-center">
+        <div className="w-14 h-14 rounded-2xl bg-[#DCFCE7] flex items-center justify-center mb-5"><Icon.check width="26" height="26" className="text-[#15803D]" /></div>
+        <p className="text-[22px] font-extrabold mb-2">¡Jornada cerrada!</p>
+        <p className="text-[15px] text-sub">Hasta mañana, {user.nombre}</p>
+      </div>
+    );
+  } else if (flow && flow.stage === "accion") {
+    body = (
+      <>
+        <SeleccionEquipo clienteId={clienteId} onPick={(eq) => setFlow({ stage: "accion", equipo: eq })} />
+        <AccionEquipo equipo={flow.equipo} onClose={() => setFlow(null)}
+          onAuditoria={() => setFlow({ stage: "auditoria", equipo: flow.equipo })}
+          onCambio={async () => {
+            const pd = await construirPosDataDesdeEquipo(flow.equipo.id_equipo);
+            let pend = null;
+            try { pend = await buscarInstructivoPendiente(flow.equipo.id_equipo); } catch (e) { console.error("No se pudo buscar instructivo pendiente", e); }
+            setFlow({ stage: "cambio", equipo: flow.equipo, axleCfg: axleConfigFor(flow.equipo), posData: pd, checklist: [], pendiente: pend });
+          }} />
+      </>
+    );
+  } else if (flow && flow.stage === "auditoria") {
+    body = (
+      <AuditoriaForm user={user} clienteId={clienteId} equipo={flow.equipo} cfg={cfg}
+        onCancel={() => setFlow(null)}
+        onGenerarInstructivo={async (posData, axleCfg, km, startedAt) => {
+          const recsInfo = generarRecomendaciones(posData, axleCfg, flow.equipo.tipo, cfg);
+          const checklist = recsInfo.recs.map(r => ({ id: r.id, texto: r.texto, done: false, extra: false }));
+          let discrepanciasNeumaticos = [];
+          try { discrepanciasNeumaticos = await compararNeumaticosAuditoria(clienteId, flow.equipo.id_equipo, posData); }
+          catch (e) { console.error("No se pudo comparar neumáticos contra el sistema", e); }
+          setFlow({ stage: "instructivo", equipo: flow.equipo, posData, axleCfg, km, recsInfo, checklist, discrepanciasNeumaticos });
+        }} />
+    );
+  } else if (flow && flow.stage === "instructivo") {
+    body = (
+      <Instructivo equipo={flow.equipo} axleCfg={flow.axleCfg} posData={flow.posData} recsInfo={flow.recsInfo}
+        checklist={flow.checklist} setChecklist={(fn) => setFlow(f => ({ ...f, checklist: typeof fn === "function" ? fn(f.checklist) : fn }))}
+        discrepancias={flow.discrepanciasNeumaticos}
+        onContinuar={async () => {
+          const res = await construirYGuardarAuditoria({ user, clienteId, equipo: flow.equipo, cfg, posData: flow.posData, axleCfg: flow.axleCfg, km: flow.km, checklist: flow.checklist, recsInfo: flow.recsInfo, discrepanciasNeumaticos: flow.discrepanciasNeumaticos, recetaEstado: "en_proceso" });
+          const n = res.alertas;
+          pushToast(n > 0 ? `✓ Auditoría guardada · ${n} alerta${n !== 1 ? "s" : ""} generada${n !== 1 ? "s" : ""}` : "✓ Auditoría guardada");
+          setFlow({ stage: "cambio", equipo: flow.equipo, axleCfg: flow.axleCfg, posData: flow.posData, checklist: flow.checklist, kmInicial: flow.km, recetaIdInicial: res.recetaId });
+        }}
+        onCerrar={async () => {
+          const res = await construirYGuardarAuditoria({ user, clienteId, equipo: flow.equipo, cfg, posData: flow.posData, axleCfg: flow.axleCfg, km: flow.km, checklist: flow.checklist, recsInfo: flow.recsInfo, discrepanciasNeumaticos: flow.discrepanciasNeumaticos, recetaEstado: "pendiente" });
+          const n = res.alertas;
+          pushToast(n > 0 ? `✓ Auditoría guardada · ${n} alerta${n !== 1 ? "s" : ""} generada${n !== 1 ? "s" : ""}` : "✓ Auditoría guardada");
+          setFlow(null);
+        }} />
+    );
+  } else if (flow && flow.stage === "cambio") {
+    body = (
+      <CambioForm user={user} clienteId={clienteId} equipo={flow.equipo} cfg={cfg} axleCfg={flow.axleCfg}
+        posDataInicial={flow.posData} checklistInicial={flow.checklist} kmInicial={flow.kmInicial}
+        recetaIdInicial={flow.recetaIdInicial} pendiente={flow.pendiente}
+        onCancel={() => setFlow(null)} onFinish={() => setFlow(null)} />
+    );
+  } else if (tab === "cierre") {
+    body = <CierreDelDia user={user} clienteId={clienteId} onCerrado={() => setJornadaCerrada(true)} />;
+  } else if (tab === "alertas") {
+    body = <AlertasScreen user={user} clienteId={clienteId} />;
+  } else if (tab === "perfil") {
+    body = <PerfilScreen user={user} />;
+  } else {
+    body = <SeleccionEquipo clienteId={clienteId} onPick={(eq) => setFlow({ stage: "accion", equipo: eq })} />;
+  }
+
+  const showBottomNav = !flow || flow.stage === "accion";
+
+  return (
+    <div>
+      <div className="fixed top-2 left-0 right-0 z-40"><OfflineBadge /></div>
+      {toastNode}
+      {body}
+      {showBottomNav && <BottomNav view={tab} setView={(t) => { setTab(t); setFlow(null); }} disabledExcept={jornadaCerrada ? ["alertas", "perfil"] : null} alertasNoLeidas={alertasNoLeidas} />}
+    </div>
+  );
+}
+
+function PerfilScreen({ user }) {
+  const [confirming, setConfirming] = useState(false);
+  return (
+    <div className="min-h-screen pb-24 px-5 pt-14 safe-top">
+      <h1 className="text-[30px] font-extrabold mb-6">Perfil</h1>
+      <Card className="mb-6">
+        <div className="flex items-center gap-3">
+          <div className="w-12 h-12 rounded-full bg-[#F3F4F6] flex items-center justify-center"><Icon.user width="22" height="22" /></div>
+          <div>
+            <p className="font-bold text-[16px]">{user.nombre} {user.apellido || ""}</p>
+            <p className="text-[12.5px] text-muted">Usuario: {user.usuario} · Rol: {user.rol}</p>
+          </div>
+        </div>
+      </Card>
+      <Button variant="danger" className="w-full" onClick={() => setConfirming(true)}>Cerrar sesión</Button>
+      {confirming && (
+        <Confirm title="Cerrar sesión" desc="¿Seguro que querés cerrar tu sesión?"
+          onCancel={() => setConfirming(false)}
+          onConfirm={() => { clearSession(); location.href = "index.html"; }} />
+      )}
+    </div>
+  );
+}
+
+/* =====================================================================
+   ENTRADA DE LA PAGINA
+   Guarda de sesion: solo mecanicos con sesion valida llegan a MecanicoApp;
+   cualquier otro caso (sin sesion, rol distinto, usuario desactivado)
+   redirige a index.html.
+===================================================================== */
+function MecanicoPage() {
+  const [user, setUser] = useState(null);
+  const [checking, setChecking] = useState(true);
+
+  useEffect(() => {
+    const cached = getSession();
+    if (!cached || cached.rol !== "mecanico") { location.replace("index.html"); return; }
+    db.fetchUsuario(cached.id).then(fresh => {
+      if (!fresh || !fresh.activo || fresh.rol !== "mecanico") { clearSession(); location.replace("index.html"); return; }
+      setSession(fresh); setUser(fresh); setChecking(false);
+    }).catch(() => { setUser(cached); setChecking(false); }); // sin conexion: seguir con la sesion cacheada
+  }, []);
+
+  if (checking || !user) return <div className="min-h-screen flex items-center justify-center"><span className="spinner" /></div>;
+  return <MecanicoApp user={user} key={user.id} />;
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<MecanicoPage />);
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => { navigator.serviceWorker.register("./sw.js").catch(e => console.error("SW registration failed", e)); });
+}
+</script>
+</body>
+</html>

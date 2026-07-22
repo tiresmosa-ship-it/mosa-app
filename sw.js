@@ -1,7 +1,12 @@
-const CACHE_NAME = "mosa-tires-shell-v2";
+const CACHE_NAME = "mosa-tires-shell-v3";
 const APP_SHELL = [
   "./",
   "./index.html",
+  "./mecanico.html",
+  "./admin.html",
+  "./superadmin.html",
+  "./cliente.html",
+  "./js/supabase.js",
   "./manifest.json",
   "./icon-192.png",
   "./icon-512.png"
