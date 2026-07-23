@@ -367,3 +367,44 @@ CREATE UNIQUE INDEX IF NOT EXISTS cierre_dia_mecanico_fecha_turno_key ON cierre_
 -- CHECK en vez de mantener la lista sincronizada a mano.
 -- =====================================================================
 ALTER TABLE discrepancias_inventario DROP CONSTRAINT IF EXISTS discrepancias_inventario_tipo_discrepancia_check;
+
+-- =====================================================================
+-- 24) Admin > Maestros (equipos/mecanicos/proveedores/inventario/
+-- herramientas): permisos + RLS para herramientas_inventario y
+-- lotes_inventario, que existen en el proyecto pero todavia bloqueaban
+-- INSERT/UPDATE desde el frontend (confirmado: 42501 "new row violates
+-- row-level security policy"), mismo patron que el bloque 5. Ademas,
+-- constraints de unicidad para evitar los duplicados de numero_interno
+-- en equipos (ya paso una vez con AH771HG/119) y de usuario en mecanicos.
+-- =====================================================================
+GRANT SELECT, INSERT, UPDATE ON herramientas_inventario, lotes_inventario TO anon;
+
+DO $$
+DECLARE
+  t text;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['herramientas_inventario', 'lotes_inventario']
+  LOOP
+    EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
+    EXECUTE format('DROP POLICY IF EXISTS anon_all ON %I', t);
+    EXECUTE format('CREATE POLICY anon_all ON %I FOR ALL TO anon USING (true) WITH CHECK (true)', t);
+  END LOOP;
+END $$;
+
+-- mecanicos.usuario ya tiene un indice unico (mecanicos_usuario_key) desde el
+-- bloque 1 de esta misma migracion, asi que solo falta el de equipos.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'equipos_cliente_numero_interno_key'
+  ) THEN
+    ALTER TABLE equipos ADD CONSTRAINT equipos_cliente_numero_interno_key UNIQUE (cliente_id, numero_interno);
+  END IF;
+END $$;
+
+-- =====================================================================
+-- 25) Maestros > Mecanicos pasa a gestionar usuarios (rol='mecanico') en
+-- vez de la tabla legacy "mecanicos" (que no se usa para login, ver bloque
+-- 9/14). Falta la columna telefono que pide ese formulario.
+-- =====================================================================
+ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS telefono TEXT;

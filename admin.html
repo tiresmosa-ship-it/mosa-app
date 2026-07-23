@@ -37,6 +37,7 @@
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/@babel/standalone@7/babel.min.js" crossorigin></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" crossorigin></script>
+<script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js" crossorigin></script>
 
 <style>
   html, body { font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Inter, sans-serif; background:#FFFFFF; -webkit-tap-highlight-color: transparent; }
@@ -548,8 +549,8 @@ function DashboardView({ empresaCtl, onAbrirMecanico }) {
 /* =====================================================================
    DESBLOQUEO DE MECANICO
 ===================================================================== */
-function MecanicoBloqueadoModal({ mecanico, empresas, onClose, onDone }) {
-  const [modo, setModo] = useState(null); // null | "empresa"
+function MecanicoBloqueadoModal({ mecanico, empresas, onClose, onDone, initialModo }) {
+  const [modo, setModo] = useState(initialModo || null); // null | "empresa"
   const [nuevaEmpresa, setNuevaEmpresa] = useState(mecanico.cliente_id);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -601,38 +602,530 @@ function MecanicoBloqueadoModal({ mecanico, empresas, onClose, onDone }) {
 /* =====================================================================
    EQUIPOS
 ===================================================================== */
-function EquiposView({ empresaCtl }) {
-  const { filtro } = empresaCtl;
+const EQUIPO_BADGE_INFO = {
+  al_dia: { icon: "✅", label: "Al día", color: "green" },
+  atencion: { icon: "⚠", label: "Atención", color: "amber" },
+  alertas: { icon: "🔴", label: "Con alertas", color: "red" },
+  sin_auditar: { icon: "⚪", label: "Sin auditar", color: "gray" }
+};
+async function fetchEquiposConEstado(clienteId) {
+  let q = sb.from("equipos").select("*").order("numero_interno");
+  if (clienteId && clienteId !== "todas") q = q.eq("cliente_id", clienteId);
+  const { data: equipos, error } = await q;
+  if (error) throw error;
+  if (!equipos || !equipos.length) return [];
+  const ids = equipos.map(e => e.id_equipo);
+
+  const [{ data: alertas }, { data: auditorias }] = await Promise.all([
+    sb.from("alertas").select("equipo_id").eq("severidad", "rojo").eq("leida_admin", false).in("equipo_id", ids),
+    sb.from("auditorias").select("id_auditoria,equipo_id,fecha,creado_en").in("equipo_id", ids).order("fecha", { ascending: false }).order("creado_en", { ascending: false })
+  ]);
+
+  const alertasPorEquipo = {};
+  (alertas || []).forEach(a => { alertasPorEquipo[a.equipo_id] = (alertasPorEquipo[a.equipo_id] || 0) + 1; });
+
+  const auditoriasPorEquipo = {};
+  const ultimaAuditoriaPorEquipo = {};
+  (auditorias || []).forEach(a => {
+    auditoriasPorEquipo[a.equipo_id] = (auditoriasPorEquipo[a.equipo_id] || 0) + 1;
+    if (!ultimaAuditoriaPorEquipo[a.equipo_id]) ultimaAuditoriaPorEquipo[a.equipo_id] = a; // primero = mas reciente (orden desc)
+  });
+
+  const auditoriaIdsUltimas = Object.values(ultimaAuditoriaPorEquipo).map(a => a.id_auditoria);
+  const recetaPorAuditoria = {};
+  if (auditoriaIdsUltimas.length) {
+    const { data: recetas } = await sb.from("auditorias_receta").select("auditoria_id,estado").in("auditoria_id", auditoriaIdsUltimas);
+    (recetas || []).forEach(r => { recetaPorAuditoria[r.auditoria_id] = r.estado; });
+  }
+
+  return equipos.map(eq => {
+    const alertasCount = alertasPorEquipo[eq.id_equipo] || 0;
+    const auditoriasCount = auditoriasPorEquipo[eq.id_equipo] || 0;
+    const ultima = ultimaAuditoriaPorEquipo[eq.id_equipo];
+    const estadoInstructivo = ultima ? recetaPorAuditoria[ultima.id_auditoria] : null;
+    let badge;
+    if (alertasCount > 0) badge = "alertas";
+    else if (estadoInstructivo === "pendiente" || estadoInstructivo === "parcial") badge = "atencion";
+    else if (auditoriasCount === 0) badge = "sin_auditar";
+    else badge = "al_dia";
+    return { ...eq, badge };
+  });
+}
+
+const EQUIPOS_FILTROS = [
+  { id: "todos", label: "Todos" },
+  { id: "tractos", label: "Tractos" },
+  { id: "semis", label: "Semis" },
+  { id: "alertas", label: "Con alertas" },
+  { id: "instructivo_pendiente", label: "Instructivo pendiente" },
+  { id: "sin_auditar", label: "Sin auditar" }
+];
+function aplicaFiltroEquipo(eq, filtroTab) {
+  if (filtroTab === "todos") return true;
+  if (filtroTab === "tractos") return eq.tipo !== "SEMI";
+  if (filtroTab === "semis") return eq.tipo === "SEMI";
+  if (filtroTab === "alertas") return eq.badge === "alertas";
+  if (filtroTab === "instructivo_pendiente") return eq.badge === "atencion";
+  if (filtroTab === "sin_auditar") return eq.badge === "sin_auditar";
+  return true;
+}
+
+const CONFIG_EJES_OPCIONES = ["4x2", "6x2", "6x4"];
+function EquipoModal({ equipo, filtro, empresas, onClose, onSaved, pushToast }) {
+  const editando = !!equipo;
+  const [numeroInterno, setNumeroInterno] = useState(equipo ? (equipo.numero_interno || "") : "");
+  const [patente, setPatente] = useState(equipo ? (equipo.patente || "") : "");
+  const [tipo, setTipo] = useState(equipo ? equipo.tipo : "TRACTO");
+  const [configEjes, setConfigEjes] = useState(equipo ? (equipo.configuracion_ejes || "4x2") : "4x2");
+  const [modelo, setModelo] = useState(equipo ? (equipo.modelo || "") : "");
+  const [km, setKm] = useState(equipo ? (equipo.kilometros != null ? String(equipo.kilometros) : "") : "");
+  const [clienteId, setClienteId] = useState(equipo ? equipo.cliente_id : (filtro !== "todas" ? filtro : ""));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function guardar() {
+    setError("");
+    if (!numeroInterno.trim() || !patente.trim()) { setError("Número interno y patente son obligatorios."); return; }
+    if (!clienteId) { setError("Elegí una empresa."); return; }
+    setSaving(true);
+    try {
+      let q = sb.from("equipos").select("id_equipo").eq("cliente_id", clienteId).eq("numero_interno", numeroInterno.trim());
+      if (editando) q = q.neq("id_equipo", equipo.id_equipo);
+      const { data: dup } = await q;
+      if (dup && dup.length) { setError("Ya existe un equipo con ese número interno en esta empresa."); setSaving(false); return; }
+
+      const payload = {
+        numero_interno: numeroInterno.trim(), patente: patente.trim().toUpperCase(), tipo,
+        configuracion_ejes: tipo === "TRACTO" ? configEjes : null,
+        modelo: modelo.trim() || null, kilometros: km ? parseInt(km, 10) : 0
+      };
+      if (editando) {
+        const { error: e } = await sb.from("equipos").update(payload).eq("id_equipo", equipo.id_equipo);
+        if (e) throw e;
+        pushToast("✓ Equipo actualizado");
+      } else {
+        const { error: e } = await sb.from("equipos").insert({ ...payload, id_equipo: uuid(), cliente_id: clienteId, activo: true });
+        if (e) throw e;
+        pushToast("✓ Equipo creado");
+      }
+      onSaved();
+    } catch (e) {
+      console.error("No se pudo guardar el equipo", e);
+      setError(e.message && e.message.includes("duplicate") ? "Ya existe un equipo con ese número interno." : "No se pudo guardar. Intentá de nuevo.");
+    }
+    setSaving(false);
+  }
+
+  return (
+    <Modal title={editando ? "Editar equipo" : "Nuevo equipo"} onClose={onClose}>
+      <div className="space-y-4">
+        {!editando && (
+          <Field label="Empresa" required>
+            <Select value={clienteId} onChange={e => setClienteId(e.target.value)}>
+              <option value="">Seleccionar</option>
+              {empresas.map(e => <option key={e.id_cliente} value={e.id_cliente}>{e.nombre}</option>)}
+            </Select>
+          </Field>
+        )}
+        <Field label="Número interno" required>
+          <TextInput value={numeroInterno} onChange={e => setNumeroInterno(e.target.value)} placeholder="Ej: 119" />
+        </Field>
+        <Field label="Patente" required>
+          <TextInput value={patente} onChange={e => setPatente(e.target.value)} placeholder="Ej: AH771HG" />
+        </Field>
+        <Field label="Tipo" required>
+          <div className="flex gap-2">
+            {["TRACTO", "SEMI"].map(t => (
+              <button key={t} type="button" onClick={() => setTipo(t)}
+                className={cx("flex-1 h-11 rounded-2xl text-[13.5px] font-bold", tipo === t ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>
+                {t === "TRACTO" ? "Tracto" : "Semi"}
+              </button>
+            ))}
+          </div>
+        </Field>
+        {tipo === "TRACTO" && (
+          <Field label="Configuración de ejes" required>
+            <div className="flex gap-2">
+              {CONFIG_EJES_OPCIONES.map(c => (
+                <button key={c} type="button" onClick={() => setConfigEjes(c)}
+                  className={cx("flex-1 h-11 rounded-2xl text-[13.5px] font-bold", configEjes === c ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{c}</button>
+              ))}
+            </div>
+          </Field>
+        )}
+        <Field label="Modelo"><TextInput value={modelo} onChange={e => setModelo(e.target.value)} placeholder="Ej: SCANIA R500 6X4" /></Field>
+        <Field label="Km iniciales"><TextInput type="number" inputMode="numeric" value={km} onChange={e => setKm(e.target.value.replace(/[^0-9]/g, ""))} placeholder="0" /></Field>
+        {error && <p className="text-[12.5px] font-bold text-[#B91C1C]">{error}</p>}
+        <Button className="w-full" disabled={saving} onClick={guardar}>{saving ? <span className="spinner" /> : (editando ? "Guardar cambios" : "Crear equipo")}</Button>
+      </div>
+    </Modal>
+  );
+}
+
+function EquiposView({ empresaCtl, adminUser }) {
+  const { filtro, empresas } = empresaCtl;
   const [equipos, setEquipos] = useState([]);
   const [search, setSearch] = useState("");
+  const [filtroTab, setFiltroTab] = useState("todos");
   const [loading, setLoading] = useState(true);
-  useEffect(() => {
+  const [detalle, setDetalle] = useState(null);
+  const [modalEquipo, setModalEquipo] = useState(undefined); // undefined=cerrado, null=nuevo, {..}=editar
+  const [pushToast, toastNode] = useToasts();
+  const puedeGestionar = adminUser && (adminUser.rol === "admin" || adminUser.rol === "superadmin");
+
+  function cargar() {
     setLoading(true);
-    let q = sb.from("equipos").select("*").eq("activo", true).order("numero_interno");
-    if (filtro !== "todas") q = q.eq("cliente_id", filtro);
-    q.then(({ data }) => { setEquipos(data || []); setLoading(false); });
-  }, [filtro]);
+    fetchEquiposConEstado(filtro).then(data => { setEquipos(data); setLoading(false); }).catch(e => { console.error("No se pudo cargar equipos", e); setLoading(false); });
+  }
+  useEffect(() => { cargar(); }, [filtro]);
+
   const filtrados = equipos.filter(eq => {
+    if (!aplicaFiltroEquipo(eq, filtroTab)) return false;
     if (!search) return true;
     const s = search.toLowerCase();
     return (eq.patente || "").toLowerCase().includes(s) || (eq.numero_interno || "").toLowerCase().includes(s);
   });
+
+  async function toggleActivo(eq) {
+    try {
+      await sb.from("equipos").update({ activo: !eq.activo }).eq("id_equipo", eq.id_equipo);
+      setEquipos(es => es.map(x => x.id_equipo === eq.id_equipo ? { ...x, activo: !eq.activo } : x));
+      pushToast(eq.activo ? "✓ Equipo desactivado" : "✓ Equipo activado");
+    } catch (e) { console.error("No se pudo cambiar el estado del equipo", e); }
+  }
+
+  if (detalle) return <EquipoDetalleView equipo={detalle} onBack={() => setDetalle(null)} />;
+
   return (
     <div>
-      <h1 className="text-[26px] font-extrabold mb-5">Equipos</h1>
+      {toastNode}
+      <div className="flex items-center justify-between gap-3 mb-5 flex-wrap">
+        <h1 className="text-[26px] font-extrabold">Equipos</h1>
+        <Button className="h-11 px-4 text-[13.5px]" onClick={() => setModalEquipo(null)}>+ Nuevo equipo</Button>
+      </div>
       <TextInput placeholder="Buscar por patente o número interno" value={search} onChange={e => setSearch(e.target.value)} className="mb-4 max-w-md" />
+      <div className="flex gap-2 mb-5 overflow-x-auto">
+        {EQUIPOS_FILTROS.map(f => (
+          <button key={f.id} onClick={() => setFiltroTab(f.id)}
+            className={cx("px-4 py-2 rounded-full text-[13px] font-bold whitespace-nowrap", filtroTab === f.id ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{f.label}</button>
+        ))}
+      </div>
       {loading ? <div className="flex justify-center py-10"><span className="spinner" /></div> : (
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
-          {filtrados.map(eq => (
-            <Card key={eq.id_equipo}>
-              <p className="font-bold text-[15px]">{eq.numero_interno ? `${eq.numero_interno} · ` : ""}{eq.patente}</p>
-              <p className="text-[12.5px] text-muted mt-1">{eq.tipo === "SEMI" ? "Semirremolque" : `Tracto ${eq.configuracion_ejes || ""}`} · {eq.modelo || "-"}</p>
-              <p className="text-[12px] text-muted mt-1">{eq.kilometros ? `${eq.kilometros.toLocaleString()} km` : "Sin km registrados"}</p>
-            </Card>
-          ))}
+          {filtrados.map(eq => {
+            const b = !eq.activo ? { icon: "⚪", label: "Inactivo", color: "gray" } : (EQUIPO_BADGE_INFO[eq.badge] || EQUIPO_BADGE_INFO.sin_auditar);
+            return (
+              <Card key={eq.id_equipo} className={cx("relative h-full", !eq.activo && "opacity-60")}>
+                <div className="absolute top-4 right-4"><Badge color={b.color}>{b.icon} {b.label}</Badge></div>
+                <button onClick={() => setDetalle(eq)} className="text-left block w-full">
+                  <p className="font-bold text-[15px] pr-28">{eq.numero_interno ? `${eq.numero_interno} · ` : ""}{eq.patente}</p>
+                  <p className="text-[12.5px] text-muted mt-1">{eq.tipo === "SEMI" ? "Semirremolque" : `Tracto ${eq.configuracion_ejes || ""}`} · {eq.modelo || "-"}</p>
+                  <p className="text-[12px] text-muted mt-1">{eq.kilometros ? `${eq.kilometros.toLocaleString()} km` : "Sin km registrados"}</p>
+                </button>
+                {puedeGestionar && (
+                  <div className="flex items-center gap-2 mt-3 pt-3 border-t border-bd">
+                    <button onClick={() => setModalEquipo(eq)} className="w-8 h-8 rounded-full bg-[#F3F4F6] flex items-center justify-center"><Icon.pencil width="14" height="14" /></button>
+                    <button onClick={() => toggleActivo(eq)} className="text-[12px] font-bold text-ink px-3 py-1.5 rounded-full bg-[#F3F4F6] ml-auto">{eq.activo ? "Desactivar" : "Activar"}</button>
+                  </div>
+                )}
+              </Card>
+            );
+          })}
           {!filtrados.length && <p className="text-[13.5px] text-muted py-6 col-span-full text-center">No hay equipos que coincidan.</p>}
         </div>
       )}
+      {modalEquipo !== undefined && (
+        <EquipoModal equipo={modalEquipo} filtro={filtro} empresas={empresas} pushToast={pushToast}
+          onClose={() => setModalEquipo(undefined)} onSaved={() => { setModalEquipo(undefined); cargar(); }} />
+      )}
+    </div>
+  );
+}
+
+/* =====================================================================
+   EQUIPOS · DETALLE (vista, no modal) — Info / Mapa / Instructivo / Historial
+===================================================================== */
+function InfoEquipoTab({ equipo, ultimaAuditoria }) {
+  const rows = [
+    ["Patente", equipo.patente || "-"],
+    ["Interno", equipo.numero_interno || "-"],
+    ["Tipo", equipo.tipo === "SEMI" ? "Semirremolque" : "Tracto"],
+    ["Configuración de ejes", equipo.tipo === "SEMI" ? "Semi (13 posiciones)" : (equipo.configuracion_ejes || "No definida")],
+    ["Modelo", equipo.modelo || "-"],
+    ["Km actuales", equipo.kilometros ? equipo.kilometros.toLocaleString() : "-"],
+    ["Última auditoría", ultimaAuditoria === undefined ? "…" : ultimaAuditoria ? `N°${ultimaAuditoria.numero_auditoria} · ${formatDateLong(ultimaAuditoria.fecha)}` : "Sin auditorías registradas"]
+  ];
+  return (
+    <Card className="max-w-lg">
+      <div className="space-y-3 text-[14px]">
+        {rows.map(([k, v]) => (
+          <div key={k} className="flex items-center justify-between gap-3">
+            <span className="text-muted">{k}</span>
+            <span className="font-bold text-right">{v}</span>
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+function PosicionDetalleModal({ n, pos, onClose }) {
+  const mm = n.aud ? (n.aud.milimetros != null ? n.aud.milimetros : n.aud.mm_centro) : null;
+  const psi = n.psi_actual != null ? n.psi_actual : (n.aud ? n.aud.psi : null);
+  return (
+    <Modal title={`Posición ${pos}`} onClose={onClose}>
+      <div className="space-y-3 text-[14px]">
+        <div className="flex items-center justify-between"><span className="text-muted">N° fuego</span><span className="font-bold">{n.numero_fuego || "-"}</span></div>
+        <div className="flex items-center justify-between"><span className="text-muted">Marca</span><span className="font-bold">{n.marca || "-"}</span></div>
+        <div className="flex items-center justify-between"><span className="text-muted">Medida</span><span className="font-bold">{n.medida || "-"}</span></div>
+        <div className="flex items-center justify-between"><span className="text-muted">PSI</span><span className="font-bold">{psi != null ? psi : "-"}</span></div>
+        <div className="flex items-center justify-between"><span className="text-muted">Milímetros</span><span className="font-bold">{mm != null ? mm : "-"}</span></div>
+        <div className="flex items-center justify-between"><span className="text-muted">Estado</span><span className="font-bold">{n.estado_actual || "-"}</span></div>
+      </div>
+    </Modal>
+  );
+}
+function TireCircleReadOnly({ pos, filled, status, mm, psi, selected, onTap }) {
+  const styles = {
+    empty: "border-2 border-dashed border-[#D1D5DB] bg-[#F9FAFB] text-muted",
+    ok: "border-2 border-[#D1D5DB] bg-white text-ink",
+    atencion: "border-2 border-[#F59E0B] bg-[#FEF3C7] text-[#92400E]",
+    alerta: "border-2 border-[#EF4444] bg-[#FEE2E2] text-[#B91C1C]"
+  };
+  const key = !filled ? "empty" : (status || "ok");
+  return (
+    <button type="button" disabled={!filled} onClick={onTap}
+      className={cx("w-[54px] h-[54px] rounded-full flex flex-col items-center justify-center shrink-0 shadow-sm transition",
+        styles[key], selected && "ring-2 ring-ink")}>
+      <span className="text-[9.5px] font-bold opacity-70 leading-none">P{pos}</span>
+      {filled ? (
+        <>
+          <span className="text-[13px] font-extrabold leading-none mt-0.5">{mm != null ? mm : "—"}</span>
+          <span className="text-[8.5px] font-semibold opacity-70 leading-none">{psi ? psi + "psi" : ""}</span>
+        </>
+      ) : <span className="text-[11px] font-bold text-[#D1D5DB] mt-0.5">— —</span>}
+    </button>
+  );
+}
+function AxleMapReadOnly({ cfg, porPosicion, colorDePosicion, selectedPos, onTap }) {
+  return (
+    <div className="space-y-6">
+      {cfg.rows.map(row => (
+        <div key={row.label} className={cx("relative", row.type === "auxilio" && "mt-4 pt-4 border-t border-dashed border-bdstrong")}>
+          <div className="flex items-center gap-3">
+            <span className="text-[12px] font-bold text-muted w-6 shrink-0">{row.label}</span>
+            <div className="flex-1 relative flex items-center justify-around">
+              <div className="absolute left-0 right-0 h-[1.5px] bg-[#E5E7EB]" />
+              {row.positions.map(pos => {
+                const n = porPosicion[pos];
+                const color = colorDePosicion(pos);
+                const mm = n && n.aud ? (n.aud.milimetros != null ? n.aud.milimetros : n.aud.mm_centro) : null;
+                const psi = n ? (n.psi_actual != null ? n.psi_actual : (n.aud ? n.aud.psi : null)) : null;
+                return (
+                  <div key={pos} className="relative z-10">
+                    <TireCircleReadOnly pos={pos} filled={!!n} status={color} mm={mm} psi={psi}
+                      selected={selectedPos === pos} onTap={() => onTap(pos)} />
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+function MapaEquipoTab({ equipo }) {
+  const [posiciones, setPosiciones] = useState(null);
+  const [verPos, setVerPos] = useState(null);
+
+  useEffect(() => {
+    let cancel = false;
+    (async () => {
+      const { data: neumaticos } = await sb.from("neumaticos").select("*").eq("equipo_actual", equipo.id_equipo).eq("estado_actual", "en_uso");
+      const numerosFuego = (neumaticos || []).map(n => n.numero_fuego).filter(Boolean);
+      const mmPorFuego = {};
+      if (numerosFuego.length) {
+        const { data: ultimaAud } = await sb.from("auditorias").select("id_auditoria").eq("equipo_id", equipo.id_equipo).order("fecha", { ascending: false }).order("creado_en", { ascending: false }).limit(1);
+        if (ultimaAud && ultimaAud[0]) {
+          const { data: posAud } = await sb.from("auditoria_posiciones").select("numero_fuego,milimetros,psi,mm_borde_izq,mm_centro,mm_borde_der").eq("auditoria_id", ultimaAud[0].id_auditoria).in("numero_fuego", numerosFuego);
+          (posAud || []).forEach(p => { mmPorFuego[p.numero_fuego] = p; });
+        }
+      }
+      if (!cancel) setPosiciones((neumaticos || []).map(n => ({ ...n, aud: mmPorFuego[n.numero_fuego] || null })));
+    })();
+    return () => { cancel = true; };
+  }, [equipo.id_equipo]);
+
+  if (!equipo.configuracion_ejes && equipo.tipo !== "SEMI") {
+    return <p className="text-[13.5px] text-muted py-6">Configuración de ejes no definida</p>;
+  }
+  if (posiciones === null) return <div className="flex justify-center py-10"><span className="spinner" /></div>;
+
+  const cfg = axleConfigFor(equipo);
+  const porPosicion = {};
+  posiciones.forEach(p => { porPosicion[p.posicion_actual] = p; });
+
+  function colorDePosicion(pos) {
+    const n = porPosicion[pos];
+    if (!n) return "empty";
+    const data = {
+      psi: n.psi_actual != null ? n.psi_actual : (n.aud ? n.aud.psi : null),
+      mm_borde_izq: n.aud ? n.aud.mm_borde_izq : null,
+      mm_centro: n.aud ? (n.aud.mm_centro != null ? n.aud.mm_centro : n.aud.milimetros) : null,
+      mm_borde_der: n.aud ? n.aud.mm_borde_der : null
+    };
+    const ev = evaluarPosicion(cfg, DEFAULT_CFG, pos, equipo.tipo, data);
+    return ev.status;
+  }
+
+  return (
+    <div>
+      <Card>
+        <p className="text-[12.5px] text-muted mb-4">Tocá un neumático para verlo. Solo lectura — sin arrastre.</p>
+        <AxleMapReadOnly cfg={cfg} porPosicion={porPosicion} colorDePosicion={colorDePosicion}
+          selectedPos={verPos} onTap={(pos) => porPosicion[pos] && setVerPos(pos)} />
+      </Card>
+      <div className="flex gap-4 mt-5 text-[12px] text-muted flex-wrap px-1">
+        <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full border-2 border-[#D1D5DB] bg-white inline-block" /> En rango</span>
+        <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full border-2 border-[#F59E0B] bg-[#FEF3C7] inline-block" /> Atención</span>
+        <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full border-2 border-[#EF4444] bg-[#FEE2E2] inline-block" /> Crítico</span>
+        <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full border-2 border-dashed border-[#D1D5DB] bg-[#F9FAFB] inline-block" /> Sin neumático</span>
+      </div>
+      {verPos != null && porPosicion[verPos] && <PosicionDetalleModal n={porPosicion[verPos]} pos={verPos} onClose={() => setVerPos(null)} />}
+    </div>
+  );
+}
+
+function InstructivoEquipoTab({ receta }) {
+  const pa = receta.posiciones_alerta || {};
+  const recs = Array.isArray(pa.recomendaciones) ? pa.recomendaciones : [];
+  const extras = Array.isArray(pa.tareas_extra) ? pa.tareas_extra : [];
+  return (
+    <Card className="max-w-lg">
+      <p className="text-[13px] text-muted mb-3">Auditoría del {receta.fecha ? formatDateLong(receta.fecha) : "-"} · {receta.tareas_cumplidas}/{receta.total_tareas} tareas</p>
+      <div className="space-y-2">
+        {recs.map(t => <p key={t.id} className={cx("text-[13.5px]", t.done ? "text-[#15803D]" : "text-[#92400E]")}>{t.done ? "✅" : "⏳"} {t.texto}</p>)}
+        {extras.map((t, i) => <p key={i} className={cx("text-[13.5px]", t.done ? "text-[#15803D]" : "text-[#92400E]")}>➕ {t.texto} {t.done ? "✅" : "⏳"} <span className="text-muted">(extra)</span></p>)}
+        {!recs.length && !extras.length && <p className="text-[13.5px] text-muted">Sin tareas registradas.</p>}
+      </div>
+    </Card>
+  );
+}
+
+const HISTORIAL_ICONS = { auditoria: "📋", cambio: "🔄", intervencion: "⚙" };
+function HistorialEquipoTab({ equipo }) {
+  const [items, setItems] = useState(null);
+
+  useEffect(() => {
+    let cancel = false;
+    (async () => {
+      const [{ data: auds }, { data: cams }, { data: ivs }] = await Promise.all([
+        sb.from("auditorias").select("id_auditoria,fecha,numero_auditoria,creado_en").eq("equipo_id", equipo.id_equipo),
+        sb.from("cambios_neumaticos").select("id_cambio,fecha,numero_cambio,creado_en").eq("equipo_id", equipo.id_equipo),
+        sb.from("intervenciones").select("id,fecha,tipo,posicion,creado_en").eq("equipo_id", equipo.id_equipo)
+      ]);
+      const rows = [
+        ...(auds || []).map(a => ({ tipo: "auditoria", fecha: a.fecha, desc: `Auditoría N°${a.numero_auditoria}`, creado_en: a.creado_en })),
+        ...(cams || []).map(c => ({ tipo: "cambio", fecha: c.fecha, desc: `Hoja de cambio N°${c.numero_cambio}`, creado_en: c.creado_en })),
+        ...(ivs || []).map(v => ({ tipo: "intervencion", fecha: v.fecha, desc: `${v.tipo}${v.posicion != null ? " pos " + v.posicion : ""}`, creado_en: v.creado_en }))
+      ].sort((a, b) => (b.creado_en || "").localeCompare(a.creado_en || "")).slice(0, 20);
+      if (!cancel) setItems(rows);
+    })();
+    return () => { cancel = true; };
+  }, [equipo.id_equipo]);
+
+  function exportarExcel() {
+    const filas = (items || []).map(it => ({
+      Tipo: it.tipo === "auditoria" ? "Auditoría" : it.tipo === "cambio" ? "Hoja de cambio" : "Intervención",
+      Fecha: it.fecha || "", Descripción: it.desc, "Fecha y hora": it.creado_en || ""
+    }));
+    const ws = XLSX.utils.json_to_sheet(filas);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Historial");
+    XLSX.writeFile(wb, `historial_${(equipo.patente || equipo.id_equipo)}.xlsx`);
+  }
+
+  if (items === null) return <div className="flex justify-center py-10"><span className="spinner" /></div>;
+
+  return (
+    <div>
+      <div className="flex justify-end mb-4">
+        <Button variant="subtle" className="h-10 px-4 text-[13px]" disabled={!items.length} onClick={exportarExcel}>📊 Exportar a Excel</Button>
+      </div>
+      <div className="space-y-0">
+        {items.map((it, i) => (
+          <div key={i} className="flex gap-3">
+            <div className="flex flex-col items-center">
+              <div className="w-8 h-8 rounded-full bg-[#F3F4F6] flex items-center justify-center shrink-0 text-[14px]">{HISTORIAL_ICONS[it.tipo] || "•"}</div>
+              {i < items.length - 1 && <div className="w-px flex-1 bg-bd" />}
+            </div>
+            <div className="flex-1 pb-4">
+              <p className="font-semibold text-[13.5px]">{it.desc}</p>
+              <p className="text-[11.5px] text-muted mt-0.5">{it.fecha ? formatDateLong(it.fecha) : ""}{it.creado_en ? ` · ${it.creado_en.slice(11, 16)}` : ""}</p>
+            </div>
+          </div>
+        ))}
+        {!items.length && <p className="text-[13.5px] text-muted py-6 text-center">Sin historial registrado.</p>}
+      </div>
+    </div>
+  );
+}
+
+const EQUIPO_DETALLE_TABS_BASE = [
+  { id: "info", label: "Info" },
+  { id: "mapa", label: "Mapa" },
+  { id: "historial", label: "Historial" }
+];
+function EquipoDetalleView({ equipo, onBack }) {
+  const [tab, setTab] = useState("info");
+  const [ultimaAuditoria, setUltimaAuditoria] = useState(undefined); // undefined=cargando, null=sin auditorías
+  const [instructivoPendiente, setInstructivoPendiente] = useState(undefined);
+
+  useEffect(() => {
+    let cancel = false;
+    sb.from("auditorias").select("id_auditoria,fecha,numero_auditoria,creado_en").eq("equipo_id", equipo.id_equipo)
+      .order("fecha", { ascending: false }).order("creado_en", { ascending: false }).limit(1)
+      .then(({ data }) => { if (!cancel) setUltimaAuditoria((data && data[0]) || null); });
+    return () => { cancel = true; };
+  }, [equipo.id_equipo]);
+
+  useEffect(() => {
+    let cancel = false;
+    (async () => {
+      const { data: auds } = await sb.from("auditorias").select("id_auditoria,fecha").eq("equipo_id", equipo.id_equipo).order("fecha", { ascending: false });
+      if (!auds || !auds.length) { if (!cancel) setInstructivoPendiente(null); return; }
+      const ids = auds.map(a => a.id_auditoria);
+      const { data: recetas } = await sb.from("auditorias_receta").select("*").in("auditoria_id", ids).in("estado", ["pendiente", "parcial"]);
+      if (!recetas || !recetas.length) { if (!cancel) setInstructivoPendiente(null); return; }
+      const audMap = {}; auds.forEach(a => { audMap[a.id_auditoria] = a; });
+      recetas.sort((a, b) => ((audMap[b.auditoria_id] || {}).fecha || "").localeCompare((audMap[a.auditoria_id] || {}).fecha || ""));
+      const top = recetas[0];
+      if (!cancel) setInstructivoPendiente({ ...top, fecha: audMap[top.auditoria_id] ? audMap[top.auditoria_id].fecha : null });
+    })();
+    return () => { cancel = true; };
+  }, [equipo.id_equipo]);
+
+  const tabs = [...EQUIPO_DETALLE_TABS_BASE];
+  if (instructivoPendiente) tabs.splice(2, 0, { id: "instructivo", label: "Instructivo" });
+
+  return (
+    <div>
+      <button onClick={onBack} className="flex items-center gap-2 text-[13.5px] font-bold text-muted mb-4"><Icon.back width="15" height="15" /> Equipos</button>
+      <h1 className="text-[26px] font-extrabold mb-1">{equipo.numero_interno ? `${equipo.numero_interno} · ` : ""}{equipo.patente}</h1>
+      <p className="text-[13px] text-muted mb-5">{equipo.tipo === "SEMI" ? "Semirremolque" : `Tracto ${equipo.configuracion_ejes || ""}`} · {equipo.modelo || "-"}</p>
+
+      <div className="flex gap-2 mb-5 overflow-x-auto">
+        {tabs.map(t => (
+          <button key={t.id} onClick={() => setTab(t.id)}
+            className={cx("px-4 py-2 rounded-full text-[13px] font-bold whitespace-nowrap", tab === t.id ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{t.label}</button>
+        ))}
+      </div>
+
+      {tab === "info" && <InfoEquipoTab equipo={equipo} ultimaAuditoria={ultimaAuditoria} />}
+      {tab === "mapa" && <MapaEquipoTab equipo={equipo} />}
+      {tab === "instructivo" && instructivoPendiente && <InstructivoEquipoTab receta={instructivoPendiente} />}
+      {tab === "historial" && <HistorialEquipoTab equipo={equipo} />}
     </div>
   );
 }
@@ -1128,17 +1621,216 @@ function MovimientosDelDiaView({ empresaCtl, adminUser }) {
 /* =====================================================================
    JORNADA (3 bloques: inicio del dia, movimientos del dia, cierre del dia)
 ===================================================================== */
+function monthStartISO() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
+}
+async function fetchStatsCierreMes(clienteId) {
+  let q = sb.from("cierre_dia").select("cerrado,motivo_sin_cierre").gte("fecha", monthStartISO()).lte("fecha", todayISO());
+  q = filtroCliente(q, clienteId);
+  const { data, error } = await q;
+  if (error) throw error;
+  const total = (data || []).length;
+  const correctos = (data || []).filter(c => c.cerrado && !c.motivo_sin_cierre).length;
+  return { total, correctos, pct: total ? Math.round((correctos / total) * 100) : 0 };
+}
+function calcDuracion(inicio, cierre) {
+  if (!inicio || !cierre) return "—";
+  const [h1, m1] = inicio.split(":").map(Number);
+  const [h2, m2] = cierre.split(":").map(Number);
+  let mins = (h2 * 60 + m2) - (h1 * 60 + m1);
+  if (mins < 0) mins += 24 * 60;
+  return `${Math.floor(mins / 60)}h ${mins % 60}min`;
+}
+function CierreEstadoInfo(c) {
+  if (!c.cerrado) return { icon: "⏳", label: `Jornada abierta${c.hora_inicio ? ` desde ${c.hora_inicio.slice(0, 5)}` : ""}` };
+  if (c.motivo_sin_cierre === "olvido_cierre") return { icon: "✅", label: `Cerró ${(c.hora_cierre || "").slice(0, 5)}`, badge: "Cerró al día siguiente" };
+  if (c.motivo_sin_cierre) return { icon: "⚠", label: `Cerró sin completar check (${c.motivo_sin_cierre})` };
+  return { icon: "✅", label: `Cerró ${(c.hora_cierre || "").slice(0, 5)}` };
+}
+
+function AuditoriasDelDiaModal({ mecanico, fecha, onClose }) {
+  const [lista, setLista] = useState(null);
+  useEffect(() => {
+    let cancel = false;
+    (async () => {
+      const { data, error } = await sb.from("auditorias").select("id_auditoria,equipo_id,numero_auditoria,creado_en").eq("bultero_id", mecanico.id).eq("fecha", fecha).order("creado_en");
+      if (error) { console.error(error); if (!cancel) setLista([]); return; }
+      const equipoIds = [...new Set((data || []).map(a => a.equipo_id))].filter(Boolean);
+      const { data: eqs } = equipoIds.length ? await sb.from("equipos").select("id_equipo,patente,numero_interno").in("id_equipo", equipoIds) : { data: [] };
+      const eqMap = {}; (eqs || []).forEach(e => { eqMap[e.id_equipo] = e; });
+      if (!cancel) setLista((data || []).map(a => ({ ...a, equipo: eqMap[a.equipo_id] || null })));
+    })();
+    return () => { cancel = true; };
+  }, [mecanico.id, fecha]);
+  return (
+    <Modal title="Auditorías del día" onClose={onClose}>
+      {lista === null ? <div className="flex justify-center py-8"><span className="spinner" /></div> : (
+        <div className="space-y-2">
+          {lista.map(a => (
+            <div key={a.id_auditoria} className="flex items-center justify-between text-[13.5px] border-b border-bd pb-2">
+              <span className="font-semibold">{a.equipo ? `${a.equipo.patente}${a.equipo.numero_interno ? ` (${a.equipo.numero_interno})` : ""}` : "-"}</span>
+              <span className="text-muted">{(a.creado_en || "").slice(11, 16)}</span>
+            </div>
+          ))}
+          {!lista.length && <p className="text-[13.5px] text-muted py-2">Sin auditorías registradas.</p>}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+function PendientesInstructivoModal({ receta, onClose }) {
+  const pa = receta.posiciones_alerta || {};
+  const recs = (Array.isArray(pa.recomendaciones) ? pa.recomendaciones : []).filter(t => !t.done);
+  const extras = (Array.isArray(pa.tareas_extra) ? pa.tareas_extra : []).filter(t => !t.done);
+  return (
+    <Modal title="Tareas pendientes" onClose={onClose}>
+      <div className="space-y-2">
+        {recs.map(t => <p key={t.id} className="text-[13.5px] text-[#92400E]">⏳ {t.texto}</p>)}
+        {extras.map((t, i) => <p key={i} className="text-[13.5px] text-[#92400E]">⏳ {t.texto} <span className="text-muted">(extra)</span></p>)}
+        {!recs.length && !extras.length && <p className="text-[13.5px] text-muted">Sin tareas pendientes.</p>}
+      </div>
+    </Modal>
+  );
+}
+
+function InstructivoResumenRow({ r }) {
+  const [verPendientes, setVerPendientes] = useState(false);
+  const pa = r.posiciones_alerta || {};
+  const recs = Array.isArray(pa.recomendaciones) ? pa.recomendaciones : [];
+  const extras = Array.isArray(pa.tareas_extra) ? pa.tareas_extra : [];
+  const pendientes = recs.filter(t => !t.done).length + extras.filter(t => !t.done).length;
+  const ok = pendientes === 0;
+  const equipoLabel = r.equipo ? `${r.equipo.patente}${r.equipo.numero_interno ? ` (${r.equipo.numero_interno})` : ""}` : "-";
+  return (
+    <div className="flex items-center justify-between text-[13.5px] border-b border-bd pb-2">
+      <span>{ok ? "✅" : "🟡"} {equipoLabel} — {r.tareas_cumplidas}/{r.total_tareas} tareas</span>
+      {!ok && <button className="text-[12px] font-bold text-ink underline" onClick={() => setVerPendientes(true)}>pendientes</button>}
+      {verPendientes && <PendientesInstructivoModal receta={r} onClose={() => setVerPendientes(false)} />}
+    </div>
+  );
+}
+
+function ReporteCierreModal({ c, empresas, onClose }) {
+  const [instructivos, setInstructivos] = useState(null);
+  const [verAuditorias, setVerAuditorias] = useState(false);
+  useEffect(() => {
+    let cancel = false;
+    fetchInstructivosHoy(c.cliente_id).then(data => {
+      if (!cancel) setInstructivos(data.filter(r => r.mecanico && r.mecanico.id === c.mecanico_id));
+    }).catch(e => console.error(e));
+    return () => { cancel = true; };
+  }, [c.mecanico_id, c.cliente_id]);
+
+  const empresa = (empresas.find(e => e.id_cliente === c.cliente_id) || {}).nombre || c.cliente_id;
+  const nombreMecanico = c.mecanico ? `${c.mecanico.nombre} ${c.mecanico.apellido || ""}` : "-";
+
+  function exportarExcel() {
+    const filas = [
+      ["Mecánico", nombreMecanico], ["Empresa", empresa], ["Turno", c.turno || 1],
+      ["Hora ingreso", (c.hora_inicio || "").slice(0, 5)], ["Hora salida", (c.hora_cierre || "").slice(0, 5)],
+      ["Duración", calcDuracion(c.hora_inicio, c.hora_cierre)],
+      ["Auditorías", c.auditorias_realizadas], ["Hojas de cambio", c.cambios_realizados],
+      ["Regulaciones PSI", c.regulaciones_psi], ["Retorqueos", c.retorqueos],
+      ["Rotaciones", c.rotaciones], ["Reparaciones", c.reparaciones],
+      ["% promedio instructivo", c.pct_receta_promedio != null ? `${c.pct_receta_promedio}%` : "-"],
+      ["Stock nuevos", c.stock_nuevo], ["Stock tránsito", c.stock_transito], ["Stock recauchados", c.stock_recauchado]
+    ];
+    const csv = filas.map(([k, v]) => `"${k}","${v == null ? "" : v}"`).join("\n");
+    const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `reporte_cierre_${nombreMecanico.replace(/\s+/g, "_")}_${c.fecha}.csv`;
+    a.click();
+  }
+  function exportarPDF() {
+    const w = window.open("", "_blank");
+    w.document.write(`<html><head><title>Reporte de cierre</title><style>body{font-family:sans-serif;padding:24px;} h2{margin-bottom:4px;} p{margin:4px 0;font-size:13.5px;} hr{margin:14px 0;}</style></head><body>
+      <h2>Reporte de cierre — ${nombreMecanico}</h2>
+      <p><b>Empresa:</b> ${empresa} · <b>Turno:</b> ${c.turno || 1}</p>
+      <p><b>Hora ingreso:</b> ${(c.hora_inicio || "").slice(0, 5)} · <b>Hora salida:</b> ${(c.hora_cierre || "").slice(0, 5)} · <b>Duración:</b> ${calcDuracion(c.hora_inicio, c.hora_cierre)}</p>
+      <hr/>
+      <p><b>Auditorías:</b> ${c.auditorias_realizadas}</p>
+      <p><b>Hojas de cambio:</b> ${c.cambios_realizados}</p>
+      <p><b>Regulaciones PSI:</b> ${c.regulaciones_psi}</p>
+      <p><b>Retorqueos:</b> ${c.retorqueos}</p>
+      <p><b>Rotaciones:</b> ${c.rotaciones}</p>
+      <p><b>Reparaciones:</b> ${c.reparaciones}</p>
+      <p><b>% promedio instructivo:</b> ${c.pct_receta_promedio != null ? c.pct_receta_promedio + "%" : "-"}</p>
+      <hr/>
+      <p><b>Stock nuevos:</b> ${c.stock_nuevo} · <b>Tránsito:</b> ${c.stock_transito} · <b>Recauchados:</b> ${c.stock_recauchado}</p>
+    </body></html>`);
+    w.document.close();
+    w.focus();
+    w.print();
+  }
+
+  return (
+    <Modal title="Reporte de jornada" onClose={onClose} wide>
+      <div className="space-y-5">
+        <div>
+          <p className="text-[11px] font-extrabold text-muted uppercase tracking-wide mb-1.5">Jornada</p>
+          <p className="text-[14px] font-bold">{nombreMecanico} <span className="text-muted font-semibold">· {empresa}</span></p>
+          <p className="text-[13px] text-sub mt-1">Turno: {c.turno || 1}{c.turno > 1 && <Badge color="black">Turno {c.turno}</Badge>}</p>
+          <p className="text-[13px] text-sub">Hora ingreso: {(c.hora_inicio || "").slice(0, 5) || "—"} · Hora salida: {(c.hora_cierre || "").slice(0, 5) || "—"}</p>
+          <p className="text-[13px] text-sub">Duración: {calcDuracion(c.hora_inicio, c.hora_cierre)}</p>
+          {c.motivo_sin_cierre === "olvido_cierre" && <Badge color="amber">Cerró al día siguiente</Badge>}
+        </div>
+
+        <div>
+          <p className="text-[11px] font-extrabold text-muted uppercase tracking-wide mb-1.5">Actividad del día</p>
+          <div className="grid grid-cols-2 gap-2 text-[13.5px]">
+            <p>Auditorías: <b>{c.auditorias_realizadas}</b> {c.auditorias_realizadas > 0 && <button className="text-[12px] font-bold text-ink underline" onClick={() => setVerAuditorias(true)}>ver equipos</button>}</p>
+            <p>Hojas de cambio: <b>{c.cambios_realizados}</b></p>
+            <p>Regulaciones PSI: <b>{c.regulaciones_psi}</b></p>
+            <p>Retorqueos: <b>{c.retorqueos}</b></p>
+            <p>Rotaciones: <b>{c.rotaciones}</b></p>
+            <p>Reparaciones: <b>{c.reparaciones}</b></p>
+          </div>
+        </div>
+
+        <div>
+          <p className="text-[11px] font-extrabold text-muted uppercase tracking-wide mb-1.5">Instructivos</p>
+          {instructivos === null ? <div className="flex justify-center py-4"><span className="spinner" /></div> : (
+            <div className="space-y-2">
+              {instructivos.map(r => <InstructivoResumenRow key={r.id} r={r} />)}
+              {!instructivos.length && <p className="text-[13.5px] text-muted">Sin auditorías con instructivo hoy.</p>}
+            </div>
+          )}
+          <p className="text-[13px] text-sub mt-2 font-semibold">% promedio instructivo: {c.pct_receta_promedio != null ? `${c.pct_receta_promedio}%` : "—"}</p>
+        </div>
+
+        <div>
+          <p className="text-[11px] font-extrabold text-muted uppercase tracking-wide mb-1.5">Stock al cierre</p>
+          <p className="text-[13.5px]">Nuevos: <b>{c.stock_nuevo}</b> · Tránsito: <b>{c.stock_transito}</b> · Recauchados: <b>{c.stock_recauchado}</b></p>
+        </div>
+
+        <div className="flex gap-2 pt-2">
+          <Button variant="subtle" className="flex-1 h-11 text-[13px]" onClick={exportarPDF}>📄 Exportar PDF</Button>
+          <Button variant="subtle" className="flex-1 h-11 text-[13px]" onClick={exportarExcel}>📗 Exportar Excel</Button>
+        </div>
+      </div>
+      {verAuditorias && <AuditoriasDelDiaModal mecanico={{ id: c.mecanico_id }} fecha={c.fecha} onClose={() => setVerAuditorias(false)} />}
+    </Modal>
+  );
+}
+
 function JornadaView({ empresaCtl, adminUser }) {
-  const { filtro } = empresaCtl;
+  const { filtro, empresas } = empresaCtl;
   const [sub, setSub] = useState(null);
   const [cierres, setCierres] = useState([]);
+  const [statsMes, setStatsMes] = useState(null);
+  const [verReporte, setVerReporte] = useState(null);
   const [loading, setLoading] = useState(false);
   const [pushToast, toastNode] = useToasts();
 
   useEffect(() => {
     if (sub !== "cierre") return;
     setLoading(true);
-    fetchCierresHoy(filtro).then(setCierres).catch(e => console.error(e)).finally(() => setLoading(false));
+    Promise.all([fetchCierresHoy(filtro), fetchStatsCierreMes(filtro)])
+      .then(([cs, stats]) => { setCierres(cs); setStatsMes(stats); })
+      .catch(e => console.error(e)).finally(() => setLoading(false));
   }, [sub, filtro]);
 
   if (!sub) {
@@ -1165,17 +1857,41 @@ function JornadaView({ empresaCtl, adminUser }) {
       {loading ? <div className="flex justify-center py-10"><span className="spinner" /></div> : (
         <>
           {sub === "cierre" && (
-            <div className="bg-white rounded-2xl border border-bd shadow-card overflow-hidden">
-              {cierres.map((c, i) => (
-                <div key={c.id} className={cx("flex items-center justify-between px-4 py-3", i > 0 && "border-t border-bd")}>
-                  <div>
-                    <p className="font-bold text-[14px]">{c.mecanico ? `${c.mecanico.nombre} ${c.mecanico.apellido || ""}` : "-"} <span className="text-muted font-semibold">· turno {c.turno || 1}</span></p>
-                    <p className="text-[12px] text-muted">{c.cerrado ? `Cerrado ${(c.hora_cierre || "").slice(0, 5)}` : `Abierto desde ${(c.hora_inicio || "").slice(0, 5) || "—"}`}</p>
-                  </div>
-                  <Badge color={c.cerrado ? "gray" : "green"}>{c.cerrado ? "Cerrado" : "Activo"}</Badge>
+            <div>
+              <div className="bg-white rounded-2xl border border-bd shadow-card overflow-hidden mb-5">
+                {cierres.map((c, i) => {
+                  const info = CierreEstadoInfo(c);
+                  const nombre = c.mecanico ? `${c.mecanico.nombre} ${c.mecanico.apellido || ""}` : "-";
+                  return (
+                    <button key={c.id} onClick={() => c.cerrado && setVerReporte(c)}
+                      className={cx("w-full flex items-center justify-between px-4 py-3 text-left", i > 0 && "border-t border-bd", !c.cerrado && "cursor-default")}>
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span>{info.icon}</span>
+                        <div className="min-w-0">
+                          <p className="font-bold text-[14px] truncate">{nombre} {c.turno > 1 && <span className="text-muted font-semibold">· Turno {c.turno}</span>}</p>
+                          <p className="text-[12px] text-muted">{info.label}</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {info.badge && <Badge color="amber">{info.badge}</Badge>}
+                        {c.cerrado && <span className="text-[12px] font-bold text-ink">Ver reporte</span>}
+                      </div>
+                    </button>
+                  );
+                })}
+                {!cierres.length && <p className="text-[13.5px] text-muted p-4">Los mecánicos aún no han cerrado su jornada</p>}
+              </div>
+
+              {!!cierres.length && (
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <KpiCard label="Cerraron correctamente hoy" value={`${cierres.filter(c => c.cerrado && !c.motivo_sin_cierre).length}/${cierres.length}`} />
+                  <KpiCard label="Con jornada abierta" value={cierres.filter(c => !c.cerrado).length} />
+                  <KpiCard label="% cierre correcto del mes" value={statsMes ? `${statsMes.pct}%` : "—"} />
+                  <KpiCard label="Cierres registrados este mes" value={statsMes ? statsMes.total : "—"} />
                 </div>
-              ))}
-              {!cierres.length && <p className="text-[13.5px] text-muted p-4">Sin registros de cierre hoy.</p>}
+              )}
+
+              {verReporte && <ReporteCierreModal c={verReporte} empresas={empresas} onClose={() => setVerReporte(null)} />}
             </div>
           )}
         </>
@@ -1185,16 +1901,944 @@ function JornadaView({ empresaCtl, adminUser }) {
 }
 
 /* =====================================================================
-   MAESTROS (placeholder - fuera de alcance de esta etapa)
+   MAESTROS · MECANICOS
 ===================================================================== */
-function MaestrosView() {
+function MecanicoMaestroModal({ mecanico, filtro, empresas, onClose, onSaved, pushToast }) {
+  const editando = !!mecanico;
+  const [nombre, setNombre] = useState(mecanico ? (mecanico.nombre || "") : "");
+  const [apellido, setApellido] = useState(mecanico ? (mecanico.apellido || "") : "");
+  const [telefono, setTelefono] = useState(mecanico ? (mecanico.telefono || "") : "");
+  const [email, setEmail] = useState(mecanico ? (mecanico.email || "") : "");
+  const [usuario, setUsuario] = useState(mecanico ? (mecanico.usuario || "") : "");
+  const [password, setPassword] = useState("");
+  const [clienteId, setClienteId] = useState(mecanico ? mecanico.cliente_id : (filtro !== "todas" ? filtro : ""));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function guardar() {
+    setError("");
+    if (!nombre.trim() || !usuario.trim()) { setError("Nombre y usuario son obligatorios."); return; }
+    if (!editando && !password.trim()) { setError("La contraseña es obligatoria al crear un mecánico."); return; }
+    if (!clienteId) { setError("Elegí una empresa."); return; }
+    setSaving(true);
+    try {
+      let q = sb.from("usuarios").select("id").eq("usuario", usuario.trim());
+      if (editando) q = q.neq("id", mecanico.id);
+      const { data: dup } = await q;
+      if (dup && dup.length) { setError("Ya existe un usuario con ese nombre de usuario."); setSaving(false); return; }
+
+      const payload = { nombre: nombre.trim(), apellido: apellido.trim() || null, telefono: telefono.trim() || null, email: email.trim() || null, usuario: usuario.trim(), cliente_id: clienteId };
+      if (password.trim()) payload.password_hash = await sha256Hex(password.trim());
+      if (editando) {
+        const { error: e } = await sb.from("usuarios").update(payload).eq("id", mecanico.id);
+        if (e) throw e;
+        pushToast("✓ Mecánico actualizado");
+      } else {
+        const { error: e } = await sb.from("usuarios").insert({ ...payload, id: uuid(), rol: "mecanico", activo: true });
+        if (e) throw e;
+        pushToast("✓ Mecánico creado");
+      }
+      onSaved();
+    } catch (e) { console.error("No se pudo guardar el mecánico", e); setError("No se pudo guardar. Intentá de nuevo."); }
+    setSaving(false);
+  }
+
+  return (
+    <Modal title={editando ? "Editar mecánico" : "Nuevo mecánico"} onClose={onClose}>
+      <div className="space-y-4">
+        <Field label="Nombre" required><TextInput value={nombre} onChange={e => setNombre(e.target.value)} /></Field>
+        <Field label="Apellido"><TextInput value={apellido} onChange={e => setApellido(e.target.value)} /></Field>
+        <Field label="Teléfono"><TextInput value={telefono} onChange={e => setTelefono(e.target.value)} /></Field>
+        <Field label="Email"><TextInput type="email" value={email} onChange={e => setEmail(e.target.value)} /></Field>
+        <Field label="Usuario" required><TextInput value={usuario} onChange={e => setUsuario(e.target.value)} /></Field>
+        <Field label="Contraseña" required={!editando} hint={editando ? "Dejar vacío para no cambiarla" : null}>
+          <TextInput type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder={editando ? "••••••" : ""} />
+        </Field>
+        <Field label="Empresa asignada" required>
+          <Select value={clienteId} onChange={e => setClienteId(e.target.value)}>
+            <option value="">Seleccionar</option>
+            {empresas.map(e => <option key={e.id_cliente} value={e.id_cliente}>{e.nombre}</option>)}
+          </Select>
+        </Field>
+        {error && <p className="text-[12.5px] font-bold text-[#B91C1C]">{error}</p>}
+        <Button className="w-full" disabled={saving} onClick={guardar}>{saving ? <span className="spinner" /> : (editando ? "Guardar cambios" : "Crear mecánico")}</Button>
+      </div>
+    </Modal>
+  );
+}
+function MecanicosMaestroView({ empresaCtl, onBack }) {
+  const { filtro, empresas } = empresaCtl;
+  const [lista, setLista] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [modal, setModal] = useState(undefined);
+  const [pushToast, toastNode] = useToasts();
+
+  function cargar() {
+    setLoading(true);
+    let q = sb.from("usuarios").select("*").eq("rol", "mecanico").order("nombre");
+    q = filtroCliente(q, filtro);
+    q.then(({ data, error }) => { if (error) console.error(error); setLista(data || []); setLoading(false); });
+  }
+  useEffect(() => { cargar(); }, [filtro]);
+
+  async function toggleActivo(m) {
+    await sb.from("usuarios").update({ activo: !m.activo }).eq("id", m.id);
+    setLista(ls => ls.map(x => x.id === m.id ? { ...x, activo: !m.activo } : x));
+    pushToast(m.activo ? "✓ Mecánico desactivado" : "✓ Mecánico activado");
+  }
+  function empresaNombre(cid) { return (empresas.find(e => e.id_cliente === cid) || {}).nombre || cid; }
+
+  return (
+    <div>
+      {toastNode}
+      <button onClick={onBack} className="flex items-center gap-2 text-[13.5px] font-bold text-muted mb-4"><Icon.back width="15" height="15" /> Maestros</button>
+      <div className="flex items-center justify-between gap-3 mb-5 flex-wrap">
+        <h1 className="text-[26px] font-extrabold">👷 Mecánicos</h1>
+        <Button className="h-11 px-4 text-[13.5px]" onClick={() => setModal(null)}>+ Nuevo mecánico</Button>
+      </div>
+      {loading ? <div className="flex justify-center py-10"><span className="spinner" /></div> : (
+        <div className="bg-white rounded-2xl border border-bd shadow-card overflow-x-auto">
+          <table className="w-full text-[13.5px] min-w-[720px]">
+            <thead><tr className="text-left text-muted border-b border-bd">
+              <th className="font-semibold py-3 px-4">Nombre</th><th className="font-semibold py-3 px-4">Apellido</th>
+              <th className="font-semibold py-3 px-4">Usuario</th><th className="font-semibold py-3 px-4">Teléfono</th>
+              <th className="font-semibold py-3 px-4">Email</th><th className="font-semibold py-3 px-4">Empresa</th>
+              <th className="font-semibold py-3 px-4">Estado</th><th className="font-semibold py-3 px-4"></th>
+            </tr></thead>
+            <tbody>
+              {lista.map(m => (
+                <tr key={m.id} className="border-b border-bd last:border-0">
+                  <td className="py-2.5 px-4 font-bold">{m.nombre}</td><td className="py-2.5 px-4">{m.apellido || "-"}</td>
+                  <td className="py-2.5 px-4">{m.usuario || "-"}</td><td className="py-2.5 px-4">{m.telefono || "-"}</td>
+                  <td className="py-2.5 px-4">{m.email || "-"}</td><td className="py-2.5 px-4">{empresaNombre(m.cliente_id)}</td>
+                  <td className="py-2.5 px-4"><Badge color={m.activo ? "green" : "gray"}>{m.activo ? "Activo" : "Inactivo"}</Badge></td>
+                  <td className="py-2.5 px-4">
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => setModal(m)} className="w-8 h-8 rounded-full bg-[#F3F4F6] flex items-center justify-center"><Icon.pencil width="13" height="13" /></button>
+                      <button onClick={() => toggleActivo(m)} className="text-[11.5px] font-bold text-ink px-2.5 py-1.5 rounded-full bg-[#F3F4F6] whitespace-nowrap">{m.activo ? "Desactivar" : "Activar"}</button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {!lista.length && <tr><td colSpan="8" className="text-center text-muted py-8">No hay mecánicos para esta empresa.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {modal !== undefined && (
+        <MecanicoMaestroModal mecanico={modal} filtro={filtro} empresas={empresas} pushToast={pushToast}
+          onClose={() => setModal(undefined)} onSaved={() => { setModal(undefined); cargar(); }} />
+      )}
+    </div>
+  );
+}
+
+/* =====================================================================
+   MAESTROS · PROVEEDORES
+===================================================================== */
+function ProveedorMaestroModal({ proveedor, filtro, onClose, onSaved, pushToast }) {
+  const editando = !!proveedor;
+  const [nombre, setNombre] = useState(proveedor ? (proveedor.nombre || "") : "");
+  const [contacto, setContacto] = useState(proveedor ? (proveedor.contacto || "") : "");
+  const [telefono, setTelefono] = useState(proveedor ? (proveedor.telefono || "") : "");
+  const [email, setEmail] = useState(proveedor ? (proveedor.email || "") : "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function guardar() {
+    setError("");
+    if (!nombre.trim()) { setError("El nombre es obligatorio."); return; }
+    if (!editando && (!filtro || filtro === "todas")) { setError("Elegí una empresa específica en el selector de arriba antes de crear un proveedor."); return; }
+    setSaving(true);
+    try {
+      const payload = { nombre: nombre.trim(), contacto: contacto.trim() || null, telefono: telefono.trim() || null, email: email.trim() || null };
+      if (editando) {
+        const { error: e } = await sb.from("proveedores").update(payload).eq("id", proveedor.id);
+        if (e) throw e;
+        pushToast("✓ Proveedor actualizado");
+      } else {
+        const { error: e } = await sb.from("proveedores").insert({ ...payload, id: uuid(), cliente_id: filtro, activo: true });
+        if (e) throw e;
+        pushToast("✓ Proveedor creado");
+      }
+      onSaved();
+    } catch (e) { console.error("No se pudo guardar el proveedor", e); setError("No se pudo guardar. Intentá de nuevo."); }
+    setSaving(false);
+  }
+
+  return (
+    <Modal title={editando ? "Editar proveedor" : "Nuevo proveedor"} onClose={onClose}>
+      <div className="space-y-4">
+        <Field label="Nombre" required><TextInput value={nombre} onChange={e => setNombre(e.target.value)} /></Field>
+        <Field label="Contacto"><TextInput value={contacto} onChange={e => setContacto(e.target.value)} /></Field>
+        <Field label="Teléfono"><TextInput value={telefono} onChange={e => setTelefono(e.target.value)} /></Field>
+        <Field label="Email"><TextInput type="email" value={email} onChange={e => setEmail(e.target.value)} /></Field>
+        {error && <p className="text-[12.5px] font-bold text-[#B91C1C]">{error}</p>}
+        <Button className="w-full" disabled={saving} onClick={guardar}>{saving ? <span className="spinner" /> : (editando ? "Guardar cambios" : "Crear proveedor")}</Button>
+      </div>
+    </Modal>
+  );
+}
+function ProveedoresMaestroView({ empresaCtl, onBack }) {
+  const { filtro } = empresaCtl;
+  const [lista, setLista] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [modal, setModal] = useState(undefined);
+  const [pushToast, toastNode] = useToasts();
+
+  function cargar() {
+    setLoading(true);
+    let q = sb.from("proveedores").select("*").order("nombre");
+    q = filtroCliente(q, filtro);
+    q.then(({ data, error }) => { if (error) console.error(error); setLista(data || []); setLoading(false); });
+  }
+  useEffect(() => { cargar(); }, [filtro]);
+
+  async function toggleActivo(p) {
+    await sb.from("proveedores").update({ activo: !p.activo }).eq("id", p.id);
+    setLista(ls => ls.map(x => x.id === p.id ? { ...x, activo: !p.activo } : x));
+    pushToast(p.activo ? "✓ Proveedor desactivado" : "✓ Proveedor activado");
+  }
+
+  return (
+    <div>
+      {toastNode}
+      <button onClick={onBack} className="flex items-center gap-2 text-[13.5px] font-bold text-muted mb-4"><Icon.back width="15" height="15" /> Maestros</button>
+      <div className="flex items-center justify-between gap-3 mb-5 flex-wrap">
+        <h1 className="text-[26px] font-extrabold">🏭 Proveedores</h1>
+        <Button className="h-11 px-4 text-[13.5px]" onClick={() => setModal(null)}>+ Nuevo proveedor</Button>
+      </div>
+      {loading ? <div className="flex justify-center py-10"><span className="spinner" /></div> : (
+        <div className="bg-white rounded-2xl border border-bd shadow-card overflow-x-auto">
+          <table className="w-full text-[13.5px] min-w-[600px]">
+            <thead><tr className="text-left text-muted border-b border-bd">
+              <th className="font-semibold py-3 px-4">Nombre</th><th className="font-semibold py-3 px-4">Contacto</th>
+              <th className="font-semibold py-3 px-4">Teléfono</th><th className="font-semibold py-3 px-4">Email</th>
+              <th className="font-semibold py-3 px-4">Estado</th><th className="font-semibold py-3 px-4"></th>
+            </tr></thead>
+            <tbody>
+              {lista.map(p => (
+                <tr key={p.id} className="border-b border-bd last:border-0">
+                  <td className="py-2.5 px-4 font-bold">{p.nombre}</td><td className="py-2.5 px-4">{p.contacto || "-"}</td>
+                  <td className="py-2.5 px-4">{p.telefono || "-"}</td><td className="py-2.5 px-4">{p.email || "-"}</td>
+                  <td className="py-2.5 px-4"><Badge color={p.activo ? "green" : "gray"}>{p.activo ? "Activo" : "Inactivo"}</Badge></td>
+                  <td className="py-2.5 px-4">
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => setModal(p)} className="w-8 h-8 rounded-full bg-[#F3F4F6] flex items-center justify-center"><Icon.pencil width="13" height="13" /></button>
+                      <button onClick={() => toggleActivo(p)} className="text-[11.5px] font-bold text-ink px-2.5 py-1.5 rounded-full bg-[#F3F4F6] whitespace-nowrap">{p.activo ? "Desactivar" : "Activar"}</button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {!lista.length && <tr><td colSpan="6" className="text-center text-muted py-8">No hay proveedores para esta empresa.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {modal !== undefined && (
+        <ProveedorMaestroModal proveedor={modal} filtro={filtro} pushToast={pushToast}
+          onClose={() => setModal(undefined)} onSaved={() => { setModal(undefined); cargar(); }} />
+      )}
+    </div>
+  );
+}
+
+/* =====================================================================
+   MAESTROS · INVENTARIO
+===================================================================== */
+const BODEGA_BUCKETS = [
+  { id: "nuevo", label: "Nuevos" }, { id: "transito", label: "Tránsito" },
+  { id: "recauchado", label: "Recauchado" }, { id: "en_equipo", label: "En equipo" },
+  { id: "reparacion", label: "En reparar" }, { id: "baja", label: "Bajas" }
+];
+async function fetchBodegaCounts(clienteId) {
+  let q = sb.from("neumaticos").select("bodega,equipo_actual").eq("activo", true);
+  q = filtroCliente(q, clienteId);
+  const { data, error } = await q;
+  if (error) throw error;
+  const counts = { nuevo: 0, transito: 0, recauchado: 0, en_equipo: 0, reparacion: 0, baja: 0 };
+  (data || []).forEach(n => {
+    if (n.equipo_actual) counts.en_equipo++;
+    else if (n.bodega && counts[n.bodega] != null) counts[n.bodega]++;
+  });
+  return counts;
+}
+const INSUMO_CATEGORIAS = [
+  { id: "llanta", label: "Llanta" }, { id: "valvula", label: "Válvula" },
+  { id: "checkpoint", label: "Checkpoint" }, { id: "alargadera", label: "Alargadera" }
+];
+const INSUMO_SUBTIPOS_LLANTA = [
+  { id: "americana_aluminio", label: "Am. aluminio" }, { id: "americana_fierro", label: "Am. fierro" },
+  { id: "europea_aluminio", label: "Eu. aluminio" }, { id: "europea_fierro", label: "Eu. fierro" }
+];
+function InsumoEntradaModal({ filtro, proveedores, onClose, onSaved, pushToast }) {
+  const [categoria, setCategoria] = useState("llanta");
+  const [subtipo, setSubtipo] = useState(INSUMO_SUBTIPOS_LLANTA[0].id);
+  const [subtipoLibre, setSubtipoLibre] = useState("");
+  const [cantidad, setCantidad] = useState("");
+  const [precioUnit, setPrecioUnit] = useState("");
+  const [precioTotal, setPrecioTotal] = useState("");
+  const [proveedorId, setProveedorId] = useState("");
+  const [numeroDoc, setNumeroDoc] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  function onCantidadOPrecioUnit(cant, pu) {
+    const c = parseFloat(cant), p = parseFloat(pu);
+    if (!isNaN(c) && !isNaN(p)) setPrecioTotal(String(Math.round(c * p)));
+  }
+  function onPrecioTotal(pt) {
+    const c = parseFloat(cantidad), t = parseFloat(pt);
+    if (!isNaN(c) && c > 0 && !isNaN(t)) setPrecioUnit(String(Math.round(t / c)));
+  }
+
+  async function guardar() {
+    setError("");
+    const subtipoFinal = categoria === "llanta" ? subtipo : subtipoLibre.trim();
+    const cant = parseInt(cantidad, 10);
+    if (!subtipoFinal) { setError("Elegí o escribí el subtipo."); return; }
+    if (!cant || cant <= 0) { setError("La cantidad debe ser mayor a 0."); return; }
+    if (!numeroDoc.trim()) { setError("El N° de documento es obligatorio."); return; }
+    if (!filtro || filtro === "todas") { setError("Elegí una empresa específica en el selector de arriba."); return; }
+    setSaving(true);
+    try {
+      const { data: existentes } = await sb.from("insumos").select("*").eq("cliente_id", filtro).eq("tipo", categoria).eq("subtipo", subtipoFinal).order("creado_en").limit(1);
+      const existente = existentes && existentes[0];
+      if (existente) {
+        await sb.from("insumos").update({ cantidad: (existente.cantidad || 0) + cant, precio: precioUnit ? parseFloat(precioUnit) : existente.precio }).eq("id", existente.id);
+      } else {
+        await sb.from("insumos").insert({ id: uuid(), cliente_id: filtro, tipo: categoria, subtipo: subtipoFinal, cantidad: cant, precio: precioUnit ? parseFloat(precioUnit) : 0, activo: true });
+      }
+      await sb.from("movimientos_bodega").insert({
+        id: uuid(), cliente_id: filtro, fecha: todayISO(), categoria: "insumo", tipo: "entrada", origen: "compra",
+        precio_unitario: precioUnit ? parseFloat(precioUnit) : null, precio_total: precioTotal ? parseFloat(precioTotal) : null,
+        numero_documento: numeroDoc.trim(), cantidad: cant
+      });
+      pushToast("✓ Entrada registrada");
+      onSaved();
+    } catch (e) { console.error("No se pudo registrar la entrada", e); setError("No se pudo guardar. Intentá de nuevo."); }
+    setSaving(false);
+  }
+
+  return (
+    <Modal title="Entrada de insumos" onClose={onClose}>
+      <div className="space-y-4">
+        <Field label="Categoría" required>
+          <div className="flex gap-2 flex-wrap">
+            {INSUMO_CATEGORIAS.map(c => (
+              <button key={c.id} type="button" onClick={() => { setCategoria(c.id); setSubtipoLibre(""); }}
+                className={cx("px-3.5 h-10 rounded-2xl text-[13px] font-bold", categoria === c.id ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{c.label}</button>
+            ))}
+          </div>
+        </Field>
+        {categoria === "llanta" ? (
+          <Field label="Subtipo" required>
+            <Select value={subtipo} onChange={e => setSubtipo(e.target.value)}>
+              {INSUMO_SUBTIPOS_LLANTA.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+            </Select>
+          </Field>
+        ) : (
+          <Field label="Subtipo" required><TextInput value={subtipoLibre} onChange={e => setSubtipoLibre(e.target.value)} placeholder="Ej: Válvula metálica" /></Field>
+        )}
+        <Field label="Cantidad" required>
+          <TextInput type="number" inputMode="numeric" value={cantidad} onChange={e => { setCantidad(e.target.value); onCantidadOPrecioUnit(e.target.value, precioUnit); }} />
+        </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Precio unitario"><TextInput type="number" value={precioUnit} onChange={e => { setPrecioUnit(e.target.value); onCantidadOPrecioUnit(cantidad, e.target.value); }} /></Field>
+          <Field label="Precio total del lote"><TextInput type="number" value={precioTotal} onChange={e => { setPrecioTotal(e.target.value); onPrecioTotal(e.target.value); }} /></Field>
+        </div>
+        <Field label="Proveedor">
+          <Select value={proveedorId} onChange={e => setProveedorId(e.target.value)}>
+            <option value="">Sin especificar</option>
+            {proveedores.map(p => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+          </Select>
+        </Field>
+        <Field label="N° documento" required><TextInput value={numeroDoc} onChange={e => setNumeroDoc(e.target.value)} /></Field>
+        {error && <p className="text-[12.5px] font-bold text-[#B91C1C]">{error}</p>}
+        <Button className="w-full" disabled={saving} onClick={guardar}>{saving ? <span className="spinner" /> : "Registrar entrada"}</Button>
+      </div>
+    </Modal>
+  );
+}
+const INSUMO_MOTIVOS_SALIDA = [
+  { id: "uso_faena", label: "Uso en faena" }, { id: "perdida", label: "Pérdida" },
+  { id: "rotura", label: "Rotura" }, { id: "transferencia", label: "Transferencia" }, { id: "otro", label: "Otro" }
+];
+function InsumoSalidaModal({ insumo, filtro, onClose, onSaved, pushToast }) {
+  const [cantidad, setCantidad] = useState("");
+  const [motivo, setMotivo] = useState("uso_faena");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function guardar() {
+    setError("");
+    const cant = parseInt(cantidad, 10);
+    if (!cant || cant <= 0) { setError("La cantidad debe ser mayor a 0."); return; }
+    if (cant > insumo.cantidad) { setError(`Solo hay ${insumo.cantidad} en stock.`); return; }
+    setSaving(true);
+    try {
+      await sb.from("insumos").update({ cantidad: insumo.cantidad - cant }).eq("id", insumo.id);
+      await sb.from("movimientos_bodega").insert({
+        id: uuid(), cliente_id: filtro, fecha: todayISO(), categoria: "insumo", tipo: "salida",
+        origen: motivo, insumo_id: insumo.id, cantidad: cant, motivo
+      });
+      pushToast("✓ Salida registrada");
+      onSaved();
+    } catch (e) { console.error("No se pudo registrar la salida", e); setError("No se pudo guardar. Intentá de nuevo."); }
+    setSaving(false);
+  }
+
+  return (
+    <Modal title={`Salida — ${insumo.tipo} · ${insumo.subtipo}`} onClose={onClose}>
+      <div className="space-y-4">
+        <p className="text-[13px] text-muted">Stock actual: {insumo.cantidad}</p>
+        <Field label="Cantidad a dar salida" required><TextInput type="number" inputMode="numeric" value={cantidad} onChange={e => setCantidad(e.target.value)} /></Field>
+        <Field label="Motivo" required>
+          <div className="space-y-2">
+            {INSUMO_MOTIVOS_SALIDA.map(m => (
+              <button key={m.id} type="button" onClick={() => setMotivo(m.id)} className="w-full flex items-center gap-2 text-left">
+                <span className={cx("w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0", motivo === m.id ? "border-ink" : "border-[#D1D5DB]")}>
+                  {motivo === m.id && <span className="w-2 h-2 rounded-full bg-ink" />}
+                </span>
+                <span className="text-[13.5px]">{m.label}</span>
+              </button>
+            ))}
+          </div>
+        </Field>
+        {error && <p className="text-[12.5px] font-bold text-[#B91C1C]">{error}</p>}
+        <Button variant="danger" className="w-full" disabled={saving} onClick={guardar}>{saving ? <span className="spinner" /> : "Confirmar salida"}</Button>
+      </div>
+    </Modal>
+  );
+}
+const NEUMATICO_TIPOS = [{ id: "direccional", label: "Direccional" }, { id: "traccion", label: "Tracción" }, { id: "eje_libre", label: "Eje libre" }];
+function EntradaNeumaticosModal({ filtro, proveedores, onClose, onSaved, pushToast }) {
+  const [marca, setMarca] = useState(""); const [modelo, setModelo] = useState(""); const [medida, setMedida] = useState("");
+  const [tipo, setTipo] = useState("direccional"); const [estadoInicial, setEstadoInicial] = useState("nuevo");
+  const [cantidad, setCantidad] = useState(""); const [precioUnit, setPrecioUnit] = useState(""); const [precioTotal, setPrecioTotal] = useState("");
+  const [proveedorId, setProveedorId] = useState(""); const [numeroDoc, setNumeroDoc] = useState(""); const [fecha, setFecha] = useState(todayISO());
+  const [saving, setSaving] = useState(false); const [error, setError] = useState("");
+
+  function onCant(v) { setCantidad(v); const c = parseFloat(v), p = parseFloat(precioUnit); if (!isNaN(c) && !isNaN(p)) setPrecioTotal(String(Math.round(c * p))); }
+  function onPU(v) { setPrecioUnit(v); const c = parseFloat(cantidad), p = parseFloat(v); if (!isNaN(c) && !isNaN(p)) setPrecioTotal(String(Math.round(c * p))); }
+  function onPT(v) { setPrecioTotal(v); const c = parseFloat(cantidad), t = parseFloat(v); if (!isNaN(c) && c > 0 && !isNaN(t)) setPrecioUnit(String(Math.round(t / c))); }
+
+  async function guardar() {
+    setError("");
+    const cant = parseInt(cantidad, 10);
+    if (!marca.trim()) { setError("La marca es obligatoria."); return; }
+    if (!cant || cant <= 0) { setError("La cantidad debe ser mayor a 0."); return; }
+    if (!numeroDoc.trim()) { setError("El N° de documento es obligatorio."); return; }
+    if (!filtro || filtro === "todas") { setError("Elegí una empresa específica en el selector de arriba."); return; }
+    setSaving(true);
+    try {
+      const loteId = uuid();
+      const pu = precioUnit ? parseFloat(precioUnit) : 0;
+      const pt = precioTotal ? parseFloat(precioTotal) : pu * cant;
+      const { error: e1 } = await sb.from("lotes_inventario").insert({
+        id: loteId, cliente_id: filtro, categoria: "neumatico", marca: marca.trim(), modelo: modelo.trim() || null, medida: medida.trim() || null,
+        tipo, cantidad_inicial: cant, cantidad_actual: cant, precio_unitario: pu, precio_total: pt,
+        proveedor_id: proveedorId || null, numero_documento: numeroDoc.trim(), fecha_ingreso: fecha
+      });
+      if (e1) throw e1;
+      const bodegaDestino = estadoInicial === "recauchado" ? "recauchado" : "nuevo";
+      // numero_fuego es NOT NULL en la base real (la spec original decia dejarlo
+      // vacio "a asignar en campo", pero la tabla no lo permite) — se genera un
+      // provisorio unico por neumatico que el mecanico puede corregir en terreno.
+      const lotePrefijo = "PEND" + Date.now().toString(36).toUpperCase();
+      const filas = Array.from({ length: cant }).map((_, i) => ({
+        id_neumatico: uuid(), numero_fuego: `${lotePrefijo}${i + 1}`, cliente_id: filtro, marca: marca.trim(), modelo: modelo.trim() || null,
+        medida: medida.trim() || null, tipo, estado_actual: estadoInicial, bodega: bodegaDestino, fecha_ingreso: fecha, activo: true
+      }));
+      const { error: e2 } = await sb.from("neumaticos").insert(filas);
+      if (e2) throw e2;
+      await sb.from("movimientos_bodega").insert({
+        id: uuid(), cliente_id: filtro, fecha, categoria: "neumatico", tipo: "entrada", origen: "compra",
+        precio_unitario: pu, precio_total: pt,
+        numero_documento: numeroDoc.trim(), lote_id: loteId, cantidad: cant
+      });
+      pushToast(`✓ ${cant} neumáticos agregados al inventario (N° de fuego provisorio ${lotePrefijo}1..${cant} — corregir en terreno)`);
+      onSaved();
+    } catch (e) { console.error("No se pudo cargar el lote de neumáticos", e); setError("No se pudo guardar. Verificá los datos e intentá de nuevo."); }
+    setSaving(false);
+  }
+
+  return (
+    <Modal title="Entrada de neumáticos (carga valorizada)" onClose={onClose} wide>
+      <div className="space-y-4">
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Marca" required><TextInput value={marca} onChange={e => setMarca(e.target.value)} /></Field>
+          <Field label="Modelo"><TextInput value={modelo} onChange={e => setModelo(e.target.value)} /></Field>
+        </div>
+        <Field label="Medida" hint="Ej: 295/80R22.5"><TextInput value={medida} onChange={e => setMedida(e.target.value)} /></Field>
+        <Field label="Tipo" required>
+          <div className="flex gap-2 flex-wrap">
+            {NEUMATICO_TIPOS.map(t => (
+              <button key={t.id} type="button" onClick={() => setTipo(t.id)} className={cx("px-3.5 h-10 rounded-2xl text-[13px] font-bold", tipo === t.id ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{t.label}</button>
+            ))}
+          </div>
+        </Field>
+        <Field label="Estado inicial" required>
+          <div className="flex gap-2">
+            {[["nuevo", "Nuevo"], ["recauchado", "Recauchado"]].map(([id, l]) => (
+              <button key={id} type="button" onClick={() => setEstadoInicial(id)} className={cx("flex-1 h-11 rounded-2xl text-[13.5px] font-bold", estadoInicial === id ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{l}</button>
+            ))}
+          </div>
+        </Field>
+        <Field label="Cantidad" required><TextInput type="number" inputMode="numeric" value={cantidad} onChange={e => onCant(e.target.value)} /></Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Precio unitario"><TextInput type="number" value={precioUnit} onChange={e => onPU(e.target.value)} /></Field>
+          <Field label="Precio total del lote"><TextInput type="number" value={precioTotal} onChange={e => onPT(e.target.value)} /></Field>
+        </div>
+        <Field label="Proveedor">
+          <Select value={proveedorId} onChange={e => setProveedorId(e.target.value)}>
+            <option value="">Sin especificar</option>
+            {proveedores.map(p => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+          </Select>
+        </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="N° documento" required><TextInput value={numeroDoc} onChange={e => setNumeroDoc(e.target.value)} /></Field>
+          <Field label="Fecha de ingreso"><TextInput type="date" value={fecha} onChange={e => setFecha(e.target.value)} /></Field>
+        </div>
+        {error && <p className="text-[12.5px] font-bold text-[#B91C1C]">{error}</p>}
+        <Button className="w-full" disabled={saving} onClick={guardar}>{saving ? <span className="spinner" /> : "Agregar al inventario"}</Button>
+      </div>
+    </Modal>
+  );
+}
+function PaseBajasSalidasSeccion({ filtro, pushToast, onCambio }) {
+  const [lista, setLista] = useState([]);
+  const [sel, setSel] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [confirmando, setConfirmando] = useState(false);
+  const [justificacion, setJustificacion] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  function cargar() {
+    setLoading(true);
+    let q = sb.from("neumaticos").select("*").eq("bodega", "baja").eq("activo", true);
+    q = filtroCliente(q, filtro);
+    q.then(({ data }) => { setLista(data || []); setSel({}); setLoading(false); });
+  }
+  useEffect(() => { cargar(); }, [filtro]);
+
+  const seleccionados = Object.keys(sel).filter(k => sel[k]);
+
+  async function confirmar() {
+    if (!justificacion.trim()) return;
+    setSaving(true);
+    try {
+      await sb.from("neumaticos").update({ bodega: "salidas" }).in("id_neumatico", seleccionados);
+      await sb.from("movimientos_bodega").insert(seleccionados.map(id => {
+        const n = lista.find(x => x.id_neumatico === id);
+        return { id: uuid(), cliente_id: filtro, fecha: todayISO(), categoria: "neumatico", tipo: "salida", origen: "salida_definitiva", numero_fuego: n ? n.numero_fuego : null, motivo: justificacion.trim() };
+      }));
+      pushToast(`✓ ${seleccionados.length} neumáticos pasados a salidas`);
+      setConfirmando(false); setJustificacion("");
+      cargar(); onCambio && onCambio();
+    } catch (e) { console.error("No se pudo confirmar la salida definitiva", e); }
+    setSaving(false);
+  }
+
+  if (loading) return <div className="flex justify-center py-10"><span className="spinner" /></div>;
+  return (
+    <div>
+      <div className="bg-white rounded-2xl border border-bd shadow-card overflow-x-auto mb-4">
+        <table className="w-full text-[13.5px] min-w-[560px]">
+          <thead><tr className="text-left text-muted border-b border-bd">
+            <th className="py-3 px-4"></th><th className="font-semibold py-3 px-4">N° fuego</th><th className="font-semibold py-3 px-4">Marca</th>
+            <th className="font-semibold py-3 px-4">Modelo</th><th className="font-semibold py-3 px-4">Motivo baja</th><th className="font-semibold py-3 px-4">Fecha baja</th>
+          </tr></thead>
+          <tbody>
+            {lista.map(n => (
+              <tr key={n.id_neumatico} className="border-b border-bd last:border-0">
+                <td className="py-2.5 px-4"><input type="checkbox" checked={!!sel[n.id_neumatico]} onChange={e => setSel(s => ({ ...s, [n.id_neumatico]: e.target.checked }))} /></td>
+                <td className="py-2.5 px-4 font-bold">{n.numero_fuego || "-"}</td><td className="py-2.5 px-4">{n.marca || "-"}</td>
+                <td className="py-2.5 px-4">{n.modelo || "-"}</td><td className="py-2.5 px-4">-</td><td className="py-2.5 px-4">{n.fecha_ingreso || "-"}</td>
+              </tr>
+            ))}
+            {!lista.length && <tr><td colSpan="6" className="text-center text-muted py-8">No hay neumáticos en baja.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      <Button disabled={!seleccionados.length} onClick={() => setConfirmando(true)}>Confirmar salida definitiva ({seleccionados.length})</Button>
+      {confirmando && (
+        <Modal title="Salida definitiva" onClose={() => setConfirmando(false)}>
+          <p className="text-[14px] text-[#374151] mb-4">Vas a dar salida definitiva a {seleccionados.length} neumáticos. ¿Confirmar?</p>
+          <Field label="Justificación" required><TextArea value={justificacion} onChange={e => setJustificacion(e.target.value)} /></Field>
+          <Button className="w-full mt-4" variant="danger" disabled={saving || !justificacion.trim()} onClick={confirmar}>{saving ? <span className="spinner" /> : "Confirmar"}</Button>
+        </Modal>
+      )}
+    </div>
+  );
+}
+function PaseRepararRecauchadoSeccion({ filtro, pushToast, onCambio }) {
+  const [lista, setLista] = useState([]);
+  const [diasAlerta, setDiasAlerta] = useState(30);
+  const [sel, setSel] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [confirmando, setConfirmando] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  async function cargar() {
+    setLoading(true);
+    let q = sb.from("neumaticos").select("*").eq("bodega", "reparacion").eq("activo", true);
+    q = filtroCliente(q, filtro);
+    const { data } = await q;
+    let dias = 30;
+    if (filtro && filtro !== "todas") {
+      const { data: cfg } = await sb.from("config_cliente").select("valor").eq("cliente_id", filtro).eq("clave", "dias_alerta_recauchado").maybeSingle();
+      if (cfg && cfg.valor) dias = parseInt(cfg.valor, 10) || 30;
+    }
+    setDiasAlerta(dias);
+    setLista(data || []); setSel({}); setLoading(false);
+  }
+  useEffect(() => { cargar(); }, [filtro]);
+
+  function diasEnReparar(n) {
+    if (!n.fecha_ingreso) return null;
+    const ms = Date.now() - new Date(n.fecha_ingreso + "T00:00:00").getTime();
+    return Math.floor(ms / 86400000);
+  }
+  const seleccionados = Object.keys(sel).filter(k => sel[k]);
+
+  async function confirmar() {
+    setSaving(true);
+    try {
+      await sb.from("neumaticos").update({ bodega: "recauchado", estado_actual: "recauchado" }).in("id_neumatico", seleccionados);
+      await sb.from("movimientos_bodega").insert(seleccionados.map(id => {
+        const n = lista.find(x => x.id_neumatico === id);
+        return { id: uuid(), cliente_id: filtro, fecha: todayISO(), categoria: "neumatico", tipo: "salida", origen: "pase_recauchado", numero_fuego: n ? n.numero_fuego : null };
+      }));
+      pushToast(`✓ ${seleccionados.length} neumáticos pasados a recauchado`);
+      setConfirmando(false);
+      cargar(); onCambio && onCambio();
+    } catch (e) { console.error("No se pudo confirmar el pase a recauchado", e); }
+    setSaving(false);
+  }
+
+  if (loading) return <div className="flex justify-center py-10"><span className="spinner" /></div>;
+  return (
+    <div>
+      <div className="bg-white rounded-2xl border border-bd shadow-card overflow-x-auto mb-4">
+        <table className="w-full text-[13.5px] min-w-[480px]">
+          <thead><tr className="text-left text-muted border-b border-bd">
+            <th className="py-3 px-4"></th><th className="font-semibold py-3 px-4">N° fuego</th><th className="font-semibold py-3 px-4">Marca</th><th className="font-semibold py-3 px-4">Días en reparar</th>
+          </tr></thead>
+          <tbody>
+            {lista.map(n => {
+              const dias = diasEnReparar(n);
+              const destacado = dias != null && dias > diasAlerta;
+              return (
+                <tr key={n.id_neumatico} className={cx("border-b border-bd last:border-0", destacado && "bg-[#FFFBEB]")}>
+                  <td className="py-2.5 px-4"><input type="checkbox" checked={!!sel[n.id_neumatico]} onChange={e => setSel(s => ({ ...s, [n.id_neumatico]: e.target.checked }))} /></td>
+                  <td className="py-2.5 px-4 font-bold">{n.numero_fuego || "-"}</td><td className="py-2.5 px-4">{n.marca || "-"}</td>
+                  <td className="py-2.5 px-4">{dias != null ? `${dias} días${destacado ? " ⚠" : ""}` : "-"}</td>
+                </tr>
+              );
+            })}
+            {!lista.length && <tr><td colSpan="4" className="text-center text-muted py-8">No hay neumáticos en reparación.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      <Button disabled={!seleccionados.length} onClick={() => setConfirmando(true)}>Confirmar pase a recauchado ({seleccionados.length})</Button>
+      {confirmando && (
+        <Confirm title="Pase a recauchado" desc={`Vas a pasar ${seleccionados.length} neumáticos de reparación a recauchado. ¿Confirmar?`}
+          onCancel={() => setConfirmando(false)} onConfirm={confirmar} />
+      )}
+    </div>
+  );
+}
+const INVENTARIO_TABS = [
+  { id: "resumen", label: "Resumen" }, { id: "insumos", label: "Insumos" },
+  { id: "bajas", label: "Bajas → Salidas" }, { id: "reparar", label: "Reparar → Recauchado" }
+];
+function InventarioMaestroView({ empresaCtl, onBack }) {
+  const { filtro } = empresaCtl;
+  const [tab, setTab] = useState("resumen");
+  const [counts, setCounts] = useState(null);
+  const [insumos, setInsumos] = useState([]);
+  const [proveedores, setProveedores] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [modalEntrada, setModalEntrada] = useState(false);
+  const [modalEntradaNeumaticos, setModalEntradaNeumaticos] = useState(false);
+  const [salidaInsumo, setSalidaInsumo] = useState(null);
+  const [pushToast, toastNode] = useToasts();
+
+  function cargar() {
+    setLoading(true);
+    Promise.all([
+      fetchBodegaCounts(filtro),
+      (() => { let q = sb.from("insumos").select("*").eq("activo", true).order("tipo"); q = filtroCliente(q, filtro); return q; })(),
+      sb.from("proveedores").select("*").eq("activo", true).order("nombre")
+    ]).then(([c, ins, provs]) => {
+      setCounts(c); setInsumos(ins.data || []); setProveedores(provs.data || []);
+    }).catch(e => console.error("No se pudo cargar el inventario", e)).finally(() => setLoading(false));
+  }
+  useEffect(() => { cargar(); }, [filtro]);
+
+  return (
+    <div>
+      {toastNode}
+      <button onClick={onBack} className="flex items-center gap-2 text-[13.5px] font-bold text-muted mb-4"><Icon.back width="15" height="15" /> Maestros</button>
+      <div className="flex items-center justify-between gap-3 mb-5 flex-wrap">
+        <h1 className="text-[26px] font-extrabold">📦 Inventario</h1>
+        <Button className="h-11 px-4 text-[13.5px]" onClick={() => setModalEntradaNeumaticos(true)}>+ Entrada de neumáticos</Button>
+      </div>
+      <div className="flex gap-2 mb-5 overflow-x-auto">
+        {INVENTARIO_TABS.map(t => (
+          <button key={t.id} onClick={() => setTab(t.id)} className={cx("px-4 py-2 rounded-full text-[13px] font-bold whitespace-nowrap", tab === t.id ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{t.label}</button>
+        ))}
+      </div>
+      {loading ? <div className="flex justify-center py-10"><span className="spinner" /></div> : (
+        <>
+          {tab === "resumen" && (
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+              {BODEGA_BUCKETS.map(b => <KpiCard key={b.id} label={b.label} value={counts ? counts[b.id] : null} />)}
+            </div>
+          )}
+          {tab === "insumos" && (
+            <div>
+              <div className="flex justify-end mb-4"><Button className="h-10 px-4 text-[13px]" onClick={() => setModalEntrada(true)}>+ Entrada</Button></div>
+              <div className="bg-white rounded-2xl border border-bd shadow-card overflow-x-auto">
+                <table className="w-full text-[13.5px] min-w-[500px]">
+                  <thead><tr className="text-left text-muted border-b border-bd">
+                    <th className="font-semibold py-3 px-4">Tipo</th><th className="font-semibold py-3 px-4">Subtipo</th>
+                    <th className="font-semibold py-3 px-4">Cantidad</th><th className="font-semibold py-3 px-4">Precio unit.</th><th className="font-semibold py-3 px-4"></th>
+                  </tr></thead>
+                  <tbody>
+                    {insumos.map(i => (
+                      <tr key={i.id} className="border-b border-bd last:border-0">
+                        <td className="py-2.5 px-4 font-bold capitalize">{i.tipo}</td><td className="py-2.5 px-4">{i.subtipo}</td>
+                        <td className="py-2.5 px-4">{i.cantidad}</td><td className="py-2.5 px-4">{i.precio != null ? `$${i.precio.toLocaleString()}` : "-"}</td>
+                        <td className="py-2.5 px-4"><button onClick={() => setSalidaInsumo(i)} className="text-[11.5px] font-bold text-ink px-2.5 py-1.5 rounded-full bg-[#F3F4F6]">Salida</button></td>
+                      </tr>
+                    ))}
+                    {!insumos.length && <tr><td colSpan="5" className="text-center text-muted py-8">Sin insumos para esta empresa.</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+          {tab === "bajas" && <PaseBajasSalidasSeccion filtro={filtro} pushToast={pushToast} onCambio={cargar} />}
+          {tab === "reparar" && <PaseRepararRecauchadoSeccion filtro={filtro} pushToast={pushToast} onCambio={cargar} />}
+        </>
+      )}
+      {modalEntrada && (
+        <InsumoEntradaModal filtro={filtro} proveedores={proveedores} pushToast={pushToast}
+          onClose={() => setModalEntrada(false)} onSaved={() => { setModalEntrada(false); cargar(); }} />
+      )}
+      {salidaInsumo && (
+        <InsumoSalidaModal insumo={salidaInsumo} filtro={filtro} pushToast={pushToast}
+          onClose={() => setSalidaInsumo(null)} onSaved={() => { setSalidaInsumo(null); cargar(); }} />
+      )}
+      {modalEntradaNeumaticos && (
+        <EntradaNeumaticosModal filtro={filtro} proveedores={proveedores} pushToast={pushToast}
+          onClose={() => setModalEntradaNeumaticos(false)} onSaved={() => { setModalEntradaNeumaticos(false); cargar(); }} />
+      )}
+    </div>
+  );
+}
+
+/* =====================================================================
+   MAESTROS · HERRAMIENTAS
+===================================================================== */
+function HerramientaMaestroModal({ herramienta, filtro, empresaNombre, proveedores, onClose, onSaved, pushToast }) {
+  const editando = !!herramienta;
+  const [nombre, setNombre] = useState(herramienta ? (herramienta.nombre || "") : "");
+  const [descripcion, setDescripcion] = useState(herramienta ? (herramienta.descripcion || "") : "");
+  const [cantidad, setCantidad] = useState(herramienta ? String(herramienta.cantidad || "") : "");
+  const [precioUnit, setPrecioUnit] = useState(herramienta ? String(herramienta.precio_unitario || "") : "");
+  const [empresaCosto, setEmpresaCosto] = useState(herramienta ? (herramienta.empresa_costo || "MOSA") : "MOSA");
+  const [proveedorId, setProveedorId] = useState(herramienta ? (herramienta.proveedor_id || "") : "");
+  const [numeroDoc, setNumeroDoc] = useState(herramienta ? (herramienta.numero_documento || "") : "");
+  const [fechaIngreso, setFechaIngreso] = useState(herramienta ? (herramienta.fecha_ingreso || todayISO()) : todayISO());
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function guardar() {
+    setError("");
+    if (!nombre.trim()) { setError("El nombre es obligatorio."); return; }
+    if (!editando && (!filtro || filtro === "todas")) { setError("Elegí una empresa específica en el selector de arriba."); return; }
+    setSaving(true);
+    try {
+      const payload = {
+        nombre: nombre.trim(), descripcion: descripcion.trim() || null, cantidad: cantidad ? parseInt(cantidad, 10) : 0,
+        precio_unitario: precioUnit ? parseFloat(precioUnit) : null, empresa_costo: empresaCosto, proveedor_id: proveedorId || null,
+        numero_documento: numeroDoc.trim() || null, fecha_ingreso: fechaIngreso
+      };
+      if (editando) {
+        const { error: e } = await sb.from("herramientas_inventario").update(payload).eq("id", herramienta.id);
+        if (e) throw e;
+        pushToast("✓ Herramienta actualizada");
+      } else {
+        const { error: e } = await sb.from("herramientas_inventario").insert({ ...payload, id: uuid(), cliente_id: filtro, activo: true });
+        if (e) throw e;
+        await sb.from("movimientos_bodega").insert({
+          id: uuid(), cliente_id: filtro, fecha: fechaIngreso, categoria: "herramienta", tipo: "entrada", origen: "ingreso_herramienta",
+          precio_unitario: precioUnit ? parseFloat(precioUnit) : null, numero_documento: numeroDoc.trim() || null, cantidad: cantidad ? parseInt(cantidad, 10) : 0
+        });
+        pushToast("✓ Herramienta creada");
+      }
+      onSaved();
+    } catch (e) { console.error("No se pudo guardar la herramienta", e); setError("No se pudo guardar. Intentá de nuevo."); }
+    setSaving(false);
+  }
+
+  return (
+    <Modal title={editando ? "Editar herramienta" : "Nueva herramienta"} onClose={onClose}>
+      <div className="space-y-4">
+        <Field label="Nombre" required><TextInput value={nombre} onChange={e => setNombre(e.target.value)} /></Field>
+        <Field label="Descripción"><TextArea value={descripcion} onChange={e => setDescripcion(e.target.value)} /></Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Cantidad"><TextInput type="number" inputMode="numeric" value={cantidad} onChange={e => setCantidad(e.target.value)} /></Field>
+          <Field label="Precio unitario"><TextInput type="number" value={precioUnit} onChange={e => setPrecioUnit(e.target.value)} /></Field>
+        </div>
+        <Field label="Empresa que absorbe el costo" required>
+          <div className="flex gap-2">
+            {["MOSA", empresaNombre].map(op => (
+              <button key={op} type="button" onClick={() => setEmpresaCosto(op)} className={cx("flex-1 h-11 rounded-2xl text-[13.5px] font-bold", empresaCosto === op ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{op}</button>
+            ))}
+          </div>
+        </Field>
+        <Field label="Proveedor">
+          <Select value={proveedorId} onChange={e => setProveedorId(e.target.value)}>
+            <option value="">Sin especificar</option>
+            {proveedores.map(p => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+          </Select>
+        </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="N° documento"><TextInput value={numeroDoc} onChange={e => setNumeroDoc(e.target.value)} /></Field>
+          <Field label="Fecha ingreso"><TextInput type="date" value={fechaIngreso} onChange={e => setFechaIngreso(e.target.value)} /></Field>
+        </div>
+        {error && <p className="text-[12.5px] font-bold text-[#B91C1C]">{error}</p>}
+        <Button className="w-full" disabled={saving} onClick={guardar}>{saving ? <span className="spinner" /> : (editando ? "Guardar cambios" : "Crear herramienta")}</Button>
+      </div>
+    </Modal>
+  );
+}
+const HERRAMIENTA_MOTIVOS_BAJA = [
+  { id: "fin_vida_util", label: "Fin de vida útil" }, { id: "rotura", label: "Rotura" },
+  { id: "perdida", label: "Pérdida" }, { id: "otro", label: "Otro" }
+];
+function HerramientaBajaModal({ herramienta, filtro, onClose, onSaved, pushToast }) {
+  const [motivo, setMotivo] = useState("fin_vida_util");
+  const [saving, setSaving] = useState(false);
+
+  async function confirmar() {
+    setSaving(true);
+    try {
+      await sb.from("herramientas_inventario").update({ activo: false, fecha_baja: todayISO(), motivo_baja: motivo }).eq("id", herramienta.id);
+      await sb.from("movimientos_bodega").insert({
+        id: uuid(), cliente_id: filtro, fecha: todayISO(), categoria: "herramienta", tipo: "salida", origen: "baja_herramienta", motivo
+      });
+      pushToast("✓ Herramienta dada de baja");
+      onSaved();
+    } catch (e) { console.error("No se pudo dar de baja la herramienta", e); }
+    setSaving(false);
+  }
+
+  return (
+    <Modal title={`Dar de baja — ${herramienta.nombre}`} onClose={onClose}>
+      <div className="space-y-2 mb-5">
+        {HERRAMIENTA_MOTIVOS_BAJA.map(m => (
+          <button key={m.id} type="button" onClick={() => setMotivo(m.id)} className="w-full flex items-center gap-2 text-left">
+            <span className={cx("w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0", motivo === m.id ? "border-ink" : "border-[#D1D5DB]")}>
+              {motivo === m.id && <span className="w-2 h-2 rounded-full bg-ink" />}
+            </span>
+            <span className="text-[13.5px]">{m.label}</span>
+          </button>
+        ))}
+      </div>
+      <Button variant="danger" className="w-full" disabled={saving} onClick={confirmar}>{saving ? <span className="spinner" /> : "Confirmar baja"}</Button>
+    </Modal>
+  );
+}
+function HerramientasMaestroView({ empresaCtl, onBack }) {
+  const { filtro, empresas } = empresaCtl;
+  const [lista, setLista] = useState([]);
+  const [proveedores, setProveedores] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [modal, setModal] = useState(undefined);
+  const [baja, setBaja] = useState(null);
+  const [pushToast, toastNode] = useToasts();
+  const empresaNombre = (empresas.find(e => e.id_cliente === filtro) || {}).nombre || "Empresa";
+
+  function cargar() {
+    setLoading(true);
+    Promise.all([
+      (() => { let q = sb.from("herramientas_inventario").select("*").order("nombre"); q = filtroCliente(q, filtro); return q; })(),
+      sb.from("proveedores").select("*").eq("activo", true)
+    ]).then(([h, p]) => { setLista(h.data || []); setProveedores(p.data || []); }).catch(e => console.error(e)).finally(() => setLoading(false));
+  }
+  useEffect(() => { cargar(); }, [filtro]);
+
+  return (
+    <div>
+      {toastNode}
+      <button onClick={onBack} className="flex items-center gap-2 text-[13.5px] font-bold text-muted mb-4"><Icon.back width="15" height="15" /> Maestros</button>
+      <div className="flex items-center justify-between gap-3 mb-5 flex-wrap">
+        <h1 className="text-[26px] font-extrabold">🛠 Herramientas</h1>
+        <Button className="h-11 px-4 text-[13.5px]" onClick={() => setModal(null)}>+ Nueva herramienta</Button>
+      </div>
+      {loading ? <div className="flex justify-center py-10"><span className="spinner" /></div> : (
+        <div className="bg-white rounded-2xl border border-bd shadow-card overflow-x-auto">
+          <table className="w-full text-[13.5px] min-w-[760px]">
+            <thead><tr className="text-left text-muted border-b border-bd">
+              <th className="font-semibold py-3 px-4">Nombre</th><th className="font-semibold py-3 px-4">Cantidad</th>
+              <th className="font-semibold py-3 px-4">Empresa costo</th><th className="font-semibold py-3 px-4">Precio unit.</th>
+              <th className="font-semibold py-3 px-4">Fecha ingreso</th><th className="font-semibold py-3 px-4">Estado</th><th className="font-semibold py-3 px-4"></th>
+            </tr></thead>
+            <tbody>
+              {lista.map(h => (
+                <tr key={h.id} className="border-b border-bd last:border-0">
+                  <td className="py-2.5 px-4 font-bold">{h.nombre}</td><td className="py-2.5 px-4">{h.cantidad}</td>
+                  <td className="py-2.5 px-4">{h.empresa_costo}</td><td className="py-2.5 px-4">{h.precio_unitario != null ? `$${h.precio_unitario.toLocaleString()}` : "-"}</td>
+                  <td className="py-2.5 px-4">{h.fecha_ingreso || "-"}</td>
+                  <td className="py-2.5 px-4"><Badge color={h.activo ? "green" : "gray"}>{h.activo ? "Activa" : "De baja"}</Badge></td>
+                  <td className="py-2.5 px-4">
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => setModal(h)} className="w-8 h-8 rounded-full bg-[#F3F4F6] flex items-center justify-center"><Icon.pencil width="13" height="13" /></button>
+                      {h.activo && <button onClick={() => setBaja(h)} className="text-[11.5px] font-bold text-[#B91C1C] px-2.5 py-1.5 rounded-full bg-[#FEE2E2] whitespace-nowrap">Dar de baja</button>}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {!lista.length && <tr><td colSpan="7" className="text-center text-muted py-8">No hay herramientas para esta empresa.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {modal !== undefined && (
+        <HerramientaMaestroModal herramienta={modal} filtro={filtro} empresaNombre={empresaNombre} proveedores={proveedores} pushToast={pushToast}
+          onClose={() => setModal(undefined)} onSaved={() => { setModal(undefined); cargar(); }} />
+      )}
+      {baja && (
+        <HerramientaBajaModal herramienta={baja} filtro={filtro} pushToast={pushToast}
+          onClose={() => setBaja(null)} onSaved={() => { setBaja(null); cargar(); }} />
+      )}
+    </div>
+  );
+}
+
+/* =====================================================================
+   MAESTROS · MENU PRINCIPAL
+===================================================================== */
+function MaestrosView({ empresaCtl }) {
+  const [sub, setSub] = useState(null);
+  if (sub === "mecanicos") return <MecanicosMaestroView empresaCtl={empresaCtl} onBack={() => setSub(null)} />;
+  if (sub === "proveedores") return <ProveedoresMaestroView empresaCtl={empresaCtl} onBack={() => setSub(null)} />;
+  if (sub === "inventario") return <InventarioMaestroView empresaCtl={empresaCtl} onBack={() => setSub(null)} />;
+  if (sub === "herramientas") return <HerramientasMaestroView empresaCtl={empresaCtl} onBack={() => setSub(null)} />;
   return (
     <div>
       <h1 className="text-[26px] font-extrabold mb-5">Maestros</h1>
-      <Card>
-        <p className="font-bold text-[16px] mb-2">Maestros en construcción</p>
-        <p className="text-[14px] text-sub">Clientes, equipos, mecánicos, neumáticos e inventario (alta/edición) llegan en la siguiente etapa del proyecto.</p>
-      </Card>
+      <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        <button onClick={() => setSub("mecanicos")} className="text-left"><Card><p className="text-[24px] mb-2">👷</p><p className="font-bold text-[15px]">Mecánicos</p><p className="text-[12.5px] text-muted mt-1">Alta, edición y estado</p></Card></button>
+        <button onClick={() => setSub("proveedores")} className="text-left"><Card><p className="text-[24px] mb-2">🏭</p><p className="font-bold text-[15px]">Proveedores</p><p className="text-[12.5px] text-muted mt-1">Alta, edición y estado</p></Card></button>
+        <button onClick={() => setSub("inventario")} className="text-left"><Card><p className="text-[24px] mb-2">📦</p><p className="font-bold text-[15px]">Inventario</p><p className="text-[12.5px] text-muted mt-1">Insumos, bajas y recauchado</p></Card></button>
+        <button onClick={() => setSub("herramientas")} className="text-left"><Card><p className="text-[24px] mb-2">🛠</p><p className="font-bold text-[15px]">Herramientas</p><p className="text-[12.5px] text-muted mt-1">Alta, edición y baja</p></Card></button>
+      </div>
     </div>
   );
 }
@@ -1202,78 +2846,320 @@ function MaestrosView() {
 /* =====================================================================
    ALERTAS (admin)
 ===================================================================== */
-function AlertasAdminView({ empresaCtl, onAbrirMecanico, mecanicosPorId }) {
-  const { filtro } = empresaCtl;
+const ALERTA_TIPO_GRUPOS = [
+  { id: "todas", label: "Todas", tipos: null },
+  { id: "psi", label: "PSI", tipos: ["psi_bajo", "psi_alto"] },
+  { id: "mm", label: "MM", tipos: ["mm_critico", "mm_bajo"] },
+  { id: "discrepancias", label: "Discrepancias", tipos: ["discrepancia_inventario", "neumatico_no_registrado"] },
+  { id: "instructivos", label: "Instructivos", tipos: ["instructivo"] },
+  { id: "cierres", label: "Cierres", tipos: ["cierre_dia"] },
+  { id: "desbloqueos", label: "Desbloqueos", tipos: ["solicitud_desbloqueo", "desbloqueo_aprobado"] }
+];
+const SEVERIDAD_RANK = { rojo: 0, amarillo: 1, info: 2 };
+function ordenarAlertas(lista) {
+  // Las criticas (rojo) siempre primero; cierre_dia/instructivo (severidad
+  // info) van al fondo, sin importar el filtro de fecha.
+  return [...lista].sort((a, b) => {
+    const ra = SEVERIDAD_RANK[a.severidad] != null ? SEVERIDAD_RANK[a.severidad] : 1;
+    const rb = SEVERIDAD_RANK[b.severidad] != null ? SEVERIDAD_RANK[b.severidad] : 1;
+    if (ra !== rb) return ra - rb;
+    return (b.creado_en || "").localeCompare(a.creado_en || "");
+  });
+}
+function timeAgoCorto(iso) {
+  if (!iso) return "";
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return "ahora";
+  if (mins < 60) return `hace ${mins}m`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `hace ${hrs}h`;
+  const dias = Math.floor(hrs / 24);
+  if (dias < 7) return `hace ${dias}d`;
+  return iso.slice(0, 10);
+}
+async function fetchAlertasCompletas(clienteId) {
+  let q = sb.from("alertas").select("*").order("creado_en", { ascending: false }).limit(300);
+  q = filtroCliente(q, clienteId);
+  const { data, error } = await q;
+  if (error) throw error;
+  const eqIds = [...new Set((data || []).map(a => a.equipo_id))].filter(Boolean);
+  const mecIds = [...new Set((data || []).map(a => a.mecanico_id))].filter(Boolean);
+  const [{ data: eqs }, { data: mecs }] = await Promise.all([
+    eqIds.length ? sb.from("equipos").select("id_equipo,patente,numero_interno").in("id_equipo", eqIds) : Promise.resolve({ data: [] }),
+    mecIds.length ? sb.from("usuarios").select("id,nombre,apellido,cliente_id").in("id", mecIds) : Promise.resolve({ data: [] })
+  ]);
+  const eqMap = {}; (eqs || []).forEach(e => { eqMap[e.id_equipo] = e; });
+  const mecMap = {}; (mecs || []).forEach(m => { mecMap[m.id] = m; });
+  return (data || []).map(a => ({ ...a, equipo: eqMap[a.equipo_id] || null, mecanico: mecMap[a.mecanico_id] || null }));
+}
+async function fetchStatsAlertas(clienteId) {
+  const hoy = todayISO();
+  let qa = sb.from("alertas").select("creado_en,severidad,leida_admin"); qa = filtroCliente(qa, clienteId);
+  let qd = sb.from("discrepancias_inventario").select("creado_en,resuelto_en,resuelta,fecha"); qd = filtroCliente(qd, clienteId);
+  const [{ data: als }, { data: discs }] = await Promise.all([qa, qd]);
+  const totalHoy = (als || []).filter(a => (a.creado_en || "").slice(0, 10) === hoy).length;
+  const criticasSinResolver = (als || []).filter(a => a.severidad === "rojo" && !a.leida_admin).length;
+  const resueltasHoy = (discs || []).filter(d => d.fecha === hoy && d.resuelta && d.resuelto_en);
+  let tiempoProm = null;
+  if (resueltasHoy.length) {
+    const totalHoras = resueltasHoy.reduce((sum, d) => sum + (new Date(d.resuelto_en) - new Date(d.creado_en)) / 3600000, 0);
+    tiempoProm = totalHoras / resueltasHoy.length;
+  }
+  return { totalHoy, criticasSinResolver, tiempoProm };
+}
+
+function DiscrepanciaNeumaticoDetalleModal({ alerta, adminUser, onClose, onResuelto, pushToast }) {
+  const [disc, setDisc] = useState(undefined); // undefined=cargando, null=no encontrada
+  useEffect(() => {
+    let cancel = false;
+    // Sin filtro de fecha exacta (misma razon que en DiscrepanciaInventarioDetalleModal):
+    // equipo+posicion+mecanico+sin resolver ya identifica la discrepancia sin ambiguedad.
+    let q = sb.from("discrepancias_inventario").select("*").eq("origen", "auditoria").eq("resuelta", false).order("creado_en", { ascending: false });
+    if (alerta.equipo_id) q = q.eq("equipo_id", alerta.equipo_id);
+    if (alerta.posicion != null) q = q.eq("posicion", alerta.posicion);
+    if (alerta.mecanico_id) q = q.eq("mecanico_id", alerta.mecanico_id);
+    q.then(({ data }) => { if (!cancel) setDisc((data && data[0]) || null); });
+    return () => { cancel = true; };
+  }, [alerta.id]);
+
+  async function resolver(d, aprobar, justificacion) {
+    await resolverDiscrepanciaAuditoria(d, aprobar, justificacion, adminUser);
+    pushToast(aprobar ? "✓ Discrepancia aprobada — neumaticos actualizado" : "✓ Discrepancia rechazada");
+    onResuelto();
+  }
+
+  return (
+    <Modal title="Discrepancia de neumático" onClose={onClose}>
+      {disc === undefined ? <div className="flex justify-center py-8"><span className="spinner" /></div> : disc ? (
+        <DiscrepanciaAuditoriaCard d={{ ...disc, equipo: alerta.equipo, mecanico: alerta.mecanico }} onResolver={resolver} />
+      ) : <p className="text-[13.5px] text-muted">Esta discrepancia ya fue resuelta.</p>}
+    </Modal>
+  );
+}
+function DiscrepanciaInventarioDetalleModal({ alerta, adminUser, onClose, onResuelto, pushToast }) {
+  const [lista, setLista] = useState(null);
+  function cargar() {
+    // No se filtra por fecha exacta: la fecha guardada en discrepancias_inventario
+    // puede diferir en 1 dia de alerta.creado_en por el huso horario (el check
+    // diario corre cerca de medianoche UTC).
+    sb.from("discrepancias_inventario").select("*").eq("mecanico_id", alerta.mecanico_id).eq("origen", "check_diario").eq("resuelta", false)
+      .order("creado_en", { ascending: true })
+      .then(({ data, error }) => { if (error) { console.error(error); setLista([]); } else setLista(data || []); });
+  }
+  useEffect(() => { cargar(); }, [alerta.id]);
+
+  async function resolver(d, aprobar, justificacion) {
+    await resolverDiscrepancia(d, aprobar, justificacion, adminUser.id);
+    pushToast(aprobar ? "✓ Ajuste aprobado" : "✓ Discrepancia rechazada");
+    setLista(ls => ls.filter(x => x.id !== d.id));
+    onResuelto();
+  }
+
+  return (
+    <Modal title="Discrepancias del check diario" onClose={onClose} wide>
+      {lista === null ? <div className="flex justify-center py-8"><span className="spinner" /></div> : (
+        <div className="space-y-3">
+          {lista.map(d => <DiscrepanciaCard key={d.id} d={d} onResolver={resolver} />)}
+          {!lista.length && <p className="text-[13.5px] text-muted">Sin discrepancias pendientes para este mecánico.</p>}
+        </div>
+      )}
+    </Modal>
+  );
+}
+function ReporteCierreDetalleModal({ alerta, empresas, onClose }) {
+  const [cierre, setCierre] = useState(undefined); // undefined=cargando, null=no encontrado
+  useEffect(() => {
+    let cancel = false;
+    const partes = (alerta.titulo || "").split(" — ");
+    const fecha = partes[partes.length - 1];
+    sb.from("cierre_dia").select("*").eq("mecanico_id", alerta.mecanico_id).eq("fecha", fecha)
+      .order("creado_en", { ascending: false }).limit(1)
+      .then(({ data }) => { if (!cancel) setCierre((data && data[0]) || null); });
+    return () => { cancel = true; };
+  }, [alerta.id]);
+
+  if (cierre === undefined) return <Modal title="Reporte de jornada" onClose={onClose}><div className="flex justify-center py-8"><span className="spinner" /></div></Modal>;
+  if (!cierre) return <Modal title="Reporte de jornada" onClose={onClose}><p className="text-[13.5px] text-muted">No se encontró el cierre asociado a esta alerta.</p></Modal>;
+  return <ReporteCierreModal c={{ ...cierre, mecanico: alerta.mecanico }} empresas={empresas} onClose={onClose} />;
+}
+
+const ALERTA_ICONO = { rojo: "🔴", amarillo: "🟡", info: "ℹ️" };
+function AlertaCard({ a, empresaLabel, onVer, onMarcarLeida, onIgnorar, onAbrirMecanico }) {
+  const equipoLabel = a.equipo ? `${a.equipo.patente}${a.equipo.numero_interno ? ` (${a.equipo.numero_interno})` : ""}` : null;
+  const mecanicoLabel = a.mecanico ? `${a.mecanico.nombre} ${a.mecanico.apellido || ""}`.trim() : null;
+  const esDesbloqueo = a.tipo === "solicitud_desbloqueo";
+  const esDiscNeu = a.tipo === "neumatico_no_registrado";
+  const esDiscInv = a.tipo === "discrepancia_inventario";
+  const esCierre = a.tipo === "cierre_dia";
+  const icono = esDesbloqueo ? "🔒" : (ALERTA_ICONO[a.severidad] || "ℹ️");
+
+  return (
+    <div className={cx("bg-white rounded-2xl border border-bd shadow-card p-4", a.leida_admin && "opacity-70")}>
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex-1 min-w-0">
+          <p className="font-bold text-[14px]">{icono} {a.titulo}{equipoLabel && !(a.titulo || "").includes(equipoLabel) ? ` — ${equipoLabel}` : ""}</p>
+          {(mecanicoLabel || a.posicion != null) && (
+            <p className="text-[12.5px] text-sub mt-0.5">{mecanicoLabel}{a.posicion != null ? `${mecanicoLabel ? " — " : ""}Posición ${a.posicion}` : ""}</p>
+          )}
+          {!esCierre && a.descripcion && <p className="text-[12.5px] text-muted mt-0.5 line-clamp-2">{a.descripcion}</p>}
+          {empresaLabel && <p className="text-[11px] text-muted mt-1">{empresaLabel}</p>}
+        </div>
+        <span className="text-[11px] text-muted shrink-0 whitespace-nowrap">{timeAgoCorto(a.creado_en)}</span>
+      </div>
+      <div className="flex items-center justify-between gap-2 mt-2.5">
+        <div>{!a.leida_admin && <span className="text-[11px] font-bold text-ink">● No leída</span>}</div>
+        <div className="flex gap-2 flex-wrap justify-end">
+          {esDesbloqueo && (
+            <>
+              <button onClick={() => onAbrirMecanico(a, "turno")} className="text-[12px] font-bold text-white px-3 py-1.5 rounded-full bg-ink">Nuevo turno</button>
+              <button onClick={() => onAbrirMecanico(a, "empresa")} className="text-[12px] font-bold text-ink px-3 py-1.5 rounded-full bg-[#F3F4F6]">Cambiar empresa</button>
+              <button onClick={() => onIgnorar(a)} className="text-[12px] font-bold text-ink px-3 py-1.5 rounded-full bg-[#F3F4F6]">Ignorar</button>
+            </>
+          )}
+          {(esDiscNeu || esDiscInv || esCierre) && (
+            <button onClick={() => onVer(a)} className="text-[12px] font-bold text-ink px-3 py-1.5 rounded-full bg-[#F3F4F6]">{esCierre ? "Ver reporte" : "Ver detalle"}</button>
+          )}
+          {!esDesbloqueo && !a.leida_admin && <button onClick={() => onMarcarLeida(a)} className="text-[12px] font-bold text-ink px-3 py-1.5 rounded-full bg-[#F3F4F6]">Marcar leída</button>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AlertasAdminView({ empresaCtl, adminUser }) {
+  const { filtro, empresas } = empresaCtl;
   const [alertas, setAlertas] = useState([]);
-  const [filter, setFilter] = useState("noleidas");
+  const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [verAlerta, setVerAlerta] = useState(null);
-  const [equiposMap, setEquiposMap] = useState({});
+  const [filtroEstado, setFiltroEstado] = useState("noleidas");
+  const [filtroSeveridad, setFiltroSeveridad] = useState("todas");
+  const [filtroTipo, setFiltroTipo] = useState("todas");
+  const [search, setSearch] = useState("");
+  const [verDetalle, setVerDetalle] = useState(null); // { alerta, tipo: 'discNeu'|'discInv'|'cierre' }
+  const [mecanicoAccion, setMecanicoAccion] = useState(null); // { mecanico, initialModo }
   const [pushToast, toastNode] = useToasts();
 
-  async function cargar() {
+  function cargar() {
     setLoading(true);
-    try {
-      const data = await adminDb.fetchAlertas(filtro, { soloNoLeidas: filter === "noleidas", soloCriticas: filter === "criticas" });
-      setAlertas(data);
-      const eqIds = [...new Set(data.map(a => a.equipo_id))].filter(Boolean);
-      if (eqIds.length) {
-        const { data: eqs } = await sb.from("equipos").select("id_equipo,patente,numero_interno").in("id_equipo", eqIds);
-        const map = {}; (eqs || []).forEach(e => { map[e.id_equipo] = e.numero_interno ? `${e.numero_interno} · ${e.patente}` : e.patente; });
-        setEquiposMap(map);
-      } else setEquiposMap({});
-    } catch (e) { console.error(e); }
-    setLoading(false);
+    Promise.all([fetchAlertasCompletas(filtro), fetchStatsAlertas(filtro)])
+      .then(([al, st]) => { setAlertas(al); setStats(st); })
+      .catch(e => console.error("No se pudieron cargar las alertas", e))
+      .finally(() => setLoading(false));
   }
-  useEffect(() => { cargar(); }, [filtro, filter]);
+  useEffect(() => { cargar(); }, [filtro]);
+
+  const filtradas = ordenarAlertas(alertas.filter(a => {
+    if (filtroEstado === "noleidas" && a.leida_admin) return false;
+    if (filtroEstado === "leidas" && !a.leida_admin) return false;
+    if (filtroSeveridad !== "todas" && a.severidad !== filtroSeveridad) return false;
+    if (filtroTipo !== "todas") {
+      const grupo = ALERTA_TIPO_GRUPOS.find(g => g.id === filtroTipo);
+      if (grupo && grupo.tipos && !grupo.tipos.includes(a.tipo)) return false;
+    }
+    if (search.trim()) {
+      const s = search.trim().toLowerCase();
+      const eqTxt = a.equipo ? `${a.equipo.patente} ${a.equipo.numero_interno || ""}`.toLowerCase() : "";
+      const mecTxt = a.mecanico ? `${a.mecanico.nombre} ${a.mecanico.apellido || ""}`.toLowerCase() : "";
+      if (!eqTxt.includes(s) && !mecTxt.includes(s)) return false;
+    }
+    return true;
+  }));
 
   async function marcarLeida(a) {
     await adminDb.marcarAlertaLeida(a.id);
     setAlertas(as => as.map(x => x.id === a.id ? { ...x, leida_admin: true } : x));
-    setVerAlerta(null);
     pushToast("✓ Alerta marcada como leída");
+  }
+  async function marcarTodasLeidas() {
+    let q = sb.from("alertas").update({ leida_admin: true }).eq("leida_admin", false);
+    q = filtroCliente(q, filtro);
+    await q;
+    pushToast("✓ Todas las alertas marcadas como leídas");
+    cargar();
+  }
+  function empresaLabel(a) {
+    if (filtro !== "todas") return null;
+    return (empresas.find(e => e.id_cliente === a.cliente_id) || {}).nombre || a.cliente_id;
+  }
+  function verDetalleAlerta(a) {
+    if (a.tipo === "neumatico_no_registrado") setVerDetalle({ alerta: a, tipo: "discNeu" });
+    else if (a.tipo === "discrepancia_inventario") setVerDetalle({ alerta: a, tipo: "discInv" });
+    else if (a.tipo === "cierre_dia") setVerDetalle({ alerta: a, tipo: "cierre" });
+  }
+  function abrirMecanico(a, modo) {
+    if (!a.mecanico) return;
+    setMecanicoAccion({ mecanico: a.mecanico, initialModo: modo === "empresa" ? "empresa" : null });
+  }
+  async function ignorarDesbloqueo(a) {
+    await adminDb.marcarAlertaLeida(a.id);
+    setAlertas(as => as.map(x => x.id === a.id ? { ...x, leida_admin: true } : x));
+    pushToast("✓ Solicitud ignorada — el mecánico sigue bloqueado");
+  }
+  function handleMecanicoDone() {
+    setMecanicoAccion(null);
+    cargar();
   }
 
   return (
     <div>
       {toastNode}
-      <h1 className="text-[26px] font-extrabold mb-5">Alertas</h1>
-      <div className="flex gap-2 mb-5">
-        {[["noleidas", "No leídas"], ["criticas", "Críticas"], ["todas", "Todas"]].map(([k, l]) => (
-          <button key={k} onClick={() => setFilter(k)} className={cx("px-4 py-2 rounded-full text-[13px] font-bold", filter === k ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{l}</button>
+      <div className="flex items-center justify-between gap-3 mb-5 flex-wrap">
+        <h1 className="text-[26px] font-extrabold">🔔 Alertas</h1>
+        <Button variant="subtle" className="h-10 px-4 text-[13px]" onClick={marcarTodasLeidas}>Marcar todas como leídas</Button>
+      </div>
+
+      <TextInput placeholder="Buscar por equipo o mecánico" value={search} onChange={e => setSearch(e.target.value)} className="mb-4 max-w-md" />
+
+      <div className="flex gap-2 mb-3 overflow-x-auto">
+        {[["todas", "Todas"], ["noleidas", "No leídas"], ["leidas", "Leídas"]].map(([k, l]) => (
+          <button key={k} onClick={() => setFiltroEstado(k)} className={cx("px-4 py-2 rounded-full text-[13px] font-bold whitespace-nowrap", filtroEstado === k ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{l}</button>
         ))}
       </div>
+      <div className="flex gap-2 mb-3 overflow-x-auto">
+        {[["todas", "Todas"], ["rojo", "🔴 Críticas"], ["amarillo", "🟡 Atención"], ["info", "ℹ️ Informativas"]].map(([k, l]) => (
+          <button key={k} onClick={() => setFiltroSeveridad(k)} className={cx("px-4 py-2 rounded-full text-[13px] font-bold whitespace-nowrap", filtroSeveridad === k ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{l}</button>
+        ))}
+      </div>
+      <div className="flex gap-2 mb-5 overflow-x-auto">
+        {ALERTA_TIPO_GRUPOS.map(g => (
+          <button key={g.id} onClick={() => setFiltroTipo(g.id)} className={cx("px-4 py-2 rounded-full text-[13px] font-bold whitespace-nowrap", filtroTipo === g.id ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{g.label}</button>
+        ))}
+      </div>
+
       {loading ? <div className="flex justify-center py-10"><span className="spinner" /></div> : (
-        <div className="space-y-2">
-          {alertas.map(a => (
-            <div key={a.id} className="bg-white rounded-2xl border border-bd shadow-card p-4">
-              <div className="flex items-start justify-between gap-2">
-                <div className="flex-1 min-w-0">
-                  <p className="font-bold text-[14px] truncate">{a.titulo}</p>
-                  <p className="text-[12.5px] text-muted mt-0.5 line-clamp-2">{a.descripcion}</p>
-                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-[11.5px] text-muted">
-                    <span>{ALERTA_TIPO_LABELS[a.tipo] || a.tipo}</span>
-                    {a.equipo_id && equiposMap[a.equipo_id] && <span>{equiposMap[a.equipo_id]}</span>}
-                    {a.creado_en && <span>{(a.creado_en).slice(0, 10)} · {(a.creado_en).slice(11, 16)}</span>}
-                  </div>
-                </div>
-                <Badge color={a.severidad === "rojo" ? "red" : a.severidad === "amarillo" ? "amber" : "gray"}>{a.severidad === "rojo" ? "Alerta" : a.severidad === "amarillo" ? "Atención" : "Info"}</Badge>
-              </div>
-              <div className="flex items-center justify-between gap-2 mt-2.5">
-                <div>{!a.leida_admin && <span className="text-[11px] font-bold text-ink">● No leída</span>}</div>
-                <div className="flex gap-2">
-                  {a.tipo === "solicitud_desbloqueo" && mecanicosPorId[a.mecanico_id] && (
-                    <button onClick={() => onAbrirMecanico(mecanicosPorId[a.mecanico_id])} className="text-[12px] font-bold text-white px-3 py-1.5 rounded-full bg-ink">Desbloquear</button>
-                  )}
-                  {!a.leida_admin && <button onClick={() => marcarLeida(a)} className="text-[12px] font-bold text-ink px-3 py-1.5 rounded-full bg-[#F3F4F6]">Marcar como leída</button>}
-                </div>
-              </div>
-            </div>
+        <div className="space-y-2 mb-6">
+          {filtradas.map(a => (
+            <AlertaCard key={a.id} a={a} empresaLabel={empresaLabel(a)} onVer={verDetalleAlerta}
+              onMarcarLeida={marcarLeida} onIgnorar={ignorarDesbloqueo} onAbrirMecanico={abrirMecanico} />
           ))}
-          {!alertas.length && <p className="text-center text-muted py-10 text-sm">Sin alertas.</p>}
+          {!filtradas.length && <p className="text-center text-muted py-10 text-sm">Sin alertas que coincidan.</p>}
         </div>
       )}
-      {verAlerta && <AlertaDetalleModal alerta={verAlerta} onClose={() => setVerAlerta(null)} onMarcarLeida={marcarLeida} />}
+
+      {stats && (
+        <div className="grid grid-cols-3 gap-3">
+          <KpiCard label="Total alertas hoy" value={stats.totalHoy} />
+          <KpiCard label="Críticas sin resolver" value={stats.criticasSinResolver} />
+          <KpiCard label="Tiempo prom. resolución" value={stats.tiempoProm != null ? `${stats.tiempoProm.toFixed(1)}h` : "—"} />
+        </div>
+      )}
+
+      {verDetalle && verDetalle.tipo === "discNeu" && (
+        <DiscrepanciaNeumaticoDetalleModal alerta={verDetalle.alerta} adminUser={adminUser} pushToast={pushToast}
+          onClose={() => setVerDetalle(null)} onResuelto={() => { setVerDetalle(null); cargar(); }} />
+      )}
+      {verDetalle && verDetalle.tipo === "discInv" && (
+        <DiscrepanciaInventarioDetalleModal alerta={verDetalle.alerta} adminUser={adminUser} pushToast={pushToast}
+          onClose={() => setVerDetalle(null)} onResuelto={() => cargar()} />
+      )}
+      {verDetalle && verDetalle.tipo === "cierre" && (
+        <ReporteCierreDetalleModal alerta={verDetalle.alerta} empresas={empresas} onClose={() => setVerDetalle(null)} />
+      )}
+      {mecanicoAccion && (
+        <MecanicoBloqueadoModal mecanico={mecanicoAccion.mecanico} empresas={empresas} initialModo={mecanicoAccion.initialModo}
+          onClose={() => setMecanicoAccion(null)} onDone={handleMecanicoDone} />
+      )}
     </div>
   );
 }
@@ -1316,7 +3202,6 @@ function AdminApp({ user, onLogout }) {
   const [view, setView] = useState("dashboard");
   const [mecanicoBloqueado, setMecanicoBloqueado] = useState(null);
   const [alertasNoLeidas, setAlertasNoLeidas] = useState(0);
-  const [mecanicosPorId, setMecanicosPorId] = useState({});
   const [refreshToken, setRefreshToken] = useState(0);
 
   async function refrescarCampanita() {
@@ -1327,12 +3212,6 @@ function AdminApp({ user, onLogout }) {
     const t = setInterval(refrescarCampanita, 15000);
     return () => clearInterval(t);
   }, []);
-  useEffect(() => {
-    sb.from("usuarios").select("id,nombre,apellido,cliente_id").eq("rol", "mecanico").then(({ data }) => {
-      const map = {}; (data || []).forEach(m => { map[m.id] = m; });
-      setMecanicosPorId(map);
-    });
-  }, []);
 
   function handleMecanicoDesbloqueado() {
     setMecanicoBloqueado(null);
@@ -1341,10 +3220,10 @@ function AdminApp({ user, onLogout }) {
   }
 
   let body;
-  if (view === "equipos") body = <EquiposView key={refreshToken} empresaCtl={empresaCtl} />;
+  if (view === "equipos") body = <EquiposView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} />;
   else if (view === "jornada") body = <JornadaView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} />;
-  else if (view === "maestros") body = <MaestrosView />;
-  else if (view === "alertas") body = <AlertasAdminView key={refreshToken} empresaCtl={empresaCtl} onAbrirMecanico={setMecanicoBloqueado} mecanicosPorId={mecanicosPorId} />;
+  else if (view === "maestros") body = <MaestrosView key={refreshToken} empresaCtl={empresaCtl} />;
+  else if (view === "alertas") body = <AlertasAdminView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} />;
   else if (view === "perfil") body = <PerfilAdminView user={user} onLogout={onLogout} />;
   else body = <DashboardView key={refreshToken} empresaCtl={empresaCtl} onAbrirMecanico={setMecanicoBloqueado} />;
 
