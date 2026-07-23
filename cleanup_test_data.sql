@@ -59,6 +59,20 @@ DELETE FROM neumaticos WHERE marca LIKE 'MarcaTest%' OR marca LIKE 'DebugLote%' 
 -- numero_fuego de BYS (Admin > Configuracion > Correlativos).
 DELETE FROM neumaticos WHERE id_neumatico = '77777777-9999-0000-0000-000000000001';
 
+-- Datos de prueba de superadmin.html (Clientes / Usuarios y permisos):
+-- cliente de prueba "mosa_test_qa" (quedo desactivado tras probar el toggle
+-- en cascada) y usuario mecanico "usuario_qa_test" creado para probar el
+-- panel de permisos, junto con las filas de permisos que genero.
+DELETE FROM permisos WHERE usuario_id IN (SELECT id FROM usuarios WHERE usuario = 'usuario_qa_test');
+DELETE FROM usuarios WHERE usuario = 'usuario_qa_test';
+DELETE FROM config_cliente WHERE cliente_id = 'mosa_test_qa';
+DELETE FROM clientes WHERE id_cliente = 'mosa_test_qa';
+
+-- Permisos de prueba generados al verificar el boton "Resetear permisos al
+-- default del rol" contra el usuario real 'carlos' (mecanico, La Portada).
+DELETE FROM permisos WHERE usuario_id = (SELECT id FROM usuarios WHERE usuario = 'carlos')
+  AND seccion IN ('auditoria','hoja_cambio','cierre_dia','alertas_propias');
+
 -- =====================================================================
 -- Verificacion (deberia devolver 0 en todas)
 -- =====================================================================
