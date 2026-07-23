@@ -408,3 +408,13 @@ END $$;
 -- 9/14). Falta la columna telefono que pide ese formulario.
 -- =====================================================================
 ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS telefono TEXT;
+
+-- =====================================================================
+-- 26) Se divide el rol 'cliente' en dos subtipos: 'dueno' (gerencial,
+-- cliente.html, pendiente de construir) y 'operativo' (cliente-operativo.html,
+-- solo lectura). Sin default: los clientes existentes quedan con subtipo
+-- NULL hasta que un admin se los asigne (el login los sigue mandando al
+-- placeholder cliente.html mientras tanto, ver App() en index.html).
+-- =====================================================================
+ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS subtipo TEXT
+  CHECK (subtipo IN ('dueno', 'operativo'));

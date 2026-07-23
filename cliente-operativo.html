@@ -1,0 +1,987 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+<title>MOSA TIRES</title>
+<meta name="description" content="MOSA TIRES - Panel de Cliente (operativo)" />
+<meta name="theme-color" content="#FFFFFF" />
+<link rel="manifest" href="manifest.json" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+<link rel="icon" href="icon-192.png" />
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          ink: '#0A0A0A',
+          sub: '#6B7280',
+          muted: '#9CA3AF',
+          card: '#FFFFFF',
+          subtlebg: '#F7F7F7',
+          bd: '#EFEFEF',
+          bdstrong: '#E5E7EB'
+        },
+        boxShadow: {
+          card: '0 1px 2px rgba(0,0,0,0.03), 0 6px 16px rgba(0,0,0,0.04)'
+        },
+        borderRadius: { card: '16px' }
+      }
+    }
+  }
+</script>
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone@7/babel.min.js" crossorigin></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" crossorigin></script>
+
+<style>
+  html, body { font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Inter, sans-serif; background:#FFFFFF; -webkit-tap-highlight-color: transparent; }
+  * { -webkit-font-smoothing: antialiased; }
+  .safe-top { padding-top: env(safe-area-inset-top); }
+  .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spinner { border: 3px solid #E5E7EB; border-top-color: #111111; border-radius: 50%; width: 22px; height: 22px; animation: spin 0.7s linear infinite; margin: 0 auto; }
+</style>
+</head>
+<body class="bg-white text-ink">
+<div id="root"></div>
+
+<script src="js/supabase.js"></script>
+<script type="text/babel" data-presets="react">
+/* =====================================================================
+   MOSA TIRES — cliente-operativo.html
+   Panel de solo lectura para el subtipo "operativo" del rol cliente.
+   Ve unicamente los datos de su propia empresa (cliente_id fijo, tomado
+   de la sesion). Sin acciones de escritura en ningun lado: no hay
+   inserts/updates/deletes salvo el cambio de la propia contraseña
+   (Perfil), que es el unico caso permitido por la spec.
+===================================================================== */
+const { useState, useEffect, useCallback } = React;
+
+/* =====================================================================
+   ICONOS (subset necesario, mismo set que el resto de la app)
+===================================================================== */
+const Icon = {
+  home: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg>,
+  truck: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><rect x="1" y="7" width="14" height="10"/><path d="M15 10h4l3 3v4h-7z"/><circle cx="6" cy="19" r="1.6"/><circle cx="17.5" cy="19" r="1.6"/></svg>,
+  clipboard: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><rect x="6" y="4" width="12" height="16" rx="2"/><path d="M9 4V3a1 1 0 011-1h4a1 1 0 011 1v1"/><path d="M9 12h6M9 16h6"/></svg>,
+  settings: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09a1.65 1.65 0 00-1-1.51 1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09a1.65 1.65 0 001.51-1 1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>,
+  user: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>,
+  search: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>,
+  back: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M15 18l-6-6 6-6"/></svg>,
+  close: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M18 6L6 18M6 6l12 12"/></svg>,
+  menu: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M3 6h18M3 12h18M3 18h18"/></svg>,
+  gauge: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M12 15l3-3"/><circle cx="12" cy="14" r="8"/><path d="M6 8l1.5 1.5M18 8l-1.5 1.5M4 14h2M18 14h2M12 5v2"/></svg>,
+};
+
+/* =====================================================================
+   UI BASICOS (mismo kit que el resto de la app)
+===================================================================== */
+function Button({ variant = "primary", className = "", children, ...props }) {
+  const base = "h-14 px-5 rounded-2xl font-bold text-[15px] transition active:scale-[0.98] disabled:opacity-50 disabled:active:scale-100 flex items-center justify-center gap-2";
+  const variants = {
+    primary: "bg-ink text-white",
+    ghost: "bg-transparent text-ink border border-bdstrong",
+    danger: "bg-[#FEE2E2] text-[#B91C1C]",
+    subtle: "bg-[#F3F4F6] text-ink"
+  };
+  return <button className={cx(base, variants[variant], className)} {...props}>{children}</button>;
+}
+function Field({ label, required, children, hint }) {
+  return (
+    <label className="block">
+      <span className="block text-[13px] font-semibold text-[#374151] mb-1.5">{label}{required && <span className="text-red-500"> *</span>}</span>
+      {children}
+      {hint && <span className="block text-xs text-muted mt-1">{hint}</span>}
+    </label>
+  );
+}
+function TextInput({ className = "", ...props }) {
+  return <input className={cx("w-full h-[52px] px-4 rounded-2xl border bg-[#F3F4F6] border-[#E5E7EB] focus:outline-none focus:ring-2 focus:ring-ink/20 placeholder:text-muted", className)} {...props} />;
+}
+function Select({ className = "", children, ...props }) {
+  return <select className={cx("w-full h-[52px] px-4 rounded-2xl border bg-[#F3F4F6] border-[#E5E7EB] focus:outline-none focus:ring-2 focus:ring-ink/20", className)} {...props}>{children}</select>;
+}
+function Card({ className = "", children }) {
+  return <div className={cx("bg-white rounded-card shadow-card border border-bd p-5", className)}>{children}</div>;
+}
+function Badge({ children, color = "gray" }) {
+  const colors = {
+    gray: "bg-[#F3F4F6] text-[#374151]", green: "bg-[#DCFCE7] text-[#15803D]",
+    red: "bg-[#FEE2E2] text-[#B91C1C]", amber: "bg-[#FEF3C7] text-[#92400E]", black: "bg-ink text-white"
+  };
+  return <span className={cx("px-3 py-1 rounded-full text-[12px] font-bold", colors[color])}>{children}</span>;
+}
+function Modal({ title, onClose, children, wide, footer }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 p-0 sm:p-4" onClick={(e) => { if (e.target === e.currentTarget && onClose) onClose(); }}>
+      <div className={cx("bg-white w-full sm:rounded-card rounded-t-[24px] max-h-[92vh] overflow-y-auto", wide ? "sm:max-w-2xl" : "sm:max-w-md")}>
+        <div className="sticky top-0 bg-white border-b border-bd px-5 py-4 flex items-center justify-between z-10">
+          <h3 className="text-lg font-extrabold">{title}</h3>
+          {onClose && <button onClick={onClose} className="w-9 h-9 rounded-full hover:bg-[#F3F4F6] flex items-center justify-center text-sub"><Icon.close width="18" height="18"/></button>}
+        </div>
+        <div className="p-5">{children}</div>
+        {footer && <div className="sticky bottom-0 bg-white border-t border-bd p-4">{footer}</div>}
+      </div>
+    </div>
+  );
+}
+function Toast({ msg, onDone }) {
+  useEffect(() => { const t = setTimeout(onDone, 2000); return () => clearTimeout(t); }, []);
+  return (
+    <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[80] px-4 py-3 rounded-2xl shadow-lg text-sm font-semibold flex items-center gap-3" style={{ background: "#DCFCE7", color: "#15803D" }}>
+      <span>{msg}</span>
+      <button onClick={onDone} className="opacity-60">✕</button>
+    </div>
+  );
+}
+function useToasts() {
+  const [toasts, setToasts] = useState([]);
+  const push = useCallback((msg) => setToasts(t => [...t, { id: uuid(), msg }]), []);
+  const remove = (id) => setToasts(t => t.filter(x => x.id !== id));
+  const node = <div>{toasts.map(t => <Toast key={t.id} msg={t.msg} onDone={() => remove(t.id)} />)}</div>;
+  return [push, node];
+}
+function Confirm({ title, desc, onConfirm, onCancel }) {
+  return (
+    <Modal title={title} onClose={onCancel}>
+      <p className="text-[14px] text-[#374151] mb-5">{desc}</p>
+      <div className="flex gap-3">
+        <Button variant="subtle" className="flex-1" onClick={onCancel}>Cancelar</Button>
+        <Button className="flex-1" onClick={onConfirm}>Confirmar</Button>
+      </div>
+    </Modal>
+  );
+}
+
+/* =====================================================================
+   MAPA DE NEUMATICOS (solo lectura) — mismo estilo visual que Admin >
+   Equipos > detalle > Mapa (evaluarPosicion + AXLE_CONFIGS ya vienen de
+   js/supabase.js, compartido).
+===================================================================== */
+function TireCircleReadOnly({ pos, filled, status, mm, psi, selected, onTap }) {
+  const styles = {
+    empty: "border-2 border-dashed border-[#D1D5DB] bg-[#F9FAFB] text-muted",
+    ok: "border-2 border-[#D1D5DB] bg-white text-ink",
+    atencion: "border-2 border-[#F59E0B] bg-[#FEF3C7] text-[#92400E]",
+    alerta: "border-2 border-[#EF4444] bg-[#FEE2E2] text-[#B91C1C]"
+  };
+  const key = !filled ? "empty" : (status || "ok");
+  return (
+    <button type="button" disabled={!filled} onClick={onTap}
+      className={cx("w-[54px] h-[54px] rounded-full flex flex-col items-center justify-center shrink-0 shadow-sm transition",
+        styles[key], selected && "ring-2 ring-ink")}>
+      <span className="text-[9.5px] font-bold opacity-70 leading-none">P{pos}</span>
+      {filled ? (
+        <>
+          <span className="text-[13px] font-extrabold leading-none mt-0.5">{mm != null ? mm : "—"}</span>
+          <span className="text-[8.5px] font-semibold opacity-70 leading-none">{psi ? psi + "psi" : ""}</span>
+        </>
+      ) : <span className="text-[11px] font-bold text-[#D1D5DB] mt-0.5">— —</span>}
+    </button>
+  );
+}
+function AxleMapReadOnly({ cfg, porPosicion, colorDePosicion, selectedPos, onTap }) {
+  return (
+    <div className="space-y-6">
+      {cfg.rows.map(row => (
+        <div key={row.label} className={cx("relative", row.type === "auxilio" && "mt-4 pt-4 border-t border-dashed border-bdstrong")}>
+          <div className="flex items-center gap-3">
+            <span className="text-[12px] font-bold text-muted w-6 shrink-0">{row.label}</span>
+            <div className="flex-1 relative flex items-center justify-around">
+              <div className="absolute left-0 right-0 h-[1.5px] bg-[#E5E7EB]" />
+              {row.positions.map(pos => {
+                const n = porPosicion[pos];
+                const color = colorDePosicion(pos);
+                const mm = n && n.aud ? (n.aud.milimetros != null ? n.aud.milimetros : n.aud.mm_centro) : null;
+                const psi = n ? (n.psi_actual != null ? n.psi_actual : (n.aud ? n.aud.psi : null)) : null;
+                return (
+                  <div key={pos} className="relative z-10">
+                    <TireCircleReadOnly pos={pos} filled={!!n} status={color} mm={mm} psi={psi}
+                      selected={selectedPos === pos} onTap={() => onTap(pos)} />
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+function PosicionDetalleModal({ n, pos, onClose }) {
+  const mm = n.aud ? (n.aud.milimetros != null ? n.aud.milimetros : n.aud.mm_centro) : null;
+  const psi = n.psi_actual != null ? n.psi_actual : (n.aud ? n.aud.psi : null);
+  const ev = n.ev || {};
+  const estadoLabel = ev.status === "alerta" ? "Alerta" : ev.status === "atencion" ? "Atención" : "OK";
+  return (
+    <Modal title={`Posición ${pos}`} onClose={onClose}>
+      <div className="space-y-3 text-[14px]">
+        <div className="flex items-center justify-between"><span className="text-muted">N° fuego</span><span className="font-bold">{n.numero_fuego || "-"}</span></div>
+        <div className="flex items-center justify-between"><span className="text-muted">Marca</span><span className="font-bold">{n.marca || "-"}</span></div>
+        <div className="flex items-center justify-between"><span className="text-muted">Medida</span><span className="font-bold">{n.medida || "-"}</span></div>
+        <div className="flex items-center justify-between"><span className="text-muted">PSI actual</span><span className="font-bold">{psi != null ? psi : "-"}</span></div>
+        <div className="flex items-center justify-between"><span className="text-muted">PSI esperado</span><span className="font-bold">{ev.psiObjetivo != null ? ev.psiObjetivo : "-"}</span></div>
+        <div className="flex items-center justify-between"><span className="text-muted">MM borde izq</span><span className="font-bold">{n.aud && n.aud.mm_borde_izq != null ? n.aud.mm_borde_izq : "-"}</span></div>
+        <div className="flex items-center justify-between"><span className="text-muted">MM centro</span><span className="font-bold">{mm != null ? mm : "-"}</span></div>
+        <div className="flex items-center justify-between"><span className="text-muted">MM borde der</span><span className="font-bold">{n.aud && n.aud.mm_borde_der != null ? n.aud.mm_borde_der : "-"}</span></div>
+        <div className="flex items-center justify-between"><span className="text-muted">Estado</span><Badge color={ev.status === "alerta" ? "red" : ev.status === "atencion" ? "amber" : "green"}>{estadoLabel}</Badge></div>
+      </div>
+    </Modal>
+  );
+}
+function MapaEquipoTab({ equipo }) {
+  const [posiciones, setPosiciones] = useState(null);
+  const [verPos, setVerPos] = useState(null);
+
+  useEffect(() => {
+    let cancel = false;
+    (async () => {
+      const { data: neumaticos } = await sb.from("neumaticos").select("*").eq("equipo_actual", equipo.id_equipo).eq("estado_actual", "en_uso");
+      const numerosFuego = (neumaticos || []).map(n => n.numero_fuego).filter(Boolean);
+      const mmPorFuego = {};
+      if (numerosFuego.length) {
+        const { data: ultimaAud } = await sb.from("auditorias").select("id_auditoria").eq("equipo_id", equipo.id_equipo).order("fecha", { ascending: false }).order("creado_en", { ascending: false }).limit(1);
+        if (ultimaAud && ultimaAud[0]) {
+          const { data: posAud } = await sb.from("auditoria_posiciones").select("numero_fuego,milimetros,psi,mm_borde_izq,mm_centro,mm_borde_der").eq("auditoria_id", ultimaAud[0].id_auditoria).in("numero_fuego", numerosFuego);
+          (posAud || []).forEach(p => { mmPorFuego[p.numero_fuego] = p; });
+        }
+      }
+      if (!cancel) setPosiciones((neumaticos || []).map(n => ({ ...n, aud: mmPorFuego[n.numero_fuego] || null })));
+    })();
+    return () => { cancel = true; };
+  }, [equipo.id_equipo]);
+
+  if (!equipo.configuracion_ejes && equipo.tipo !== "SEMI") {
+    return <p className="text-[13.5px] text-muted py-6">Configuración de ejes no definida</p>;
+  }
+  if (posiciones === null) return <div className="flex justify-center py-10"><span className="spinner" /></div>;
+
+  const cfg = axleConfigFor(equipo);
+  const porPosicion = {};
+  posiciones.forEach(p => { porPosicion[p.posicion_actual] = p; });
+
+  function evaluar(pos) {
+    const n = porPosicion[pos];
+    if (!n) return null;
+    const data = {
+      psi: n.psi_actual != null ? n.psi_actual : (n.aud ? n.aud.psi : null),
+      mm_borde_izq: n.aud ? n.aud.mm_borde_izq : null,
+      mm_centro: n.aud ? (n.aud.mm_centro != null ? n.aud.mm_centro : n.aud.milimetros) : null,
+      mm_borde_der: n.aud ? n.aud.mm_borde_der : null
+    };
+    return evaluarPosicion(cfg, DEFAULT_CFG, pos, equipo.tipo, data);
+  }
+  function colorDePosicion(pos) {
+    const ev = evaluar(pos);
+    return ev ? ev.status : "empty";
+  }
+  const posicionesAtencion = cfg.rows.flatMap(r => r.positions).filter(pos => {
+    const ev = evaluar(pos);
+    return ev && (ev.status === "atencion" || ev.status === "alerta");
+  });
+
+  return (
+    <div>
+      {posicionesAtencion.length > 0 && (
+        <div className="mb-4 rounded-2xl bg-[#FEF3C7] text-[#92400E] text-[13px] font-bold px-4 py-3">
+          ⚠ Este equipo tiene {posicionesAtencion.length} posición{posicionesAtencion.length !== 1 ? "es" : ""} que requiere{posicionesAtencion.length !== 1 ? "n" : ""} atención
+        </div>
+      )}
+      <Card>
+        <p className="text-[12.5px] text-muted mb-4">Tocá un neumático para ver su detalle. Solo lectura.</p>
+        <AxleMapReadOnly cfg={cfg} porPosicion={porPosicion} colorDePosicion={colorDePosicion}
+          selectedPos={verPos} onTap={(pos) => porPosicion[pos] && setVerPos(pos)} />
+      </Card>
+      <div className="flex gap-4 mt-5 text-[12px] text-muted flex-wrap px-1">
+        <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full border-2 border-[#D1D5DB] bg-white inline-block" /> En rango</span>
+        <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full border-2 border-[#F59E0B] bg-[#FEF3C7] inline-block" /> Atención</span>
+        <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full border-2 border-[#EF4444] bg-[#FEE2E2] inline-block" /> Crítico</span>
+        <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full border-2 border-dashed border-[#D1D5DB] bg-[#F9FAFB] inline-block" /> Sin neumático</span>
+      </div>
+      {verPos != null && porPosicion[verPos] && (
+        <PosicionDetalleModal n={{ ...porPosicion[verPos], ev: evaluar(verPos) }} pos={verPos} onClose={() => setVerPos(null)} />
+      )}
+    </div>
+  );
+}
+
+/* =====================================================================
+   DETALLE DE AUDITORIA / HOJA DE CAMBIO (mismo registro, solo lectura)
+===================================================================== */
+function AuditoriaDetalleModal({ auditoria, onClose }) {
+  const [posiciones, setPosiciones] = useState(null);
+  const [mecanico, setMecanico] = useState(null);
+  useEffect(() => {
+    let cancel = false;
+    (async () => {
+      const [{ data: pos }, mec] = await Promise.all([
+        sb.from("auditoria_posiciones").select("*").eq("auditoria_id", auditoria.id_auditoria).order("posicion"),
+        auditoria.bultero_id ? db.fetchUsuario(auditoria.bultero_id) : Promise.resolve(null)
+      ]);
+      if (!cancel) { setPosiciones(pos || []); setMecanico(mec); }
+    })();
+    return () => { cancel = true; };
+  }, [auditoria.id_auditoria]);
+
+  return (
+    <Modal title={`Auditoría N°${auditoria.numero_auditoria}`} onClose={onClose} wide>
+      <div className="space-y-1 mb-4 text-[13.5px]">
+        <p><span className="text-muted">Fecha:</span> <span className="font-bold">{formatDateLong(auditoria.fecha)}</span></p>
+        <p><span className="text-muted">Mecánico:</span> <span className="font-bold">{mecanico ? `${mecanico.nombre} ${mecanico.apellido || ""}` : "-"}</span></p>
+        <p><span className="text-muted">Kilometraje:</span> <span className="font-bold">{auditoria.kilometraje != null ? auditoria.kilometraje.toLocaleString("es-AR") + " km" : "-"}</span></p>
+      </div>
+      {posiciones === null ? <div className="flex justify-center py-8"><span className="spinner" /></div> : (
+        <div className="space-y-2">
+          {posiciones.map(p => (
+            <div key={p.id} className="bg-[#F9FAFB] rounded-2xl p-3 flex items-center justify-between gap-3">
+              <div>
+                <p className="font-bold text-[13.5px]">Posición {p.posicion} — N° fuego {p.numero_fuego || "-"}</p>
+                <p className="text-[12px] text-muted mt-0.5">PSI {p.psi != null ? p.psi : "-"} · MM {p.milimetros != null ? p.milimetros : (p.mm_centro != null ? p.mm_centro : "-")} (izq {p.mm_borde_izq != null ? p.mm_borde_izq : "-"} / der {p.mm_borde_der != null ? p.mm_borde_der : "-"})</p>
+              </div>
+            </div>
+          ))}
+          {!posiciones.length && <p className="text-[13.5px] text-muted py-4 text-center">Sin posiciones registradas.</p>}
+        </div>
+      )}
+    </Modal>
+  );
+}
+const MOTIVO_SALIDA_LABELS = { transito: "Tránsito", reparacion: "Reparación", baja: "Baja", rotacion: "Rotación" };
+const INTERVENCION_LABELS = { regulacion_psi: "Regulación PSI", retorqueo: "Retorqueo", reparacion: "Reparación", giro_neumatico: "Giro de neumático", checkpoint: "Checkpoint" };
+function CambioDetalleModal({ cambio, onClose }) {
+  const [detalle, setDetalle] = useState(null);
+  const [intervenciones, setIntervenciones] = useState([]);
+  const [mecanico, setMecanico] = useState(null);
+  useEffect(() => {
+    let cancel = false;
+    (async () => {
+      const [{ data: det }, { data: ivs }, mec] = await Promise.all([
+        sb.from("cambio_detalle").select("*").eq("cambio_id", cambio.id_cambio),
+        // intervenciones no tiene cambio_id (ver js/supabase.js): se asocian
+        // por equipo+fecha+mecanico, la misma aproximacion que usa Admin.
+        sb.from("intervenciones").select("*").eq("equipo_id", cambio.equipo_id).eq("fecha", cambio.fecha).eq("mecanico_id", cambio.bultero_id),
+        cambio.bultero_id ? db.fetchUsuario(cambio.bultero_id) : Promise.resolve(null)
+      ]);
+      if (!cancel) { setDetalle(det || []); setIntervenciones(ivs || []); setMecanico(mec); }
+    })();
+    return () => { cancel = true; };
+  }, [cambio.id_cambio]);
+
+  if (detalle === null) return <Modal title={`Hoja de cambio N°${cambio.numero_cambio}`} onClose={onClose}><div className="flex justify-center py-8"><span className="spinner" /></div></Modal>;
+
+  const salidas = detalle.filter(d => d.tipo === "sale");
+  const entradas = detalle.filter(d => d.tipo === "entra");
+
+  return (
+    <Modal title={`Hoja de cambio N°${cambio.numero_cambio}`} onClose={onClose} wide>
+      <div className="space-y-1 mb-4 text-[13.5px]">
+        <p><span className="text-muted">Fecha:</span> <span className="font-bold">{formatDateLong(cambio.fecha)}</span></p>
+        <p><span className="text-muted">Mecánico:</span> <span className="font-bold">{mecanico ? `${mecanico.nombre} ${mecanico.apellido || ""}` : "-"}</span></p>
+        <p><span className="text-muted">Kilometraje:</span> <span className="font-bold">{cambio.kilometraje != null ? cambio.kilometraje.toLocaleString("es-AR") + " km" : "-"}</span></p>
+      </div>
+
+      <p className="font-bold text-[14px] mb-2">Neumáticos que salieron</p>
+      <div className="space-y-2 mb-5">
+        {salidas.map(s => (
+          <div key={s.id} className="bg-[#F9FAFB] rounded-2xl p-3">
+            <p className="font-semibold text-[13.5px]">↙ Pos {s.posicion != null ? s.posicion : "-"} — N° fuego {s.numero_fuego}</p>
+            <p className="text-[12px] text-muted mt-0.5">Motivo: {MOTIVO_SALIDA_LABELS[s.motivo_salida] || s.motivo_salida || "-"}</p>
+          </div>
+        ))}
+        {!salidas.length && <p className="text-[13px] text-muted">Sin salidas.</p>}
+      </div>
+
+      <p className="font-bold text-[14px] mb-2">Neumáticos que entraron</p>
+      <div className="space-y-2 mb-5">
+        {entradas.map(e => (
+          <div key={e.id} className="bg-[#F9FAFB] rounded-2xl p-3">
+            <p className="font-semibold text-[13.5px]">↗ Pos {e.posicion != null ? e.posicion : "-"} — N° fuego {e.numero_fuego}</p>
+            <p className="text-[12px] text-muted mt-0.5">Estado: {e.estado || "-"}</p>
+          </div>
+        ))}
+        {!entradas.length && <p className="text-[13px] text-muted">Sin entradas.</p>}
+      </div>
+
+      <p className="font-bold text-[14px] mb-2">Intervenciones</p>
+      <div className="space-y-2">
+        {intervenciones.map(iv => (
+          <div key={iv.id} className="bg-[#F9FAFB] rounded-2xl p-3">
+            <p className="font-semibold text-[13.5px]">⚙ {INTERVENCION_LABELS[iv.tipo] || iv.tipo}{iv.posicion != null ? ` — pos ${iv.posicion}` : ""}</p>
+            {iv.psi_nuevo != null && <p className="text-[12px] text-muted mt-0.5">PSI regulado a {iv.psi_nuevo}</p>}
+          </div>
+        ))}
+        {!intervenciones.length && <p className="text-[13px] text-muted">Sin intervenciones registradas.</p>}
+      </div>
+    </Modal>
+  );
+}
+
+/* =====================================================================
+   TIMELINE (auditorias + cambios) reutilizado en Equipos>Historial y en
+   Historial general.
+===================================================================== */
+const HISTORIAL_ICONS = { auditoria: "📋", cambio: "🔄" };
+async function fetchTimeline(equipoId, { desde } = {}) {
+  let qa = sb.from("auditorias").select("id_auditoria,fecha,numero_auditoria,creado_en,equipo_id,bultero_id,kilometraje").eq("equipo_id", equipoId);
+  let qc = sb.from("cambios_neumaticos").select("id_cambio,fecha,numero_cambio,creado_en,equipo_id,bultero_id,kilometraje").eq("equipo_id", equipoId);
+  if (desde) { qa = qa.gte("fecha", desde); qc = qc.gte("fecha", desde); }
+  const [{ data: auds }, { data: cams }] = await Promise.all([qa, qc]);
+  const rows = [
+    ...(auds || []).map(a => ({ tipo: "auditoria", fecha: a.fecha, desc: `Auditoría N°${a.numero_auditoria}`, creado_en: a.creado_en, registro: a })),
+    ...(cams || []).map(c => ({ tipo: "cambio", fecha: c.fecha, desc: `Hoja de cambio N°${c.numero_cambio}`, creado_en: c.creado_en, registro: c }))
+  ];
+  rows.sort((a, b) => (b.creado_en || "").localeCompare(a.creado_en || ""));
+  return rows;
+}
+function Timeline({ items, onVer }) {
+  if (!items.length) return <p className="text-[13.5px] text-muted py-6 text-center">Sin historial registrado.</p>;
+  return (
+    <div className="space-y-0">
+      {items.map((it, i) => (
+        <button key={it.tipo + (it.registro.id_auditoria || it.registro.id_cambio)} onClick={() => onVer(it)}
+          className="flex gap-3 w-full text-left">
+          <div className="flex flex-col items-center">
+            <div className="w-8 h-8 rounded-full bg-[#F3F4F6] flex items-center justify-center shrink-0 text-[14px]">{HISTORIAL_ICONS[it.tipo] || "•"}</div>
+            {i < items.length - 1 && <div className="w-px flex-1 bg-bd" />}
+          </div>
+          <div className="flex-1 pb-4">
+            <p className="font-semibold text-[13.5px]">{it.desc}</p>
+            <p className="text-[11.5px] text-muted mt-0.5">{it.fecha ? formatDateLong(it.fecha) : ""}{it.creado_en ? ` · ${it.creado_en.slice(11, 16)}` : ""}</p>
+          </div>
+        </button>
+      ))}
+    </div>
+  );
+}
+function HistorialEquipoTab({ equipo }) {
+  const [items, setItems] = useState(null);
+  const [ver, setVer] = useState(null);
+  useEffect(() => {
+    let cancel = false;
+    fetchTimeline(equipo.id_equipo).then(rows => { if (!cancel) setItems(rows.slice(0, 30)); });
+    return () => { cancel = true; };
+  }, [equipo.id_equipo]);
+  if (items === null) return <div className="flex justify-center py-10"><span className="spinner" /></div>;
+  return (
+    <div>
+      <Timeline items={items} onVer={setVer} />
+      {ver && ver.tipo === "auditoria" && <AuditoriaDetalleModal auditoria={ver.registro} onClose={() => setVer(null)} />}
+      {ver && ver.tipo === "cambio" && <CambioDetalleModal cambio={ver.registro} onClose={() => setVer(null)} />}
+    </div>
+  );
+}
+
+/* =====================================================================
+   EQUIPOS
+===================================================================== */
+const EQUIPO_BADGE_INFO = {
+  al_dia: { icon: "🟢", label: "Al día", color: "green" },
+  atencion: { icon: "🟡", label: "Atención", color: "amber" },
+  alertas: { icon: "🔴", label: "Con alertas", color: "red" },
+  sin_auditar: { icon: "⚪", label: "Sin auditar", color: "gray" }
+};
+async function fetchEquiposConEstado(clienteId) {
+  const { data: equipos, error } = await sb.from("equipos").select("*").eq("cliente_id", clienteId).eq("activo", true).order("numero_interno");
+  if (error) throw error;
+  if (!equipos || !equipos.length) return [];
+  const ids = equipos.map(e => e.id_equipo);
+
+  const [{ data: alertas }, { data: auditorias }] = await Promise.all([
+    sb.from("alertas").select("equipo_id").eq("severidad", "rojo").eq("leida_admin", false).in("equipo_id", ids),
+    sb.from("auditorias").select("id_auditoria,equipo_id,fecha,creado_en").in("equipo_id", ids).order("fecha", { ascending: false }).order("creado_en", { ascending: false })
+  ]);
+
+  const alertasPorEquipo = {};
+  (alertas || []).forEach(a => { alertasPorEquipo[a.equipo_id] = (alertasPorEquipo[a.equipo_id] || 0) + 1; });
+
+  const auditoriasPorEquipo = {};
+  const ultimaAuditoriaPorEquipo = {};
+  (auditorias || []).forEach(a => {
+    auditoriasPorEquipo[a.equipo_id] = (auditoriasPorEquipo[a.equipo_id] || 0) + 1;
+    if (!ultimaAuditoriaPorEquipo[a.equipo_id]) ultimaAuditoriaPorEquipo[a.equipo_id] = a;
+  });
+
+  const auditoriaIdsUltimas = Object.values(ultimaAuditoriaPorEquipo).map(a => a.id_auditoria);
+  const recetaPorAuditoria = {};
+  if (auditoriaIdsUltimas.length) {
+    const { data: recetas } = await sb.from("auditorias_receta").select("auditoria_id,estado").in("auditoria_id", auditoriaIdsUltimas);
+    (recetas || []).forEach(r => { recetaPorAuditoria[r.auditoria_id] = r.estado; });
+  }
+
+  return equipos.map(eq => {
+    const alertasCount = alertasPorEquipo[eq.id_equipo] || 0;
+    const auditoriasCount = auditoriasPorEquipo[eq.id_equipo] || 0;
+    const ultima = ultimaAuditoriaPorEquipo[eq.id_equipo];
+    const estadoInstructivo = ultima ? recetaPorAuditoria[ultima.id_auditoria] : null;
+    let badge;
+    if (alertasCount > 0) badge = "alertas";
+    else if (estadoInstructivo === "pendiente" || estadoInstructivo === "parcial") badge = "atencion";
+    else if (auditoriasCount === 0) badge = "sin_auditar";
+    else badge = "al_dia";
+    return { ...eq, badge, ultimaAuditoria: ultima || null };
+  });
+}
+function EquipoRow({ eq, onClick }) {
+  const info = EQUIPO_BADGE_INFO[eq.badge];
+  return (
+    <button onClick={onClick} className="w-full bg-white rounded-2xl border border-bd shadow-card p-4 flex items-center justify-between gap-3 text-left">
+      <div className="min-w-0">
+        <p className="font-bold text-[14.5px] truncate">{eq.numero_interno ? `${eq.numero_interno} · ` : ""}{eq.patente}</p>
+        <p className="text-[12.5px] text-muted mt-0.5">{eq.kilometros != null ? eq.kilometros.toLocaleString("es-AR") + " km" : "Sin km"} · Última auditoría: {eq.ultimaAuditoria ? formatDateLong(eq.ultimaAuditoria.fecha) : "Nunca"}</p>
+      </div>
+      <Badge color={info.color}>{info.icon} {info.label}</Badge>
+    </button>
+  );
+}
+function EquipoDetalleView({ equipo, onBack }) {
+  const [tab, setTab] = useState("mapa");
+  return (
+    <div>
+      <button onClick={onBack} className="flex items-center gap-2 text-[13.5px] font-bold text-muted mb-4"><Icon.back width="15" height="15" /> Equipos</button>
+      <h1 className="text-[24px] font-extrabold mb-1">{equipo.numero_interno ? `${equipo.numero_interno} · ` : ""}{equipo.patente}</h1>
+      <p className="text-[13px] text-muted mb-5">{equipo.tipo === "SEMI" ? "Semirremolque" : `Tracto ${equipo.configuracion_ejes || ""}`} · {equipo.modelo || "-"}</p>
+      <div className="flex gap-2 mb-5 border-b border-bd">
+        {[{ id: "mapa", label: "Mapa" }, { id: "historial", label: "Historial" }].map(t => (
+          <button key={t.id} onClick={() => setTab(t.id)}
+            className={cx("px-4 py-2.5 text-[13.5px] font-bold border-b-2 -mb-px", tab === t.id ? "border-ink text-ink" : "border-transparent text-muted")}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {tab === "mapa" && <MapaEquipoTab equipo={equipo} />}
+      {tab === "historial" && <HistorialEquipoTab equipo={equipo} />}
+    </div>
+  );
+}
+function EquiposView({ clienteId, equipoInicial }) {
+  const [equipos, setEquipos] = useState(null);
+  const [busqueda, setBusqueda] = useState("");
+  const [seleccionado, setSeleccionado] = useState(equipoInicial || null);
+
+  useEffect(() => {
+    fetchEquiposConEstado(clienteId).then(setEquipos).catch(e => { console.error("No se pudieron cargar los equipos", e); setEquipos([]); });
+  }, [clienteId]);
+
+  if (seleccionado) return <EquipoDetalleView equipo={seleccionado} onBack={() => setSeleccionado(null)} />;
+  if (equipos === null) return <div className="flex justify-center py-16"><span className="spinner" /></div>;
+
+  const q = busqueda.trim().toLowerCase();
+  const filtrados = q ? equipos.filter(e => (e.patente || "").toLowerCase().includes(q) || String(e.numero_interno || "").toLowerCase().includes(q)) : equipos;
+
+  return (
+    <div>
+      <h1 className="text-[26px] font-extrabold mb-5">Equipos</h1>
+      <div className="relative mb-5">
+        <Icon.search width="16" height="16" className="absolute left-4 top-1/2 -translate-y-1/2 text-muted" />
+        <TextInput className="pl-11" placeholder="Buscar por patente o número interno" value={busqueda} onChange={e => setBusqueda(e.target.value)} />
+      </div>
+      <div className="space-y-2">
+        {filtrados.map(eq => <EquipoRow key={eq.id_equipo} eq={eq} onClick={() => setSeleccionado(eq)} />)}
+        {!filtrados.length && <p className="text-[13.5px] text-muted py-6 text-center">Sin equipos para mostrar.</p>}
+      </div>
+    </div>
+  );
+}
+
+/* =====================================================================
+   DASHBOARD
+===================================================================== */
+function KpiCard({ label, value }) {
+  return (
+    <div className="bg-[#F9FAFB] rounded-[18px] p-4">
+      <p className="text-[22px] font-extrabold leading-none">{value == null ? "—" : value}</p>
+      <p className="text-[11.5px] font-semibold text-muted mt-1.5">{label}</p>
+    </div>
+  );
+}
+async function fetchDashboardCliente(clienteId) {
+  const { data: equiposCliente } = await sb.from("equipos").select("id_equipo").eq("cliente_id", clienteId).eq("activo", true);
+  const equipoIds = (equiposCliente || []).map(e => e.id_equipo);
+  const hoy = todayISO();
+
+  const [{ count: auditoriasHoy }, { data: cambiosHoy }, { data: neumaticos }] = await Promise.all([
+    sb.from("auditorias").select("id_auditoria", { count: "exact", head: true }).eq("cliente_id", clienteId).eq("fecha", hoy),
+    equipoIds.length ? sb.from("cambios_neumaticos").select("id_cambio").eq("fecha", hoy).in("equipo_id", equipoIds) : Promise.resolve({ data: [] }),
+    sb.from("neumaticos").select("bodega").eq("cliente_id", clienteId)
+  ]);
+
+  const stock = { nuevo: 0, transito: 0, recauchado: 0 };
+  (neumaticos || []).forEach(n => { if (n.bodega === "nuevo") stock.nuevo++; else if (n.bodega === "transito") stock.transito++; else if (n.bodega === "recauchado") stock.recauchado++; });
+
+  return {
+    equiposActivos: equipoIds.length,
+    auditoriasHoy: auditoriasHoy || 0,
+    cambiosHoy: (cambiosHoy || []).length,
+    stock
+  };
+}
+function DashboardView({ clienteId, onVerEquipo }) {
+  const [kpis, setKpis] = useState(null);
+  const [equipos, setEquipos] = useState(null);
+
+  useEffect(() => {
+    fetchDashboardCliente(clienteId).then(setKpis).catch(e => console.error("No se pudo cargar el dashboard", e));
+    fetchEquiposConEstado(clienteId).then(setEquipos).catch(e => { console.error(e); setEquipos([]); });
+  }, [clienteId]);
+
+  if (!kpis || equipos === null) return <div className="flex justify-center py-16"><span className="spinner" /></div>;
+
+  return (
+    <div>
+      <h1 className="text-[26px] font-extrabold mb-5">Dashboard</h1>
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-6">
+        <KpiCard label="Equipos activos" value={kpis.equiposActivos} />
+        <KpiCard label="Auditorías hoy" value={kpis.auditoriasHoy} />
+        <KpiCard label="Hojas de cambio hoy" value={kpis.cambiosHoy} />
+      </div>
+      <p className="font-bold text-[16px] mb-3">Stock</p>
+      <div className="grid grid-cols-3 gap-3 mb-8">
+        <KpiCard label="Nuevos" value={kpis.stock.nuevo} />
+        <KpiCard label="Tránsito" value={kpis.stock.transito} />
+        <KpiCard label="Recauchados" value={kpis.stock.recauchado} />
+      </div>
+      <p className="font-bold text-[16px] mb-3">Equipos</p>
+      <div className="space-y-2">
+        {equipos.map(eq => <EquipoRow key={eq.id_equipo} eq={eq} onClick={() => onVerEquipo(eq)} />)}
+        {!equipos.length && <p className="text-[13.5px] text-muted py-4">Sin equipos activos.</p>}
+      </div>
+    </div>
+  );
+}
+
+/* =====================================================================
+   HISTORIAL GENERAL — requiere elegir un equipo especifico primero.
+===================================================================== */
+const HISTORIAL_RANGOS = [
+  { id: "hoy", label: "Hoy" },
+  { id: "7d", label: "7 días" },
+  { id: "30d", label: "30 días" },
+  { id: "todo", label: "Todo" }
+];
+const HISTORIAL_TIPOS = [
+  { id: "todos", label: "Todos" },
+  { id: "auditoria", label: "Auditorías" },
+  { id: "cambio", label: "Hojas de cambio" }
+];
+function fechaDesdeRango(rango) {
+  if (rango === "todo") return null;
+  const d = new Date();
+  if (rango === "hoy") return todayISO();
+  d.setDate(d.getDate() - (rango === "7d" ? 7 : 30));
+  return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate());
+}
+function HistorialGeneralView({ clienteId }) {
+  const [equipos, setEquipos] = useState(null);
+  const [equipoId, setEquipoId] = useState("");
+  const [tipo, setTipo] = useState("todos");
+  const [rango, setRango] = useState("30d");
+  const [items, setItems] = useState(null);
+  const [ver, setVer] = useState(null);
+
+  useEffect(() => { db.fetchEquipos(clienteId).then(setEquipos).catch(() => setEquipos([])); }, [clienteId]);
+
+  useEffect(() => {
+    if (!equipoId) { setItems(null); return; }
+    setItems(null);
+    fetchTimeline(equipoId, { desde: fechaDesdeRango(rango) }).then(setItems);
+  }, [equipoId, rango]);
+
+  const filtrados = items ? (tipo === "todos" ? items : items.filter(it => it.tipo === tipo)) : null;
+
+  return (
+    <div>
+      <h1 className="text-[26px] font-extrabold mb-5">Historial general</h1>
+      <Field label="Equipo" required>
+        <Select value={equipoId} onChange={e => setEquipoId(e.target.value)}>
+          <option value="">Seleccionar equipo</option>
+          {(equipos || []).map(e => <option key={e.id_equipo} value={e.id_equipo}>{e.numero_interno ? `${e.numero_interno} · ` : ""}{e.patente}</option>)}
+        </Select>
+      </Field>
+
+      {equipoId && (
+        <>
+          <div className="flex gap-2 flex-wrap mt-4 mb-3">
+            {HISTORIAL_TIPOS.map(t => (
+              <button key={t.id} onClick={() => setTipo(t.id)}
+                className={cx("px-3.5 h-9 rounded-full text-[12.5px] font-bold", tipo === t.id ? "bg-ink text-white" : "bg-[#F3F4F6] text-ink")}>
+                {t.label}
+              </button>
+            ))}
+          </div>
+          <div className="flex gap-2 flex-wrap mb-5">
+            {HISTORIAL_RANGOS.map(r => (
+              <button key={r.id} onClick={() => setRango(r.id)}
+                className={cx("px-3.5 h-9 rounded-full text-[12.5px] font-bold", rango === r.id ? "bg-ink text-white" : "bg-[#F3F4F6] text-ink")}>
+                {r.label}
+              </button>
+            ))}
+          </div>
+          {filtrados === null ? <div className="flex justify-center py-10"><span className="spinner" /></div> : <Timeline items={filtrados} onVer={setVer} />}
+        </>
+      )}
+      {!equipoId && <p className="text-[13.5px] text-muted py-6 text-center">Elegí un equipo para ver su historial.</p>}
+
+      {ver && ver.tipo === "auditoria" && <AuditoriaDetalleModal auditoria={ver.registro} onClose={() => setVer(null)} />}
+      {ver && ver.tipo === "cambio" && <CambioDetalleModal cambio={ver.registro} onClose={() => setVer(null)} />}
+    </div>
+  );
+}
+
+/* =====================================================================
+   CONFIGURACION (solo lectura)
+===================================================================== */
+const CONFIG_RECETA_FIELDS = [
+  { clave: "psi_delantero", label: "PSI eje delantero" },
+  { clave: "psi_traccion", label: "PSI tracción / eje libre" },
+  { clave: "psi_tolerancia_pct", label: "Tolerancia PSI (%)" },
+  { clave: "psi_auxilio_tracto", label: "PSI mínimo auxilio tracto" },
+  { clave: "psi_auxilio_semi", label: "PSI mínimo auxilio semi" },
+  { clave: "mm_minimo_tracto", label: "MM mínimo tracto" },
+  { clave: "mm_minimo_semi", label: "MM mínimo semi" },
+  { clave: "mm_minimo_auxilio", label: "MM mínimo auxilio" },
+  { clave: "mm_amarillo_tracto", label: "MM amarillo tracto" },
+  { clave: "mm_amarillo_semi", label: "MM amarillo semi" },
+  { clave: "mm_rotacion_pct", label: "% diferencia rotación" }
+];
+const CONFIG_STOCK_FIELDS = [
+  { clave: "stock_minimo_nuevo", label: "Nuevos" },
+  { clave: "stock_minimo_transito", label: "Tránsito" },
+  { clave: "stock_minimo_recauchado", label: "Recauchados" }
+];
+function ConfigRowSoloLectura({ label, valor, sufijo }) {
+  return (
+    <div className="flex items-center justify-between px-4 py-3 border-b border-bd last:border-0">
+      <span className="text-[13.5px] font-semibold text-[#374151]">{label}</span>
+      <span className="font-bold text-[14px]">{valor != null ? valor : "-"}{valor != null && sufijo ? sufijo : ""}</span>
+    </div>
+  );
+}
+function ConfiguracionView({ clienteId }) {
+  const [config, setConfig] = useState(null);
+  useEffect(() => { db.fetchConfig(clienteId).then(setConfig).catch(e => console.error("No se pudo cargar la configuración", e)); }, [clienteId]);
+  if (!config) return <div className="flex justify-center py-16"><span className="spinner" /></div>;
+  return (
+    <div>
+      <h1 className="text-[26px] font-extrabold mb-1">Configuración</h1>
+      <p className="text-[13px] text-muted mb-5">Parámetros de tu empresa. Solo lectura.</p>
+
+      <p className="font-bold text-[15px] mb-2">Parámetros de la receta</p>
+      <div className="bg-white rounded-2xl border border-bd shadow-card overflow-hidden mb-6">
+        {CONFIG_RECETA_FIELDS.map(f => <ConfigRowSoloLectura key={f.clave} label={f.label} valor={config[f.clave]} />)}
+      </div>
+
+      <p className="font-bold text-[15px] mb-2">Stock mínimos</p>
+      <div className="bg-white rounded-2xl border border-bd shadow-card overflow-hidden">
+        {CONFIG_STOCK_FIELDS.map(f => <ConfigRowSoloLectura key={f.clave} label={f.label} valor={config[f.clave] != null ? config[f.clave] : 0} />)}
+      </div>
+    </div>
+  );
+}
+
+/* =====================================================================
+   PERFIL
+===================================================================== */
+function CambiarPasswordModal({ user, onClose, pushToast }) {
+  const [actual, setActual] = useState("");
+  const [nueva, setNueva] = useState("");
+  const [confirmar, setConfirmar] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function guardar() {
+    setError("");
+    if (!actual || !nueva || !confirmar) { setError("Completá los 3 campos."); return; }
+    if (nueva.length < 4) { setError("La nueva contraseña debe tener al menos 4 caracteres."); return; }
+    if (nueva !== confirmar) { setError("La confirmación no coincide con la nueva contraseña."); return; }
+    setSaving(true);
+    try {
+      const hashActual = await sha256Hex(actual);
+      if (hashActual !== user.password_hash) { setError("La contraseña actual es incorrecta."); setSaving(false); return; }
+      const hashNueva = await sha256Hex(nueva);
+      const { error: e } = await sb.from("usuarios").update({ password_hash: hashNueva }).eq("id", user.id);
+      if (e) throw e;
+      pushToast("✓ Contraseña actualizada");
+      onClose();
+    } catch (e) { console.error("No se pudo cambiar la contraseña", e); setError("No se pudo guardar. Intentá de nuevo."); }
+    setSaving(false);
+  }
+
+  return (
+    <Modal title="Cambiar contraseña" onClose={onClose}>
+      <div className="space-y-4">
+        <Field label="Contraseña actual" required><TextInput type="password" value={actual} onChange={e => setActual(e.target.value)} /></Field>
+        <Field label="Nueva contraseña" required><TextInput type="password" value={nueva} onChange={e => setNueva(e.target.value)} /></Field>
+        <Field label="Confirmar nueva contraseña" required><TextInput type="password" value={confirmar} onChange={e => setConfirmar(e.target.value)} /></Field>
+        {error && <p className="text-[12.5px] font-bold text-[#B91C1C]">{error}</p>}
+        <Button className="w-full" disabled={saving} onClick={guardar}>{saving ? <span className="spinner" /> : "Cambiar contraseña"}</Button>
+      </div>
+    </Modal>
+  );
+}
+function PerfilView({ user, onLogout }) {
+  const [confirming, setConfirming] = useState(false);
+  const [cambiarPassword, setCambiarPassword] = useState(false);
+  const [pushToast, toastNode] = useToasts();
+
+  return (
+    <div>
+      {toastNode}
+      <h1 className="text-[26px] font-extrabold mb-5">Perfil</h1>
+      <Card className="mb-6 max-w-md">
+        <div className="flex items-center gap-3">
+          <div className="w-12 h-12 rounded-full bg-[#F3F4F6] flex items-center justify-center"><Icon.user width="22" height="22" /></div>
+          <div>
+            <p className="font-bold text-[16px]">{user.nombre} {user.apellido || ""}</p>
+            <p className="text-[12.5px] text-muted">{user.email || "Sin email registrado"}</p>
+            <p className="text-[12.5px] text-muted">Usuario: {user.usuario}</p>
+          </div>
+        </div>
+      </Card>
+      <Button variant="subtle" className="w-full max-w-md mb-4" onClick={() => setCambiarPassword(true)}>Cambiar contraseña</Button>
+      <Button variant="danger" className="w-full max-w-md" onClick={() => setConfirming(true)}>Cerrar sesión</Button>
+
+      {confirming && (
+        <Confirm title="Cerrar sesión" desc="¿Seguro que querés cerrar tu sesión?"
+          onCancel={() => setConfirming(false)} onConfirm={onLogout} />
+      )}
+      {cambiarPassword && <CambiarPasswordModal user={user} pushToast={pushToast} onClose={() => setCambiarPassword(false)} />}
+    </div>
+  );
+}
+
+/* =====================================================================
+   NAV / SHELL (sidebar en tablet+, hamburguesa en mobile — igual patron
+   que AdminShell, sin selector de empresa ni campanita de alertas).
+===================================================================== */
+const CLIENTE_NAV = [
+  { id: "dashboard", label: "Dashboard", icon: Icon.home },
+  { id: "equipos", label: "Equipos", icon: Icon.truck },
+  { id: "historial", label: "Historial", icon: Icon.clipboard },
+  { id: "configuracion", label: "Configuración", icon: Icon.settings },
+  { id: "perfil", label: "Perfil", icon: Icon.user }
+];
+function ClienteShell({ view, setView, empresaNombre, children }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const NavList = ({ onPick }) => (
+    <nav className="space-y-1">
+      {CLIENTE_NAV.map(it => (
+        <button key={it.id} onClick={() => { setView(it.id); if (onPick) onPick(); }}
+          className={cx("w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-[14.5px] font-bold text-left", view === it.id ? "bg-ink text-white" : "text-[#374151] hover:bg-[#F3F4F6]")}>
+          <it.icon width="19" height="19" />
+          {it.label}
+        </button>
+      ))}
+    </nav>
+  );
+  return (
+    <div className="min-h-screen md:flex">
+      <div className="hidden md:flex md:flex-col md:w-64 md:shrink-0 border-r border-bd p-5 sticky top-0 h-screen">
+        <div className="flex items-center gap-2 mb-1 px-1">
+          <div className="w-9 h-9 rounded-xl bg-ink flex items-center justify-center"><Icon.gauge width="18" height="18" className="text-white" /></div>
+          <span className="font-extrabold text-[16px]">MOSA TIRES</span>
+        </div>
+        <p className="text-[12px] text-muted px-1 mb-7">{empresaNombre || ""}</p>
+        <NavList />
+      </div>
+      <div className="flex-1 min-w-0 pb-20 md:pb-0">
+        <div className="sticky top-0 z-30 bg-white/90 backdrop-blur border-b border-bd px-5 py-3 flex items-center justify-between safe-top md:hidden">
+          <button className="w-9 h-9 rounded-full bg-[#F3F4F6] flex items-center justify-center" onClick={() => setMenuOpen(true)}><Icon.menu width="18" height="18" /></button>
+          <span className="font-extrabold text-[15px]">{empresaNombre || "MOSA TIRES"}</span>
+          <button onClick={() => setView("perfil")} className="w-9 h-9 rounded-full bg-[#F3F4F6] flex items-center justify-center"><Icon.user width="16" height="16" /></button>
+        </div>
+        <div className="px-5 py-6">{children}</div>
+      </div>
+      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-bd safe-bottom z-30 md:hidden">
+        <div className="flex">
+          {CLIENTE_NAV.map(it => {
+            const active = view === it.id;
+            return (
+              <button key={it.id} onClick={() => setView(it.id)} className="flex-1 flex flex-col items-center gap-1 py-2.5">
+                <it.icon width="22" height="22" className={active ? "text-ink" : "text-[#B0B3B8]"} />
+                <span className={cx("text-[10px] font-semibold", active ? "text-ink" : "text-[#B0B3B8]")}>{it.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      {menuOpen && (
+        <div className="fixed inset-0 z-50 md:hidden">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setMenuOpen(false)} />
+          <div className="absolute left-0 top-0 bottom-0 w-72 bg-white p-5 safe-top">
+            <div className="flex items-center justify-between mb-8">
+              <span className="font-extrabold text-[16px]">MOSA TIRES</span>
+              <button onClick={() => setMenuOpen(false)} className="w-9 h-9 rounded-full bg-[#F3F4F6] flex items-center justify-center"><Icon.close width="16" height="16" /></button>
+            </div>
+            <NavList onPick={() => setMenuOpen(false)} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* =====================================================================
+   APP CLIENTE OPERATIVO
+===================================================================== */
+function ClienteOperativoApp({ user, onLogout }) {
+  const [view, setView] = useState("dashboard");
+  const [empresa, setEmpresa] = useState(null);
+  const [equipoDesdeAfuera, setEquipoDesdeAfuera] = useState(null);
+
+  useEffect(() => { db.fetchCliente(user.cliente_id).then(setEmpresa).catch(() => {}); }, [user.cliente_id]);
+
+  function irAEquipo(eq) { setEquipoDesdeAfuera(eq); setView("equipos"); }
+  // Navegar por el menu (no desde "irAEquipo") siempre debe mostrar la lista,
+  // no quedar pegado en el detalle del ultimo equipo abierto desde afuera.
+  function cambiarView(v) { setEquipoDesdeAfuera(null); setView(v); }
+
+  let body;
+  if (view === "equipos") body = <EquiposView key={equipoDesdeAfuera ? equipoDesdeAfuera.id_equipo : "eq"} clienteId={user.cliente_id} equipoInicial={equipoDesdeAfuera} />;
+  else if (view === "historial") body = <HistorialGeneralView clienteId={user.cliente_id} />;
+  else if (view === "configuracion") body = <ConfiguracionView clienteId={user.cliente_id} />;
+  else if (view === "perfil") body = <PerfilView user={user} onLogout={onLogout} />;
+  else body = <DashboardView clienteId={user.cliente_id} onVerEquipo={irAEquipo} />;
+
+  return (
+    <ClienteShell view={view} setView={cambiarView} empresaNombre={empresa ? empresa.nombre : ""}>
+      {body}
+    </ClienteShell>
+  );
+}
+
+/* =====================================================================
+   ENTRADA DE LA PAGINA — guarda de sesion (rol cliente + subtipo operativo)
+===================================================================== */
+function ClienteOperativoPage() {
+  const [user, setUser] = useState(null);
+  const [checking, setChecking] = useState(true);
+
+  useEffect(() => {
+    const cached = getSession();
+    if (!cached || cached.rol !== "cliente" || cached.subtipo !== "operativo") { location.replace("index.html"); return; }
+    db.fetchUsuario(cached.id).then(fresh => {
+      if (!fresh || !fresh.activo || fresh.rol !== "cliente" || fresh.subtipo !== "operativo") { clearSession(); location.replace("index.html"); return; }
+      setSession(fresh); setUser(fresh); setChecking(false);
+    }).catch(() => { setUser(cached); setChecking(false); }); // sin conexion: seguir con la sesion cacheada
+  }, []);
+
+  function handleLogout() { clearSession(); location.href = "index.html"; }
+
+  if (checking || !user) return <div className="min-h-screen flex items-center justify-center"><span className="spinner" /></div>;
+  return <ClienteOperativoApp user={user} onLogout={handleLogout} />;
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<ClienteOperativoPage />);
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => { navigator.serviceWorker.register("./sw.js").catch(e => console.error("SW registration failed", e)); });
+}
+</script>
+</body>
+</html>

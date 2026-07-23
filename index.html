@@ -455,7 +455,8 @@ function MecanicoGate({ user }) {
 /* =====================================================================
    APP RAIZ
    Login + ruteo por rol. Cada rol no-mecánico tiene su propio archivo
-   (admin.html / superadmin.html / cliente.html); el mecánico pasa por
+   (admin.html / superadmin.html / cliente.html / cliente-operativo.html
+   según subtipo); el mecánico pasa por
    MecanicoGate y termina en mecanico.html.
 ===================================================================== */
 function App() {
@@ -475,6 +476,7 @@ function App() {
     if (!user) return;
     if (user.rol === "admin") location.replace("admin.html");
     else if (user.rol === "superadmin") location.replace("superadmin.html");
+    else if (user.rol === "cliente" && user.subtipo === "operativo") location.replace("cliente-operativo.html");
     else if (user.rol === "cliente") location.replace("cliente.html");
   }, [user]);
 

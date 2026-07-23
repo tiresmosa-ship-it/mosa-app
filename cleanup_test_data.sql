@@ -73,6 +73,10 @@ DELETE FROM clientes WHERE id_cliente = 'mosa_test_qa';
 DELETE FROM permisos WHERE usuario_id = (SELECT id FROM usuarios WHERE usuario = 'carlos')
   AND seccion IN ('auditoria','hoja_cambio','cierre_dia','alertas_propias');
 
+-- Usuario de prueba para verificar cliente-operativo.html (rol=cliente,
+-- subtipo=operativo) contra la base real.
+DELETE FROM usuarios WHERE usuario = 'clienteoperativo_test';
+
 -- =====================================================================
 -- Verificacion (deberia devolver 0 en todas)
 -- =====================================================================
