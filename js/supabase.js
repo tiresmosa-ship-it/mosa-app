@@ -960,6 +960,46 @@ async function siguienteNumeroCambio(clienteId, cfg) {
   const pendientes = getQueue().filter(q => q.clienteId === clienteId && q.tipo === "cambio").length;
   return String(base + pendientes);
 }
+// Numeros de fuego que ya estan en cola local (auditoria/cambio aun sin
+// sincronizar) para no repetir un correlativo mientras se sigue offline.
+function numerosFuegoEnCola(clienteId) {
+  const nums = [];
+  const considerar = (v) => { if (v != null && /^\d+$/.test(String(v))) nums.push(parseInt(v, 10)); };
+  getQueue().filter(q => q.clienteId === clienteId).forEach(q => {
+    if (q.tipo === "auditoria" && q.data && Array.isArray(q.data.posiciones)) q.data.posiciones.forEach(p => considerar(p.numero_fuego));
+    if (q.tipo === "cambio" && q.data) {
+      (q.data.entra || []).forEach(e => considerar(e.numero_fuego));
+      (q.data.sale || []).forEach(s => considerar(s.numero_fuego));
+    }
+  });
+  return nums;
+}
+// Correlativo secuencial de numero_fuego para clientes que NO usan la formula
+// de La Portada (config_cliente.numero_fuego_inicio, editable desde
+// Admin > Configuracion). Arranca en el numero inicial configurado y sigue
+// desde el maximo ya usado (en la base o en la cola offline pendiente).
+async function siguienteNumeroFuego(clienteId, cfg) {
+  const inicio = parseInt(cfg.numero_fuego_inicio || 1, 10);
+  const { data, error } = await sb.from("neumaticos").select("numero_fuego").eq("cliente_id", clienteId);
+  let maxExistente = null;
+  if (!error && data) {
+    data.forEach(r => {
+      if (r.numero_fuego && /^\d+$/.test(r.numero_fuego)) {
+        const n = parseInt(r.numero_fuego, 10);
+        if (maxExistente === null || n > maxExistente) maxExistente = n;
+      }
+    });
+  }
+  numerosFuegoEnCola(clienteId).forEach(n => { if (maxExistente === null || n > maxExistente) maxExistente = n; });
+  return String(maxExistente === null ? inicio : Math.max(inicio, maxExistente + 1));
+}
+// Punto unico de decision de formula: La Portada usa su formula fija
+// (interno+semana+anio+posicion); cualquier otro cliente usa el correlativo
+// secuencial configurable. Ver Admin > Configuracion > Formula marca de fuego.
+async function generarNumeroFuegoSugerido(clienteId, cfg, numeroInterno, posicion, fecha) {
+  if (clienteId === CLIENTE_ID_DEFAULT) return generarFuegoLaPortada(numeroInterno, posicion, fecha);
+  return siguienteNumeroFuego(clienteId, cfg);
+}
 
 /* =====================================================================
    SOLICITUD DE DESBLOQUEO (lado mecanico)

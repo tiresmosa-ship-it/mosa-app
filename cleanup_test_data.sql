@@ -55,6 +55,10 @@ DELETE FROM herramientas_inventario WHERE id = '66666666-0002-0000-0000-00000000
 DELETE FROM lotes_inventario WHERE numero_documento LIKE 'DOC-NEU-TEST%' OR numero_documento LIKE 'DEBUGDOC%';
 DELETE FROM neumaticos WHERE marca LIKE 'MarcaTest%' OR marca LIKE 'DebugLote%' OR marca = 'DebugNeu';
 
+-- Neumatico de prueba usado para verificar el correlativo secuencial de
+-- numero_fuego de BYS (Admin > Configuracion > Correlativos).
+DELETE FROM neumaticos WHERE id_neumatico = '77777777-9999-0000-0000-000000000001';
+
 -- =====================================================================
 -- Verificacion (deberia devolver 0 en todas)
 -- =====================================================================

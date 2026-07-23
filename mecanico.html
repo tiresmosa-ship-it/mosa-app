@@ -706,7 +706,7 @@ function AuditoriaForm({ user, clienteId, equipo, cfg, onCancel, onGenerarInstru
 
       {editingPos != null && (
         <PosicionModal
-          pos={editingPos} equipo={equipo} cfg={cfg} axleCfg={axleCfg}
+          pos={editingPos} equipo={equipo} cfg={cfg} clienteId={clienteId} axleCfg={axleCfg}
           existing={posData[editingPos]}
           onClose={() => setEditingPos(null)}
           onSave={(data) => guardarPosicion(editingPos, data)}
@@ -716,9 +716,14 @@ function AuditoriaForm({ user, clienteId, equipo, cfg, onCancel, onGenerarInstru
   );
 }
 
-function PosicionModal({ pos, equipo, cfg, axleCfg, existing, onClose, onSave }) {
-  const sugerido = generarFuegoLaPortada(equipo.numero_interno, pos, todayISO());
-  const [form, setForm] = useState(() => existing || { numero_fuego: sugerido, marca: "", medida: "", psi: "", mm_borde_izq: "", mm_centro: "", mm_borde_der: "" });
+function PosicionModal({ pos, equipo, cfg, clienteId, axleCfg, existing, onClose, onSave }) {
+  const [form, setForm] = useState(() => existing || { numero_fuego: "", marca: "", medida: "", psi: "", mm_borde_izq: "", mm_centro: "", mm_borde_der: "" });
+  useEffect(() => {
+    if (existing) return;
+    generarNumeroFuegoSugerido(clienteId, cfg, equipo.numero_interno, pos, todayISO())
+      .then(sug => setForm(f => (f.numero_fuego ? f : { ...f, numero_fuego: sug })))
+      .catch(() => {});
+  }, []);
   const ev = evaluarPosicion(axleCfg, cfg, pos, equipo.tipo, form);
   const mmAlert = ["mm_borde_izq", "mm_centro", "mm_borde_der"].some(k => form[k] !== "" && parseFloat(form[k]) < ev.mmMin);
   const mmWarn = ["mm_borde_izq", "mm_centro", "mm_borde_der"].some(k => form[k] !== "" && parseFloat(form[k]) < ev.mmAmarillo);
@@ -1202,7 +1207,7 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
       )}
 
       {montaje && (
-        <MontajeModal tipo={montaje.tipo} pos={montaje.pos} equipo={equipo} clienteId={clienteId}
+        <MontajeModal tipo={montaje.tipo} pos={montaje.pos} equipo={equipo} clienteId={clienteId} cfg={cfg}
           onClose={() => setMontaje(null)}
           onConfirm={(data) => setConfirmDlg({
             title: "Confirmar montaje",
@@ -1260,9 +1265,14 @@ function TireInfoModal({ pos, data, cfg, equipo, axleCfg, onClose, onRegularPsi,
   );
 }
 
-function MontajeModal({ tipo, pos, equipo, clienteId, onClose, onConfirm }) {
-  const sugerido = tipo === "nuevo" ? generarFuegoLaPortada(equipo.numero_interno, pos, todayISO()) : "";
-  const [fuego, setFuego] = useState(sugerido);
+function MontajeModal({ tipo, pos, equipo, clienteId, cfg, onClose, onConfirm }) {
+  const [fuego, setFuego] = useState("");
+  useEffect(() => {
+    if (tipo !== "nuevo") return;
+    generarNumeroFuegoSugerido(clienteId, cfg, equipo.numero_interno, pos, todayISO())
+      .then(sug => setFuego(f => (f ? f : sug)))
+      .catch(() => {});
+  }, []);
   const [marca, setMarca] = useState("");
   const [medida, setMedida] = useState("");
   const [psi, setPsi] = useState("");
