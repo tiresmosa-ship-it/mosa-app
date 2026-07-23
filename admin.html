@@ -3167,29 +3167,298 @@ function AlertasAdminView({ empresaCtl, adminUser }) {
 /* =====================================================================
    PERFIL
 ===================================================================== */
-function PerfilAdminView({ user, onLogout }) {
-  const [confirming, setConfirming] = useState(false);
+function CambiarPasswordModal({ user, onClose, pushToast }) {
+  const [actual, setActual] = useState("");
+  const [nueva, setNueva] = useState("");
+  const [confirmar, setConfirmar] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function guardar() {
+    setError("");
+    if (!actual || !nueva || !confirmar) { setError("Completá los 3 campos."); return; }
+    if (nueva.length < 4) { setError("La nueva contraseña debe tener al menos 4 caracteres."); return; }
+    if (nueva !== confirmar) { setError("La confirmación no coincide con la nueva contraseña."); return; }
+    setSaving(true);
+    try {
+      const hashActual = await sha256Hex(actual);
+      if (hashActual !== user.password_hash) { setError("La contraseña actual es incorrecta."); setSaving(false); return; }
+      const hashNueva = await sha256Hex(nueva);
+      const { error: e } = await sb.from("usuarios").update({ password_hash: hashNueva }).eq("id", user.id);
+      if (e) throw e;
+      pushToast("✓ Contraseña actualizada");
+      onClose();
+    } catch (e) { console.error("No se pudo cambiar la contraseña", e); setError("No se pudo guardar. Intentá de nuevo."); }
+    setSaving(false);
+  }
+
+  return (
+    <Modal title="Cambiar contraseña" onClose={onClose}>
+      <div className="space-y-4">
+        <Field label="Contraseña actual" required><TextInput type="password" value={actual} onChange={e => setActual(e.target.value)} /></Field>
+        <Field label="Nueva contraseña" required><TextInput type="password" value={nueva} onChange={e => setNueva(e.target.value)} /></Field>
+        <Field label="Confirmar nueva contraseña" required><TextInput type="password" value={confirmar} onChange={e => setConfirmar(e.target.value)} /></Field>
+        {error && <p className="text-[12.5px] font-bold text-[#B91C1C]">{error}</p>}
+        <Button className="w-full" disabled={saving} onClick={guardar}>{saving ? <span className="spinner" /> : "Cambiar contraseña"}</Button>
+      </div>
+    </Modal>
+  );
+}
+
+const CONFIG_RECETA_FIELDS = [
+  { clave: "psi_delantero", label: "PSI eje delantero" },
+  { clave: "psi_traccion", label: "PSI tracción / eje libre" },
+  { clave: "psi_tolerancia_pct", label: "Tolerancia PSI (%)" },
+  { clave: "psi_auxilio_tracto", label: "PSI mínimo auxilio tracto" },
+  { clave: "psi_auxilio_semi", label: "PSI mínimo auxilio semi" },
+  { clave: "mm_minimo_tracto", label: "MM mínimo tracto (rojo)" },
+  { clave: "mm_minimo_semi", label: "MM mínimo semi (rojo)" },
+  { clave: "mm_minimo_auxilio", label: "MM mínimo auxilio" },
+  { clave: "mm_amarillo_tracto", label: "MM amarillo tracto" },
+  { clave: "mm_amarillo_semi", label: "MM amarillo semi" },
+  { clave: "mm_rotacion_pct", label: "% diferencia mm rotación" }
+];
+const CONFIG_STOCK_FIELDS = [
+  { clave: "stock_minimo_nuevo", label: "Stock mínimo nuevos" },
+  { clave: "stock_minimo_transito", label: "Stock mínimo tránsito" },
+  { clave: "stock_minimo_recauchado", label: "Stock mínimo recauchados" }
+];
+const CONFIG_ALERTA_FIELDS = [
+  { clave: "dias_alerta_recauchado", label: "Días en reparar → alerta" }
+];
+const CONFIG_DEFAULTS_COMPLETO = {
+  ...DEFAULT_CFG,
+  stock_minimo_nuevo: 10, stock_minimo_transito: 5, stock_minimo_recauchado: 10,
+  dias_alerta_recauchado: 30, numero_fuego_inicio: 1
+};
+
+function ConfigRow({ clave, label, valor, onGuardar }) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState(valor);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { setVal(valor); }, [valor]);
+
+  async function guardar() {
+    const n = parseFloat(val);
+    if (isNaN(n) || n < 0) return;
+    setSaving(true);
+    await onGuardar(clave, n);
+    setSaving(false);
+    setEditing(false);
+  }
+
+  return (
+    <div className="flex items-center justify-between px-4 py-3 border-b border-bd last:border-0 gap-3">
+      <span className="text-[13.5px] font-semibold text-[#374151]">{label}</span>
+      {editing ? (
+        <div className="flex items-center gap-2 shrink-0">
+          <TextInput type="number" value={val} onChange={e => setVal(e.target.value)} className="w-24 h-10 px-3" />
+          <button onClick={guardar} disabled={saving} className="text-[12px] font-bold text-[#15803D] px-2">✓ Guardar</button>
+          <button onClick={() => { setVal(valor); setEditing(false); }} className="text-[12px] font-bold text-muted px-2">✗ Cancelar</button>
+        </div>
+      ) : (
+        <div className="flex items-center gap-3 shrink-0">
+          <span className="font-bold text-[14px]">{valor}</span>
+          <button onClick={() => setEditing(true)} className="w-7 h-7 rounded-full bg-[#F3F4F6] flex items-center justify-center"><Icon.pencil width="12" height="12" /></button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CorrelativoCard({ titulo, claveInicio, valorInicio, proximo, onGuardar }) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState(valorInicio);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { setVal(valorInicio); }, [valorInicio]);
+
+  async function guardar() {
+    const n = parseInt(val, 10);
+    if (isNaN(n) || n < 0) return;
+    setSaving(true);
+    await onGuardar(claveInicio, n);
+    setSaving(false);
+    setEditing(false);
+  }
+
+  return (
+    <div className="bg-white rounded-2xl border border-bd shadow-card p-4 mb-3">
+      <p className="font-bold text-[14px] mb-2">{titulo}</p>
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-[13px] text-sub">Número inicial (arranque)</span>
+        {editing ? (
+          <div className="flex items-center gap-2 shrink-0">
+            <TextInput type="number" value={val} onChange={e => setVal(e.target.value)} className="w-20 h-10 px-3" />
+            <button onClick={guardar} disabled={saving} className="text-[12px] font-bold text-[#15803D] px-2">✓ Guardar</button>
+            <button onClick={() => { setVal(valorInicio); setEditing(false); }} className="text-[12px] font-bold text-muted px-2">✗ Cancelar</button>
+          </div>
+        ) : (
+          <div className="flex items-center gap-3 shrink-0">
+            <span className="font-bold text-[14px]">{valorInicio}</span>
+            <button onClick={() => setEditing(true)} className="w-7 h-7 rounded-full bg-[#F3F4F6] flex items-center justify-center"><Icon.pencil width="12" height="12" /></button>
+          </div>
+        )}
+      </div>
+      <p className="text-[11.5px] text-muted mt-2">Próximo número a usar: <b>{proximo == null ? "…" : proximo}</b> (informativo, no editable)</p>
+    </div>
+  );
+}
+
+function ConfiguracionEmpresaView({ filtro, pushToast }) {
+  const [config, setConfig] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [proximos, setProximos] = useState({ auditoria: null, cambio: null, fuego: null });
+  const [restaurando, setRestaurando] = useState(false);
+  const esLaPortada = filtro === "la_portada";
+
+  function cargar() {
+    setLoading(true);
+    db.fetchConfig(filtro).then(async cfg => {
+      setConfig(cfg);
+      const inicioAud = parseInt(cfg.numero_auditoria_inicio || 1, 10);
+      const inicioCam = parseInt(cfg.numero_cambio_inicio || 1, 10);
+      const inicioFuego = parseInt(cfg.numero_fuego_inicio || 1, 10);
+      const [{ data: auds }, { data: cams }, { data: neus }] = await Promise.all([
+        sb.from("auditorias").select("numero_auditoria").eq("cliente_id", filtro),
+        sb.from("cambios_neumaticos").select("numero_cambio"),
+        sb.from("neumaticos").select("numero_fuego").eq("cliente_id", filtro)
+      ]);
+      const maxNum = (rows, campo) => {
+        let max = null;
+        (rows || []).forEach(r => { const n = parseInt(r[campo], 10); if (!isNaN(n) && (max === null || n > max)) max = n; });
+        return max;
+      };
+      const maxAud = maxNum(auds, "numero_auditoria");
+      const maxCam = maxNum(cams, "numero_cambio");
+      const maxFuego = maxNum(neus, "numero_fuego");
+      setProximos({
+        auditoria: maxAud === null ? inicioAud : maxAud + 1,
+        cambio: maxCam === null ? inicioCam : maxCam + 1,
+        fuego: maxFuego === null ? inicioFuego : maxFuego + 1
+      });
+    }).catch(e => console.error("No se pudo cargar la configuración", e)).finally(() => setLoading(false));
+  }
+  useEffect(() => { cargar(); }, [filtro]);
+
+  async function guardarValor(clave, valor) {
+    await db.setConfigValor(filtro, clave, valor);
+    setConfig(c => ({ ...c, [clave]: valor }));
+    if (clave === "numero_auditoria_inicio" || clave === "numero_cambio_inicio" || clave === "numero_fuego_inicio") {
+      pushToast("✓ Correlativo actualizado — aplicará a partir del próximo registro");
+      cargar();
+    } else {
+      pushToast("✓ Parámetro actualizado");
+    }
+  }
+
+  async function restaurarDefaults() {
+    await Promise.all(Object.entries(CONFIG_DEFAULTS_COMPLETO)
+      .filter(([clave]) => clave !== "formula_marca_fuego")
+      .map(([clave, valor]) => db.setConfigValor(filtro, clave, valor)));
+    pushToast("✓ Valores por defecto restaurados");
+    setRestaurando(false);
+    cargar();
+  }
+
+  if (loading || !config) return <div className="flex justify-center py-10"><span className="spinner" /></div>;
+
   return (
     <div>
-      <h1 className="text-[26px] font-extrabold mb-5">Perfil</h1>
-      <Card className="mb-6 max-w-md">
-        <div className="flex items-center gap-3">
-          <div className="w-12 h-12 rounded-full bg-[#F3F4F6] flex items-center justify-center"><Icon.user width="22" height="22" /></div>
+      <p className="font-bold text-[15px] mb-2">Parámetros de la receta</p>
+      <div className="bg-white rounded-2xl border border-bd shadow-card overflow-hidden mb-6">
+        {CONFIG_RECETA_FIELDS.map(f => <ConfigRow key={f.clave} clave={f.clave} label={f.label} valor={config[f.clave]} onGuardar={guardarValor} />)}
+      </div>
+
+      <p className="font-bold text-[15px] mb-2">Stock mínimos</p>
+      <div className="bg-white rounded-2xl border border-bd shadow-card overflow-hidden mb-6">
+        {CONFIG_STOCK_FIELDS.map(f => <ConfigRow key={f.clave} clave={f.clave} label={f.label} valor={config[f.clave] != null ? config[f.clave] : 0} onGuardar={guardarValor} />)}
+      </div>
+
+      <p className="font-bold text-[15px] mb-2">Alertas automáticas</p>
+      <div className="bg-white rounded-2xl border border-bd shadow-card overflow-hidden mb-6">
+        {CONFIG_ALERTA_FIELDS.map(f => <ConfigRow key={f.clave} clave={f.clave} label={f.label} valor={config[f.clave] != null ? config[f.clave] : 0} onGuardar={guardarValor} />)}
+      </div>
+
+      <p className="font-bold text-[15px] mb-2">Correlativos</p>
+      <CorrelativoCard titulo="Auditorías" claveInicio="numero_auditoria_inicio" valorInicio={config.numero_auditoria_inicio} proximo={proximos.auditoria} onGuardar={guardarValor} />
+      <CorrelativoCard titulo="Hojas de cambio" claveInicio="numero_cambio_inicio" valorInicio={config.numero_cambio_inicio} proximo={proximos.cambio} onGuardar={guardarValor} />
+      {!esLaPortada && (
+        <CorrelativoCard titulo="Número de fuego" claveInicio="numero_fuego_inicio" valorInicio={config.numero_fuego_inicio != null ? config.numero_fuego_inicio : 1} proximo={proximos.fuego} onGuardar={guardarValor} />
+      )}
+
+      <p className="font-bold text-[15px] mb-2 mt-6">Fórmula marca de fuego</p>
+      <Card className="mb-6">
+        {esLaPortada ? (
           <div>
-            <p className="font-bold text-[16px]">{user.nombre} {user.apellido || ""}</p>
-            <p className="text-[12.5px] text-muted">Usuario: {user.usuario} · Rol: {user.rol}</p>
+            <p className="text-[13px] text-muted mb-1">🔒 Fórmula LP (La Portada)</p>
+            <p className="font-bold text-[14px]">interno + semana + año + posición</p>
+            <p className="text-[12.5px] text-sub mt-2">Ejemplo: interno=308, semana=29, año=26, pos=1 → 30829261</p>
+            <p className="text-[11.5px] text-muted mt-2">Campo no editable — es la fórmula exclusiva de La Portada.</p>
           </div>
+        ) : (
+          <div>
+            <p className="text-[13px] text-muted mb-1">🔒 Tipo de numeración</p>
+            <p className="font-bold text-[14px]">Correlativo secuencial</p>
+            <p className="text-[12.5px] text-sub mt-2">Los números de fuego se asignan automáticamente en secuencia desde el número inicial configurado en Correlativos.</p>
+            <p className="text-[11.5px] text-muted mt-2">Campo no editable.</p>
+          </div>
+        )}
+      </Card>
+
+      <Button variant="danger" className="w-full max-w-md" onClick={() => setRestaurando(true)}>Restaurar valores por defecto</Button>
+      {restaurando && (
+        <Confirm title="Restaurar valores por defecto" desc="Se van a reemplazar todos los parámetros de esta empresa por los valores por defecto del sistema. ¿Confirmar?"
+          onCancel={() => setRestaurando(false)} onConfirm={restaurarDefaults} />
+      )}
+    </div>
+  );
+}
+
+function PerfilAdminView({ user, onLogout, empresaCtl }) {
+  const { filtro } = empresaCtl;
+  const [tab, setTab] = useState("perfil");
+  const [confirming, setConfirming] = useState(false);
+  const [cambiarPassword, setCambiarPassword] = useState(false);
+  const [pushToast, toastNode] = useToasts();
+
+  return (
+    <div>
+      {toastNode}
+      <h1 className="text-[26px] font-extrabold mb-5">👤 Perfil / Configuración</h1>
+      <div className="flex gap-2 mb-5">
+        {[["perfil", "Perfil"], ["configuracion", "Configuración"]].map(([k, l]) => (
+          <button key={k} onClick={() => setTab(k)} className={cx("px-4 py-2 rounded-full text-[13px] font-bold", tab === k ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{l}</button>
+        ))}
+      </div>
+
+      {tab === "perfil" && (
+        <div>
+          <Card className="mb-6 max-w-md">
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 rounded-full bg-[#F3F4F6] flex items-center justify-center"><Icon.user width="22" height="22" /></div>
+              <div>
+                <p className="font-bold text-[16px]">{user.nombre} {user.apellido || ""}</p>
+                <p className="text-[12.5px] text-muted">{user.email || "Sin email registrado"}</p>
+                <p className="text-[12.5px] text-muted">Usuario: {user.usuario} · Rol: {user.rol}</p>
+              </div>
+            </div>
+          </Card>
+          <Button variant="subtle" className="w-full max-w-md mb-4" onClick={() => setCambiarPassword(true)}>Cambiar contraseña</Button>
+          <Button variant="danger" className="w-full max-w-md" onClick={() => setConfirming(true)}>Cerrar sesión</Button>
         </div>
-      </Card>
-      <Card className="mb-6 max-w-md">
-        <p className="font-bold text-[15px] mb-1">Configuración</p>
-        <p className="text-[13.5px] text-sub">La configuración por empresa (umbrales de PSI/MM, numeración) llega en la siguiente etapa del proyecto.</p>
-      </Card>
-      <Button variant="danger" className="w-full max-w-md" onClick={() => setConfirming(true)}>Cerrar sesión</Button>
+      )}
+
+      {tab === "configuracion" && (
+        filtro === "todas" ? (
+          <p className="text-[13.5px] text-muted py-10 text-center">Seleccioná una empresa específica para editar su configuración</p>
+        ) : <ConfiguracionEmpresaView filtro={filtro} pushToast={pushToast} />
+      )}
+
       {confirming && (
         <Confirm title="Cerrar sesión" desc="¿Seguro que querés cerrar tu sesión?"
           onCancel={() => setConfirming(false)} onConfirm={onLogout} />
       )}
+      {cambiarPassword && <CambiarPasswordModal user={user} pushToast={pushToast} onClose={() => setCambiarPassword(false)} />}
     </div>
   );
 }
@@ -3224,7 +3493,7 @@ function AdminApp({ user, onLogout }) {
   else if (view === "jornada") body = <JornadaView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} />;
   else if (view === "maestros") body = <MaestrosView key={refreshToken} empresaCtl={empresaCtl} />;
   else if (view === "alertas") body = <AlertasAdminView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} />;
-  else if (view === "perfil") body = <PerfilAdminView user={user} onLogout={onLogout} />;
+  else if (view === "perfil") body = <PerfilAdminView user={user} onLogout={onLogout} empresaCtl={empresaCtl} />;
   else body = <DashboardView key={refreshToken} empresaCtl={empresaCtl} onAbrirMecanico={setMecanicoBloqueado} />;
 
   return (
