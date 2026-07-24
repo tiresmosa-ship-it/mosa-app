@@ -38,6 +38,7 @@
 <script src="https://unpkg.com/@babel/standalone@7/babel.min.js" crossorigin></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" crossorigin></script>
 <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js" crossorigin></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js" crossorigin></script>
 
 <style>
   html, body { font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Inter, sans-serif; background:#FFFFFF; -webkit-tap-highlight-color: transparent; }
@@ -128,6 +129,7 @@ const Icon = {
   box: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></svg>,
   calendar: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>,
   settings: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09a1.65 1.65 0 00-1-1.51 1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09a1.65 1.65 0 001.51-1 1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>,
+  trend: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/></svg>,
 };
 
 /* =====================================================================
@@ -359,6 +361,7 @@ const ADMIN_NAV = [
   { id: "dashboard", label: "Dashboard", icon: Icon.home },
   { id: "equipos", label: "Equipos", icon: Icon.truck },
   { id: "jornada", label: "Jornada", icon: Icon.calendar },
+  { id: "productividad", label: "Productividad", icon: Icon.trend },
   { id: "maestros", label: "Maestros", icon: Icon.box },
   { id: "alertas", label: "Alertas", icon: Icon.bell },
   { id: "configuracion", label: "Configuración", icon: Icon.settings },
@@ -1553,7 +1556,17 @@ function InstructivosTab({ filtro, onCambio }) {
 }
 
 const CAMBIO_TIPO_ICON = { entra: "↗", sale: "↙" };
-function MovimientoRow({ m }) {
+function FotoMontajeModal({ url, onClose }) {
+  return (
+    <Modal title="Foto de torque" onClose={onClose}>
+      <div className="flex flex-col items-center gap-4">
+        <img src={url} alt="Foto de torque" className="max-w-full max-h-[70vh] object-contain rounded-xl" />
+        <Button variant="subtle" className="w-full" onClick={() => window.open(url, "_blank")}>Descargar</Button>
+      </div>
+    </Modal>
+  );
+}
+function MovimientoRow({ m, onVerFoto }) {
   const equipoLabel = m.equipo ? `${m.equipo.numero_interno ? m.equipo.numero_interno + " · " : ""}${m.equipo.patente}` : "-";
   const mecanicoLabel = m.mecanico ? `${m.mecanico.nombre} ${m.mecanico.apellido || ""}` : "-";
   let linea;
@@ -1571,12 +1584,16 @@ function MovimientoRow({ m }) {
     <div className="bg-white rounded-2xl border border-bd shadow-card p-4">
       <p className="text-[11.5px] text-muted font-semibold">{(m.creado_en || "").slice(11, 16)} — {mecanicoLabel} — {equipoLabel}</p>
       {linea}
+      {m.kind === "cambio" && m.tipo === "entra" && m.foto_url && (
+        <button className="text-[12.5px] font-bold text-ink underline mt-1.5" onClick={() => onVerFoto(m.foto_url)}>📷 Ver foto de torque</button>
+      )}
     </div>
   );
 }
 function HojaDeCambioTab({ filtro, onCambio }) {
   const [lista, setLista] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [fotoUrl, setFotoUrl] = useState(null);
   useEffect(() => {
     setLoading(true);
     fetchMovimientosEnVivoHoy(filtro).then(data => { setLista(data); onCambio && onCambio(data); }).catch(e => console.error(e)).finally(() => setLoading(false));
@@ -1584,8 +1601,9 @@ function HojaDeCambioTab({ filtro, onCambio }) {
   if (loading) return <div className="flex justify-center py-10"><span className="spinner" /></div>;
   return (
     <div className="space-y-2">
-      {lista.map(m => <MovimientoRow key={m.kind + m.id} m={m} />)}
+      {lista.map(m => <MovimientoRow key={m.kind + m.id} m={m} onVerFoto={setFotoUrl} />)}
       {!lista.length && <p className="text-[13.5px] text-muted py-4">Sin movimientos hoy.</p>}
+      {fotoUrl && <FotoMontajeModal url={fotoUrl} onClose={() => setFotoUrl(null)} />}
     </div>
   );
 }
@@ -1756,6 +1774,8 @@ function InstructivoResumenRow({ r }) {
 function ReporteCierreModal({ c, empresas, onClose }) {
   const [instructivos, setInstructivos] = useState(null);
   const [verAuditorias, setVerAuditorias] = useState(false);
+  const [fotosMontaje, setFotosMontaje] = useState([]);
+  const [fotoUrl, setFotoUrl] = useState(null);
   useEffect(() => {
     let cancel = false;
     fetchInstructivosHoy(c.cliente_id).then(data => {
@@ -1763,6 +1783,15 @@ function ReporteCierreModal({ c, empresas, onClose }) {
     }).catch(e => console.error(e));
     return () => { cancel = true; };
   }, [c.mecanico_id, c.cliente_id]);
+  useEffect(() => {
+    let cancel = false;
+    sb.from("intervenciones").select("id,foto_url,posicion,numero_fuego")
+      .eq("tipo", "checkpoint").eq("mecanico_id", c.mecanico_id).eq("fecha", c.fecha)
+      .not("foto_url", "is", null)
+      .then(({ data, error }) => { if (!cancel && !error) setFotosMontaje(data || []); })
+      .catch(e => console.error("No se pudieron cargar las fotos de montaje", e));
+    return () => { cancel = true; };
+  }, [c.mecanico_id, c.fecha]);
 
   const empresa = (empresas.find(e => e.id_cliente === c.cliente_id) || {}).nombre || c.cliente_id;
   const nombreMecanico = c.mecanico ? `${c.mecanico.nombre} ${c.mecanico.apellido || ""}` : "-";
@@ -1823,12 +1852,21 @@ function ReporteCierreModal({ c, empresas, onClose }) {
           <p className="text-[11px] font-extrabold text-muted uppercase tracking-wide mb-1.5">Actividad del día</p>
           <div className="grid grid-cols-2 gap-2 text-[13.5px]">
             <p>Auditorías: <b>{c.auditorias_realizadas}</b> {c.auditorias_realizadas > 0 && <button className="text-[12px] font-bold text-ink underline" onClick={() => setVerAuditorias(true)}>ver equipos</button>}</p>
-            <p>Hojas de cambio: <b>{c.cambios_realizados}</b></p>
+            <p>Hojas de cambio: <b>{c.cambios_realizados}</b> {fotosMontaje.length > 0 && <button className="text-[12px] font-bold text-ink underline" onClick={() => setFotoUrl(fotosMontaje[0].foto_url)}>📷 Ver foto{fotosMontaje.length > 1 ? "s" : ""} ({fotosMontaje.length})</button>}</p>
             <p>Regulaciones PSI: <b>{c.regulaciones_psi}</b></p>
             <p>Retorqueos: <b>{c.retorqueos}</b></p>
             <p>Rotaciones: <b>{c.rotaciones}</b></p>
             <p>Reparaciones: <b>{c.reparaciones}</b></p>
           </div>
+          {fotosMontaje.length > 1 && (
+            <div className="flex flex-wrap gap-2 mt-3">
+              {fotosMontaje.map(f => (
+                <button key={f.id} onClick={() => setFotoUrl(f.foto_url)} className="text-[12px] font-bold text-ink underline">
+                  📷 pos {f.posicion} · N° {f.numero_fuego}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         <div>
@@ -1853,6 +1891,7 @@ function ReporteCierreModal({ c, empresas, onClose }) {
         </div>
       </div>
       {verAuditorias && <AuditoriasDelDiaModal mecanico={{ id: c.mecanico_id }} fecha={c.fecha} onClose={() => setVerAuditorias(false)} />}
+      {fotoUrl && <FotoMontajeModal url={fotoUrl} onClose={() => setFotoUrl(null)} />}
     </Modal>
   );
 }
@@ -2869,6 +2908,450 @@ function HerramientasMaestroView({ empresaCtl, onBack }) {
 }
 
 /* =====================================================================
+   PRODUCTIVIDAD — auditorías, hojas de cambio, % instructivo, jornada
+   y discrepancias por mecánico. Solo lectura, agrega usuarios(rol=mecanico)
+   + auditorias + auditorias_receta + cambios_neumaticos + cierre_dia +
+   intervenciones + discrepancias_inventario del período elegido.
+===================================================================== */
+function prodStartOfWeek(d) {
+  const dt = new Date(d);
+  const day = dt.getDay();
+  const diff = (day === 0 ? -6 : 1) - day;
+  dt.setDate(dt.getDate() + diff);
+  return dt;
+}
+function prodISODate(d) { return d.toISOString().slice(0, 10); }
+function prodGetRango(tipo, personalizado) {
+  const hoy = new Date();
+  if (tipo === "semana") { const ini = prodStartOfWeek(hoy); return { desde: prodISODate(ini), hasta: prodISODate(hoy) }; }
+  if (tipo === "mes") { const ini = new Date(hoy.getFullYear(), hoy.getMonth(), 1); return { desde: prodISODate(ini), hasta: prodISODate(hoy) }; }
+  if (tipo === "trimestre") { const q = Math.floor(hoy.getMonth() / 3); const ini = new Date(hoy.getFullYear(), q * 3, 1); return { desde: prodISODate(ini), hasta: prodISODate(hoy) }; }
+  return personalizado && personalizado.desde && personalizado.hasta ? personalizado : { desde: prodISODate(prodStartOfWeek(hoy)), hasta: prodISODate(hoy) };
+}
+/* hora_inicio/hora_cierre son TIME ("HH:MM:SS") en cierre_dia — no se
+   puede restar como timestamp, se parsea a minutos desde medianoche. */
+function prodHorasEntre(hIni, hFin) {
+  if (!hIni || !hFin) return null;
+  const [h1, m1] = hIni.split(":").map(Number);
+  const [h2, m2] = hFin.split(":").map(Number);
+  if (isNaN(h1) || isNaN(h2)) return null;
+  let mins = (h2 * 60 + m2) - (h1 * 60 + m1);
+  if (mins < 0) mins += 24 * 60; // cruza medianoche
+  return mins / 60;
+}
+function prodMinutosDelDia(hora) {
+  if (!hora) return null;
+  const [h, m] = hora.split(":").map(Number);
+  if (isNaN(h)) return null;
+  return h * 60 + m;
+}
+function prodFormatHoraProm(mins) {
+  if (mins == null) return "—";
+  const h = Math.floor(mins / 60), m = Math.round(mins % 60);
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+async function fetchProductividadData(filtro, desde, hasta) {
+  let uq = sb.from("usuarios").select("id,cliente_id,nombre,apellido,rol,activo").eq("rol", "mecanico");
+  if (filtro && filtro !== "todas") uq = uq.eq("cliente_id", filtro);
+  const [{ data: mecanicos }, { data: clientes }] = await Promise.all([
+    uq, sb.from("clientes").select("id_cliente,nombre")
+  ]);
+  const mecs = mecanicos || [];
+  const clientesMap = {}; (clientes || []).forEach(c => clientesMap[c.id_cliente] = c.nombre);
+  const mecIds = mecs.map(m => m.id);
+  if (!mecIds.length) return { mecanicos: [], clientesMap, auditorias: [], cambios: [], cierres: [], intervenciones: [], discrepancias: [], recetaPorAuditoria: {} };
+
+  const [{ data: auditorias }, { data: cambios }, { data: cierres }, { data: intervenciones }, { data: discrepancias }] = await Promise.all([
+    sb.from("auditorias").select("id_auditoria,equipo_id,bultero_id,fecha,numero_auditoria").in("bultero_id", mecIds).gte("fecha", desde).lte("fecha", hasta),
+    sb.from("cambios_neumaticos").select("id_cambio,equipo_id,bultero_id,fecha,numero_cambio").in("bultero_id", mecIds).gte("fecha", desde).lte("fecha", hasta),
+    sb.from("cierre_dia").select("*").in("mecanico_id", mecIds).gte("fecha", desde).lte("fecha", hasta),
+    sb.from("intervenciones").select("id,mecanico_id,tipo,fecha,equipo_id").in("mecanico_id", mecIds).gte("fecha", desde).lte("fecha", hasta),
+    sb.from("discrepancias_inventario").select("id,mecanico_id,fecha,origen,resuelta").in("mecanico_id", mecIds).gte("fecha", desde).lte("fecha", hasta)
+  ]);
+
+  const auditoriaIds = (auditorias || []).map(a => a.id_auditoria);
+  let recetas = [];
+  if (auditoriaIds.length) {
+    const { data } = await sb.from("auditorias_receta").select("auditoria_id,pct_receta_seguida,tareas_cumplidas,tareas_pendientes,total_tareas,estado").in("auditoria_id", auditoriaIds);
+    recetas = data || [];
+  }
+  const recetaPorAuditoria = {};
+  recetas.forEach(r => { recetaPorAuditoria[r.auditoria_id] = r; });
+
+  return { mecanicos: mecs, clientesMap, auditorias: auditorias || [], cambios: cambios || [], cierres: cierres || [], intervenciones: intervenciones || [], discrepancias: discrepancias || [], recetaPorAuditoria };
+}
+
+function computeMecanicoStats(mecId, data) {
+  const auds = data.auditorias.filter(a => a.bultero_id === mecId);
+  const cambios = data.cambios.filter(c => c.bultero_id === mecId);
+  const cierres = data.cierres.filter(c => c.mecanico_id === mecId);
+  const intervs = data.intervenciones.filter(i => i.mecanico_id === mecId);
+  const discs = data.discrepancias.filter(d => d.mecanico_id === mecId);
+
+  const recetasM = auds.map(a => data.recetaPorAuditoria[a.id_auditoria]).filter(Boolean);
+  const pctProm = recetasM.length ? recetasM.reduce((s, r) => s + (r.pct_receta_seguida || 0), 0) / recetasM.length : null;
+
+  const cierresOk = cierres.filter(c => c.cerrado).length;
+  const cierresOlvidados = cierres.filter(c => !!c.motivo_sin_cierre).length;
+  const duraciones = cierres.map(c => prodHorasEntre(c.hora_inicio, c.hora_cierre)).filter(h => h != null);
+  const hsProm = duraciones.length ? duraciones.reduce((a, b) => a + b, 0) / duraciones.length : null;
+  const iniciosMin = cierres.map(c => prodMinutosDelDia(c.hora_inicio)).filter(v => v != null);
+  const cierresMin = cierres.map(c => prodMinutosDelDia(c.hora_cierre)).filter(v => v != null);
+  const horaInicioProm = iniciosMin.length ? iniciosMin.reduce((a, b) => a + b, 0) / iniciosMin.length : null;
+  const horaCierreProm = cierresMin.length ? cierresMin.reduce((a, b) => a + b, 0) / cierresMin.length : null;
+
+  const regulaciones = intervs.filter(i => i.tipo === "regulacion_psi").length;
+  const retorqueos = intervs.filter(i => i.tipo === "retorqueo").length;
+  const reparaciones = intervs.filter(i => i.tipo === "reparacion").length;
+
+  const completados = recetasM.filter(r => r.tareas_pendientes === 0).length;
+  const parciales = recetasM.filter(r => (r.tareas_pendientes || 0) > 0 && (r.tareas_cumplidas || 0) > 0).length;
+  const sinHoja = auds.length - recetasM.length;
+
+  const discResueltas = discs.filter(d => d.resuelta).length;
+  const discPendientes = discs.length - discResueltas;
+  const discCheckDiario = discs.filter(d => d.origen === "check_diario").length;
+  const discAuditoria = discs.filter(d => d.origen === "auditoria").length;
+
+  return {
+    auditorias: auds.length, cambios: cambios.length, pctProm, cierresOk, cierresOlvidados, hsProm,
+    horaInicioProm, horaCierreProm, regulaciones, retorqueos, reparaciones,
+    completados, parciales, sinHoja, discTotal: discs.length, discResueltas, discPendientes, discCheckDiario, discAuditoria,
+    diasTrabajados: cierres.length,
+    auds, cambiosList: cambios, cierres, intervs, discs, recetasM
+  };
+}
+
+const PRODUCTIVIDAD_PERIODOS = [
+  { id: "semana", label: "Esta semana" },
+  { id: "mes", label: "Este mes" },
+  { id: "trimestre", label: "Trimestre" },
+  { id: "personalizado", label: "Personalizado" }
+];
+
+function ProductividadTendenciaChart({ semanas }) {
+  const canvasRef = React.useRef(null);
+  const chartRef = React.useRef(null);
+  useEffect(() => {
+    if (!window.Chart || !canvasRef.current) return;
+    if (chartRef.current) { chartRef.current.destroy(); chartRef.current = null; }
+    chartRef.current = new window.Chart(canvasRef.current.getContext("2d"), {
+      type: "line",
+      data: {
+        labels: semanas.map(s => s.label),
+        datasets: [
+          { label: "% instructivo prom.", data: semanas.map(s => s.pct), borderColor: "#0A0A0A", backgroundColor: "#0A0A0A", yAxisID: "y", tension: 0.3 },
+          { label: "Auditorías", data: semanas.map(s => s.auditorias), borderColor: "#9CA3AF", backgroundColor: "#9CA3AF", yAxisID: "y1", tension: 0.3 }
+        ]
+      },
+      options: {
+        responsive: true,
+        scales: {
+          y: { position: "left", beginAtZero: true, max: 100, title: { display: true, text: "% instructivo" } },
+          y1: { position: "right", beginAtZero: true, grid: { drawOnChartArea: false }, title: { display: true, text: "Auditorías" } }
+        },
+        plugins: { legend: { position: "bottom" } }
+      }
+    });
+    return () => { if (chartRef.current) { chartRef.current.destroy(); chartRef.current = null; } };
+  }, [semanas]);
+  if (!window.Chart) return <p className="text-[12.5px] text-muted py-4">Chart.js no está disponible — mostrando solo la tabla de detalle.</p>;
+  return <div className="relative" style={{ height: 260 }}><canvas ref={canvasRef} /></div>;
+}
+
+function MecanicoDetalleModal({ mecanico, stats, clientesMap, mostrarEmpresa, desde, hasta, onClose }) {
+  const totalInstructivos = stats.auditorias || 0;
+  const pct = (n) => totalInstructivos ? Math.round((n / totalInstructivos) * 100) : 0;
+  function exportar() {
+    const wb = XLSX.utils.book_new();
+    const resumen = [
+      { Métrica: "Mecánico", Valor: `${mecanico.nombre} ${mecanico.apellido || ""}` },
+      { Métrica: "Empresa", Valor: clientesMap[mecanico.cliente_id] || "—" },
+      { Métrica: "Período", Valor: `${desde} a ${hasta}` },
+      { Métrica: "Auditorías", Valor: stats.auditorias },
+      { Métrica: "Hojas de cambio", Valor: stats.cambios },
+      { Métrica: "% instructivo promedio", Valor: stats.pctProm != null ? Math.round(stats.pctProm) + "%" : "—" },
+      { Métrica: "Completados", Valor: stats.completados },
+      { Métrica: "Parciales", Valor: stats.parciales },
+      { Métrica: "Sin hoja de cambio", Valor: stats.sinHoja },
+      { Métrica: "Días trabajados", Valor: stats.diasTrabajados },
+      { Métrica: "Cierres correctos", Valor: stats.cierresOk },
+      { Métrica: "Cierres olvidados", Valor: stats.cierresOlvidados },
+      { Métrica: "Hora inicio promedio", Valor: prodFormatHoraProm(stats.horaInicioProm) },
+      { Métrica: "Hora cierre promedio", Valor: prodFormatHoraProm(stats.horaCierreProm) },
+      { Métrica: "Duración jornada promedio (hs)", Valor: stats.hsProm != null ? stats.hsProm.toFixed(1) : "—" },
+      { Métrica: "Regulaciones PSI", Valor: stats.regulaciones },
+      { Métrica: "Retorqueos", Valor: stats.retorqueos },
+      { Métrica: "Reparaciones", Valor: stats.reparaciones },
+      { Métrica: "Discrepancias reportadas", Valor: stats.discTotal },
+      { Métrica: "Discrepancias resueltas", Valor: stats.discResueltas },
+      { Métrica: "Discrepancias pendientes", Valor: stats.discPendientes }
+    ];
+    const wsResumen = XLSX.utils.json_to_sheet(resumen);
+    XLSX.utils.book_append_sheet(wb, wsResumen, "Resumen");
+    const wsAud = XLSX.utils.json_to_sheet(stats.auds.map(a => ({ Fecha: a.fecha, "N° auditoría": a.numero_auditoria, Equipo: a.equipo_id })));
+    XLSX.utils.book_append_sheet(wb, wsAud, "Auditorías");
+    const wsCambios = XLSX.utils.json_to_sheet(stats.cambiosList.map(c => ({ Fecha: c.fecha, "N° cambio": c.numero_cambio, Equipo: c.equipo_id })));
+    XLSX.utils.book_append_sheet(wb, wsCambios, "Hojas de cambio");
+    const wsDisc = XLSX.utils.json_to_sheet(stats.discs.map(d => ({ Fecha: d.fecha, Origen: d.origen, Resuelta: d.resuelta ? "Sí" : "No" })));
+    XLSX.utils.book_append_sheet(wb, wsDisc, "Discrepancias");
+    XLSX.writeFile(wb, `productividad_${(mecanico.nombre || "mecanico").replace(/\s+/g, "_")}_${desde}_${hasta}.xlsx`);
+  }
+  return (
+    <Modal title={`${mecanico.nombre} ${mecanico.apellido || ""}`} onClose={onClose} wide>
+      <div className="space-y-6">
+        {mostrarEmpresa && <p className="text-[13px] text-muted -mt-2">{clientesMap[mecanico.cliente_id] || "—"} · Período {desde} a {hasta}</p>}
+        {!mostrarEmpresa && <p className="text-[13px] text-muted -mt-2">Período {desde} a {hasta}</p>}
+
+        <div>
+          <p className="font-bold text-[15px] mb-2">Actividad</p>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            <KpiCard label="Auditorías" value={stats.auditorias} />
+            <KpiCard label="Hojas de cambio" value={stats.cambios} />
+            <KpiCard label="Regulaciones PSI" value={stats.regulaciones} />
+            <KpiCard label="Retorqueos" value={stats.retorqueos} />
+            <KpiCard label="Reparaciones" value={stats.reparaciones} />
+          </div>
+        </div>
+
+        <div>
+          <p className="font-bold text-[15px] mb-2">Instructivos</p>
+          <div className="grid grid-cols-3 gap-3">
+            <KpiCard label={`Completados (${pct(stats.completados)}%)`} value={stats.completados} />
+            <KpiCard label={`Parciales (${pct(stats.parciales)}%)`} value={stats.parciales} />
+            <KpiCard label={`Sin hoja (${pct(stats.sinHoja)}%)`} value={stats.sinHoja} />
+          </div>
+        </div>
+
+        <div>
+          <p className="font-bold text-[15px] mb-2">Jornada</p>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            <KpiCard label="Días trabajados" value={stats.diasTrabajados} />
+            <KpiCard label="Cierres correctos" value={stats.cierresOk} />
+            <KpiCard label="Cierres olvidados" value={stats.cierresOlvidados} />
+            <KpiCard label="Hora inicio prom." value={prodFormatHoraProm(stats.horaInicioProm)} />
+            <KpiCard label="Hora cierre prom." value={prodFormatHoraProm(stats.horaCierreProm)} />
+            <KpiCard label="Duración prom." value={stats.hsProm != null ? `${stats.hsProm.toFixed(1)} hs` : "—"} />
+          </div>
+        </div>
+
+        <div>
+          <p className="font-bold text-[15px] mb-2">Discrepancias reportadas</p>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <KpiCard label="Check diario" value={stats.discCheckDiario} />
+            <KpiCard label="Auditoría" value={stats.discAuditoria} />
+            <KpiCard label="Resueltas" value={stats.discResueltas} />
+            <KpiCard label="Pendientes" value={stats.discPendientes} />
+          </div>
+        </div>
+
+        <Button className="w-full" onClick={exportar}>Exportar a Excel</Button>
+      </div>
+    </Modal>
+  );
+}
+
+function ProductividadView({ empresaCtl, esSuperAdmin }) {
+  const { filtro, empresas } = empresaCtl;
+  const mostrarEmpresa = filtro === "todas" && !!esSuperAdmin;
+  const [periodoTipo, setPeriodoTipo] = useState("semana");
+  const [personalizado, setPersonalizado] = useState({ desde: "", hasta: "" });
+  const [loading, setLoading] = useState(true);
+  const [data, setData] = useState(null);
+  const [detalleMec, setDetalleMec] = useState(null);
+
+  const { desde, hasta } = prodGetRango(periodoTipo, personalizado);
+
+  useEffect(() => {
+    if (periodoTipo === "personalizado" && (!personalizado.desde || !personalizado.hasta)) return;
+    let cancel = false;
+    setLoading(true);
+    fetchProductividadData(filtro, desde, hasta).then(d => { if (!cancel) { setData(d); setLoading(false); } })
+      .catch(e => { console.error("No se pudo cargar Productividad", e); if (!cancel) setLoading(false); });
+    return () => { cancel = true; };
+  }, [filtro, periodoTipo, personalizado.desde, personalizado.hasta]);
+
+  const filas = React.useMemo(() => {
+    if (!data) return [];
+    return data.mecanicos.map(m => ({ mecanico: m, stats: computeMecanicoStats(m.id, data) }));
+  }, [data]);
+
+  const kpis = React.useMemo(() => {
+    if (!data) return null;
+    const totalAud = filas.reduce((s, f) => s + f.stats.auditorias, 0);
+    const totalCambios = filas.reduce((s, f) => s + f.stats.cambios, 0);
+    const pctVals = filas.flatMap(f => f.stats.recetasM.map(r => r.pct_receta_seguida || 0));
+    const pctProm = pctVals.length ? pctVals.reduce((a, b) => a + b, 0) / pctVals.length : null;
+    const cierresOk = filas.reduce((s, f) => s + f.stats.cierresOk, 0);
+    const cierresOlvidados = filas.reduce((s, f) => s + f.stats.cierresOlvidados, 0);
+    const duraciones = filas.flatMap(f => f.stats.hsProm != null ? [f.stats.hsProm] : []);
+    const hsProm = duraciones.length ? duraciones.reduce((a, b) => a + b, 0) / duraciones.length : null;
+    return { totalAud, totalCambios, pctProm, cierresOk, cierresOlvidados, hsProm };
+  }, [filas]);
+
+  const semanas = React.useMemo(() => {
+    if (!data) return [];
+    const out = [];
+    let cur = prodStartOfWeek(new Date(desde + "T00:00:00"));
+    const fin = new Date(hasta + "T00:00:00");
+    let n = 1;
+    while (cur <= fin) {
+      const iniISO = prodISODate(cur);
+      const finDt = new Date(cur); finDt.setDate(finDt.getDate() + 6);
+      const finISO = prodISODate(finDt < fin ? finDt : fin);
+      const audsSemana = data.auditorias.filter(a => a.fecha >= iniISO && a.fecha <= finISO);
+      const pctVals = audsSemana.map(a => data.recetaPorAuditoria[a.id_auditoria]).filter(Boolean).map(r => r.pct_receta_seguida || 0);
+      out.push({ label: `Sem ${n}`, pct: pctVals.length ? Math.round(pctVals.reduce((a, b) => a + b, 0) / pctVals.length) : 0, auditorias: audsSemana.length });
+      cur.setDate(cur.getDate() + 7);
+      n++;
+    }
+    return out;
+  }, [data, desde, hasta]);
+
+  function badgePct(pct) {
+    if (pct == null) return <Badge color="gray">Sin datos</Badge>;
+    const r = Math.round(pct);
+    if (r >= 80) return <Badge color="green">{r}%</Badge>;
+    if (r >= 50) return <Badge color="amber">{r}%</Badge>;
+    return <Badge color="red">{r}%</Badge>;
+  }
+  function badgeOlvidados(n) {
+    if (n === 0) return <Badge color="green">{n}</Badge>;
+    if (n > 2) return <Badge color="red">{n}</Badge>;
+    return <Badge color="amber">{n}</Badge>;
+  }
+
+  function exportarTabla() {
+    const filasExport = filas.map(f => {
+      const base = {
+        Mecánico: `${f.mecanico.nombre} ${f.mecanico.apellido || ""}`.trim(),
+        ...(mostrarEmpresa ? { Empresa: data.clientesMap[f.mecanico.cliente_id] || "—" } : {}),
+        Auditorías: f.stats.auditorias,
+        "Hojas cambio": f.stats.cambios,
+        "% Instructivo": f.stats.pctProm != null ? Math.round(f.stats.pctProm) : "",
+        "Cierres ok": f.stats.cierresOk,
+        Olvidados: f.stats.cierresOlvidados,
+        "Hs jornada prom.": f.stats.hsProm != null ? Number(f.stats.hsProm.toFixed(1)) : "",
+        Regulaciones: f.stats.regulaciones,
+        Retorqueos: f.stats.retorqueos,
+        Reparaciones: f.stats.reparaciones
+      };
+      return base;
+    });
+    const ws = XLSX.utils.json_to_sheet(filasExport);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Productividad");
+    XLSX.writeFile(wb, `productividad_${desde}_${hasta}.xlsx`);
+  }
+
+  const ranking = React.useMemo(() => {
+    return [...filas].filter(f => f.stats.pctProm != null).sort((a, b) => b.stats.pctProm - a.stats.pctProm).slice(0, 3);
+  }, [filas]);
+  const medallas = ["🥇", "🥈", "🥉"];
+
+  return (
+    <div>
+      <h1 className="text-[26px] font-extrabold mb-5">📈 Productividad</h1>
+
+      <div className="flex flex-wrap items-center gap-2 mb-5">
+        {PRODUCTIVIDAD_PERIODOS.map(p => (
+          <button key={p.id} onClick={() => setPeriodoTipo(p.id)}
+            className={cx("px-4 py-2 rounded-full text-[13px] font-bold whitespace-nowrap", periodoTipo === p.id ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{p.label}</button>
+        ))}
+        {periodoTipo === "personalizado" && (
+          <div className="flex items-center gap-2">
+            <TextInput type="date" value={personalizado.desde} onChange={e => setPersonalizado(p => ({ ...p, desde: e.target.value }))} className="h-10 w-auto" />
+            <span className="text-muted text-[12px]">a</span>
+            <TextInput type="date" value={personalizado.hasta} onChange={e => setPersonalizado(p => ({ ...p, hasta: e.target.value }))} className="h-10 w-auto" />
+          </div>
+        )}
+      </div>
+
+      {loading || !data ? <div className="flex justify-center py-16"><span className="spinner" /></div> : (
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-6">
+            <KpiCard label="Auditorías realizadas" value={kpis.totalAud} />
+            <KpiCard label="Hojas de cambio" value={kpis.totalCambios} />
+            <KpiCard label="% instructivo prom." value={kpis.pctProm != null ? Math.round(kpis.pctProm) + "%" : "—"} />
+            <KpiCard label="Cierres correctos" value={kpis.cierresOk} />
+            <KpiCard label="Cierres sin cerrar" value={kpis.cierresOlvidados} />
+            <KpiCard label="Jornada prom." value={kpis.hsProm != null ? `${kpis.hsProm.toFixed(1)} hs` : "—"} />
+          </div>
+
+          {ranking.length > 0 && (
+            <>
+              <p className="font-bold text-[16px] mb-3">Ranking top 3 — % instructivo</p>
+              <div className="grid sm:grid-cols-3 gap-3 mb-8">
+                {ranking.map((f, i) => (
+                  <Card key={f.mecanico.id}>
+                    <p className="text-[24px] mb-1">{medallas[i]}</p>
+                    <p className="font-bold text-[15px]">{f.mecanico.nombre} {f.mecanico.apellido || ""}</p>
+                    <p className="text-[13px] text-muted mt-1">{Math.round(f.stats.pctProm)}% instructivo · {f.stats.auditorias} auditorías</p>
+                  </Card>
+                ))}
+              </div>
+            </>
+          )}
+
+          <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
+            <p className="font-bold text-[16px]">Productividad por mecánico</p>
+            <Button variant="subtle" className="h-10 px-4 text-[13px]" onClick={exportarTabla}>Exportar tabla completa</Button>
+          </div>
+          <div className="bg-white rounded-2xl border border-bd shadow-card overflow-x-auto mb-8">
+            <table className="w-full text-[13px]">
+              <thead>
+                <tr className="text-left text-muted text-[11px] font-semibold border-b border-bd">
+                  <th className="px-3 py-3">Mecánico</th>
+                  {mostrarEmpresa && <th className="px-3 py-3">Empresa</th>}
+                  <th className="px-3 py-3">Auditorías</th>
+                  <th className="px-3 py-3">Hojas cambio</th>
+                  <th className="px-3 py-3">% Instructivo</th>
+                  <th className="px-3 py-3">Cierres ok</th>
+                  <th className="px-3 py-3">Olvidados</th>
+                  <th className="px-3 py-3">Hs jornada</th>
+                  <th className="px-3 py-3">Regulaciones</th>
+                  <th className="px-3 py-3">Retorqueos</th>
+                  <th className="px-3 py-3">Reparaciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filas.map((f, i) => (
+                  <tr key={f.mecanico.id} className={cx(i > 0 && "border-t border-bd", "cursor-pointer hover:bg-[#F9FAFB]")} onClick={() => setDetalleMec(f)}>
+                    <td className="px-3 py-3 font-bold">{f.mecanico.nombre} {f.mecanico.apellido || ""}</td>
+                    {mostrarEmpresa && <td className="px-3 py-3 text-muted">{data.clientesMap[f.mecanico.cliente_id] || "—"}</td>}
+                    <td className="px-3 py-3">{f.stats.auditorias}</td>
+                    <td className="px-3 py-3">{f.stats.cambios}</td>
+                    <td className="px-3 py-3">{badgePct(f.stats.pctProm)}</td>
+                    <td className="px-3 py-3">{f.stats.cierresOk}</td>
+                    <td className="px-3 py-3">{badgeOlvidados(f.stats.cierresOlvidados)}</td>
+                    <td className="px-3 py-3">{f.stats.hsProm != null ? f.stats.hsProm.toFixed(1) : "—"}</td>
+                    <td className="px-3 py-3">{f.stats.regulaciones}</td>
+                    <td className="px-3 py-3">{f.stats.retorqueos}</td>
+                    <td className="px-3 py-3">{f.stats.reparaciones}</td>
+                  </tr>
+                ))}
+                {!filas.length && <tr><td colSpan={mostrarEmpresa ? 11 : 10} className="px-4 py-6 text-center text-muted">No hay mecánicos para este filtro.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+
+          <p className="font-bold text-[16px] mb-3">Tendencia semanal</p>
+          <Card className="mb-6">
+            <ProductividadTendenciaChart semanas={semanas} />
+          </Card>
+        </>
+      )}
+
+      {detalleMec && (
+        <MecanicoDetalleModal mecanico={detalleMec.mecanico} stats={detalleMec.stats} clientesMap={data ? data.clientesMap : {}}
+          mostrarEmpresa={mostrarEmpresa} desde={desde} hasta={hasta} onClose={() => setDetalleMec(null)} />
+      )}
+    </div>
+  );
+}
+
+/* =====================================================================
    MAESTROS · MENU PRINCIPAL
 ===================================================================== */
 function MaestrosView({ empresaCtl }) {
@@ -3580,6 +4063,7 @@ function AdminApp({ user, onLogout }) {
   let body;
   if (view === "equipos") body = <EquiposView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} />;
   else if (view === "jornada") body = <JornadaView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} />;
+  else if (view === "productividad") body = <ProductividadView key={refreshToken} empresaCtl={empresaCtl} esSuperAdmin={false} />;
   else if (view === "maestros") body = <MaestrosView key={refreshToken} empresaCtl={empresaCtl} />;
   else if (view === "alertas") body = <AlertasAdminView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} />;
   else if (view === "configuracion") body = <ConfiguracionAdminView key={refreshToken} empresaCtl={empresaCtl} />;

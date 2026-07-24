@@ -87,6 +87,18 @@ DELETE FROM movimientos_bodega WHERE numero_documento = 'TEST-MONEDA-1';
 -- subtipo=dueno) y la creacion de operativos desde ese panel.
 DELETE FROM usuarios WHERE usuario IN ('clientegerencia_test', 'operativo_prueba2_test');
 
+-- Datos de demo cargados para mostrarle a Nelson el flujo completo (check
+-- diario, 2 auditorias, hoja de cambio con foto, cierre, alertas) sobre
+-- JFTH64 y JP2221. Las filas en cambio_detalle/intervenciones/auditoria_*
+-- /cierre_dia/check_diario*/alertas ya quedan cubiertas por los DELETE
+-- genericos del inicio de este archivo -- lo unico que NO cubren esos
+-- DELETE es la tabla neumaticos, que se limpia aca puntualmente:
+DELETE FROM neumaticos WHERE numero_fuego IN (
+  '30829241','30829261','30829262','30829263','30829264','30829265','30829266',
+  '41629261','41629262','41629263','41629264','41629265','41629266','41629267',
+  '41629268','41629269','41629270','41629271','41629272','41629273'
+);
+
 -- =====================================================================
 -- Verificacion (deberia devolver 0 en todas)
 -- =====================================================================

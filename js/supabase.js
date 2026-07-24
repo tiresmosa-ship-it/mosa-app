@@ -1494,17 +1494,27 @@ async function fetchMovimientosEnVivoHoy(clienteId) {
 
   const cambiosFeed = detalle.map(d => {
     const c = cambioMap[d.cambio_id] || {};
+    let foto_url = null;
+    if (d.tipo === "entra") {
+      const checkpoint = (intervenciones || []).find(i =>
+        i.tipo === "checkpoint" && i.equipo_id === c.equipo_id &&
+        i.posicion === d.posicion && i.numero_fuego === d.numero_fuego && i.fecha === c.fecha
+      );
+      if (checkpoint) foto_url = checkpoint.foto_url || null;
+    }
     return {
       kind: "cambio", id: d.id, creado_en: d.creado_en,
       equipo: eqMap[c.equipo_id] || null, mecanico: mecMap[c.bultero_id] || null,
       tipo: d.tipo, numero_fuego: d.numero_fuego, posicion: d.posicion,
-      motivo_salida: d.motivo_salida, estado: d.estado, milimetros: d.milimetros, psi: d.psi
+      motivo_salida: d.motivo_salida, estado: d.estado, milimetros: d.milimetros, psi: d.psi,
+      foto_url
     };
   });
   const intervFeed = (intervenciones || []).map(i => ({
     kind: "intervencion", id: i.id, creado_en: i.creado_en,
     equipo: eqMap[i.equipo_id] || null, mecanico: mecMap[i.mecanico_id] || null,
-    tipo: i.tipo, posicion: i.posicion, numero_fuego: i.numero_fuego, psi_nuevo: i.psi_nuevo
+    tipo: i.tipo, posicion: i.posicion, numero_fuego: i.numero_fuego, psi_nuevo: i.psi_nuevo,
+    foto_url: i.foto_url || null
   }));
   return [...cambiosFeed, ...intervFeed].sort((a, b) => (b.creado_en || "").localeCompare(a.creado_en || ""));
 }
