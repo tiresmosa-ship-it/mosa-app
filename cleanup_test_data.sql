@@ -77,6 +77,12 @@ DELETE FROM permisos WHERE usuario_id = (SELECT id FROM usuarios WHERE usuario =
 -- subtipo=operativo) contra la base real.
 DELETE FROM usuarios WHERE usuario = 'clienteoperativo_test';
 
+-- Movimiento de prueba para verificar la columna moneda (multi-moneda) en
+-- Entrada de insumos. El insumo afectado (llanta americana_aluminio,
+-- La Portada) ya se revirtio a mano a cantidad=0/precio=0 via REST, solo
+-- falta borrar el movimiento (anon no tiene DELETE).
+DELETE FROM movimientos_bodega WHERE numero_documento = 'TEST-MONEDA-1';
+
 -- =====================================================================
 -- Verificacion (deberia devolver 0 en todas)
 -- =====================================================================

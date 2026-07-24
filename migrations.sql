@@ -418,3 +418,19 @@ ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS telefono TEXT;
 -- =====================================================================
 ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS subtipo TEXT
   CHECK (subtipo IN ('dueno', 'operativo'));
+
+-- =====================================================================
+-- 27) Soporte multi-moneda (CLP/ARS/USD) en cargas valorizadas. La moneda
+-- default por cliente se guarda en config_cliente (clave 'moneda', clave/valor
+-- generico, no necesita ALTER TABLE). Estas tres tablas si necesitan columna
+-- nueva: guardan un snapshot de la moneda del cliente en el momento de la
+-- carga (Entrada de neumaticos / Entrada de insumos, Admin y SuperAdmin >
+-- Maestros > Inventario), para que cargas viejas no cambien retroactivamente
+-- si despues se cambia la moneda del cliente en Configuracion.
+-- =====================================================================
+ALTER TABLE lotes_inventario ADD COLUMN IF NOT EXISTS moneda TEXT NOT NULL DEFAULT 'CLP'
+  CHECK (moneda IN ('CLP', 'ARS', 'USD'));
+ALTER TABLE movimientos_bodega ADD COLUMN IF NOT EXISTS moneda TEXT NOT NULL DEFAULT 'CLP'
+  CHECK (moneda IN ('CLP', 'ARS', 'USD'));
+ALTER TABLE insumos ADD COLUMN IF NOT EXISTS moneda TEXT NOT NULL DEFAULT 'CLP'
+  CHECK (moneda IN ('CLP', 'ARS', 'USD'));

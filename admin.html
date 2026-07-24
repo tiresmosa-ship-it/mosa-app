@@ -158,6 +158,16 @@ function TextInput({ className = "", alert, warn, ...props }) {
 function Select({ className = "", children, ...props }) {
   return <select className={cx("w-full h-[52px] px-4 rounded-2xl border bg-[#F3F4F6] border-[#E5E7EB] focus:outline-none focus:ring-2 focus:ring-ink/20", className)} {...props}>{children}</select>;
 }
+/* Formatea un monto según moneda (CLP/ARS/USD, snapshot por carga — ver
+   config_cliente.moneda). CLP/ARS sin decimales (uso local), USD con 2
+   decimales (estándar internacional). No se suman monedas distintas entre sí. */
+function formatMoney(n, moneda) {
+  if (n == null || isNaN(n)) return "-";
+  const m = moneda || "CLP";
+  if (m === "USD") return "US$" + Number(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  if (m === "ARS") return "AR$" + Math.round(n).toLocaleString("es-AR");
+  return "$" + Math.round(n).toLocaleString("es-CL");
+}
 function MarcaSelect({ value, onChange }) {
   const isOtra = value && !MARCAS_NEUMATICOS.slice(0, -1).includes(value);
   const [otra, setOtra] = useState(isOtra ? value : "");
@@ -2184,6 +2194,8 @@ function InsumoEntradaModal({ filtro, proveedores, onClose, onSaved, pushToast }
   const [numeroDoc, setNumeroDoc] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [moneda, setMoneda] = useState("CLP");
+  useEffect(() => { if (filtro && filtro !== "todas") db.fetchConfig(filtro).then(cfg => setMoneda(cfg.moneda || "CLP")).catch(() => {}); }, [filtro]);
 
   function onCantidadOPrecioUnit(cant, pu) {
     const c = parseFloat(cant), p = parseFloat(pu);
@@ -2207,14 +2219,14 @@ function InsumoEntradaModal({ filtro, proveedores, onClose, onSaved, pushToast }
       const { data: existentes } = await sb.from("insumos").select("*").eq("cliente_id", filtro).eq("tipo", categoria).eq("subtipo", subtipoFinal).order("creado_en").limit(1);
       const existente = existentes && existentes[0];
       if (existente) {
-        await sb.from("insumos").update({ cantidad: (existente.cantidad || 0) + cant, precio: precioUnit ? parseFloat(precioUnit) : existente.precio }).eq("id", existente.id);
+        await sb.from("insumos").update({ cantidad: (existente.cantidad || 0) + cant, precio: precioUnit ? parseFloat(precioUnit) : existente.precio, moneda }).eq("id", existente.id);
       } else {
-        await sb.from("insumos").insert({ id: uuid(), cliente_id: filtro, tipo: categoria, subtipo: subtipoFinal, cantidad: cant, precio: precioUnit ? parseFloat(precioUnit) : 0, activo: true });
+        await sb.from("insumos").insert({ id: uuid(), cliente_id: filtro, tipo: categoria, subtipo: subtipoFinal, cantidad: cant, precio: precioUnit ? parseFloat(precioUnit) : 0, activo: true, moneda });
       }
       await sb.from("movimientos_bodega").insert({
         id: uuid(), cliente_id: filtro, fecha: todayISO(), categoria: "insumo", tipo: "entrada", origen: "compra",
         precio_unitario: precioUnit ? parseFloat(precioUnit) : null, precio_total: precioTotal ? parseFloat(precioTotal) : null,
-        numero_documento: numeroDoc.trim(), cantidad: cant
+        numero_documento: numeroDoc.trim(), cantidad: cant, moneda
       });
       pushToast("✓ Entrada registrada");
       onSaved();
@@ -2225,6 +2237,7 @@ function InsumoEntradaModal({ filtro, proveedores, onClose, onSaved, pushToast }
   return (
     <Modal title="Entrada de insumos" onClose={onClose}>
       <div className="space-y-4">
+        <p className="text-[12px] font-semibold text-muted -mb-1">Moneda: {moneda} — se define en Configuración</p>
         <Field label="Categoría" required>
           <div className="flex gap-2 flex-wrap">
             {INSUMO_CATEGORIAS.map(c => (
@@ -2320,6 +2333,8 @@ function EntradaNeumaticosModal({ filtro, proveedores, onClose, onSaved, pushToa
   const [cantidad, setCantidad] = useState(""); const [precioUnit, setPrecioUnit] = useState(""); const [precioTotal, setPrecioTotal] = useState("");
   const [proveedorId, setProveedorId] = useState(""); const [numeroDoc, setNumeroDoc] = useState(""); const [fecha, setFecha] = useState(todayISO());
   const [saving, setSaving] = useState(false); const [error, setError] = useState("");
+  const [moneda, setMoneda] = useState("CLP");
+  useEffect(() => { if (filtro && filtro !== "todas") db.fetchConfig(filtro).then(cfg => setMoneda(cfg.moneda || "CLP")).catch(() => {}); }, [filtro]);
 
   function onCant(v) { setCantidad(v); const c = parseFloat(v), p = parseFloat(precioUnit); if (!isNaN(c) && !isNaN(p)) setPrecioTotal(String(Math.round(c * p))); }
   function onPU(v) { setPrecioUnit(v); const c = parseFloat(cantidad), p = parseFloat(v); if (!isNaN(c) && !isNaN(p)) setPrecioTotal(String(Math.round(c * p))); }
@@ -2340,7 +2355,7 @@ function EntradaNeumaticosModal({ filtro, proveedores, onClose, onSaved, pushToa
       const { error: e1 } = await sb.from("lotes_inventario").insert({
         id: loteId, cliente_id: filtro, categoria: "neumatico", marca: marca.trim(), modelo: modelo.trim() || null, medida: medida.trim() || null,
         tipo, cantidad_inicial: cant, cantidad_actual: cant, precio_unitario: pu, precio_total: pt,
-        proveedor_id: proveedorId || null, numero_documento: numeroDoc.trim(), fecha_ingreso: fecha
+        proveedor_id: proveedorId || null, numero_documento: numeroDoc.trim(), fecha_ingreso: fecha, moneda
       });
       if (e1) throw e1;
       const bodegaDestino = estadoInicial === "recauchado" ? "recauchado" : "nuevo";
@@ -2357,7 +2372,7 @@ function EntradaNeumaticosModal({ filtro, proveedores, onClose, onSaved, pushToa
       await sb.from("movimientos_bodega").insert({
         id: uuid(), cliente_id: filtro, fecha, categoria: "neumatico", tipo: "entrada", origen: "compra",
         precio_unitario: pu, precio_total: pt,
-        numero_documento: numeroDoc.trim(), lote_id: loteId, cantidad: cant
+        numero_documento: numeroDoc.trim(), lote_id: loteId, cantidad: cant, moneda
       });
       pushToast(`✓ ${cant} neumáticos agregados al inventario (N° de fuego provisorio ${lotePrefijo}1..${cant} — corregir en terreno)`);
       onSaved();
@@ -2368,6 +2383,7 @@ function EntradaNeumaticosModal({ filtro, proveedores, onClose, onSaved, pushToa
   return (
     <Modal title="Entrada de neumáticos (carga valorizada)" onClose={onClose} wide>
       <div className="space-y-4">
+        <p className="text-[12px] font-semibold text-muted -mb-1">Moneda: {moneda} — se define en Configuración</p>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Marca" required><TextInput value={marca} onChange={e => setMarca(e.target.value)} /></Field>
           <Field label="Modelo"><TextInput value={modelo} onChange={e => setModelo(e.target.value)} /></Field>
@@ -2612,7 +2628,7 @@ function InventarioMaestroView({ empresaCtl, onBack }) {
                     {insumos.map(i => (
                       <tr key={i.id} className="border-b border-bd last:border-0">
                         <td className="py-2.5 px-4 font-bold capitalize">{i.tipo}</td><td className="py-2.5 px-4">{i.subtipo}</td>
-                        <td className="py-2.5 px-4">{i.cantidad}</td><td className="py-2.5 px-4">{i.precio != null ? `$${i.precio.toLocaleString()}` : "-"}</td>
+                        <td className="py-2.5 px-4">{i.cantidad}</td><td className="py-2.5 px-4">{formatMoney(i.precio, i.moneda)}</td>
                         <td className="py-2.5 px-4"><button onClick={() => setSalidaInsumo(i)} className="text-[11.5px] font-bold text-ink px-2.5 py-1.5 rounded-full bg-[#F3F4F6]">Salida</button></td>
                       </tr>
                     ))}
@@ -3268,6 +3284,46 @@ function ConfigRow({ clave, label, valor, onGuardar }) {
   );
 }
 
+const MONEDAS_DISPONIBLES = [
+  { valor: "CLP", label: "CLP — Peso chileno" },
+  { valor: "ARS", label: "ARS — Peso argentino" },
+  { valor: "USD", label: "USD — Dólar estadounidense" }
+];
+
+function ConfigMonedaRow({ valor, onGuardar }) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState(valor || "CLP");
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { setVal(valor || "CLP"); }, [valor]);
+
+  async function guardar() {
+    setSaving(true);
+    await onGuardar("moneda", val);
+    setSaving(false);
+    setEditing(false);
+  }
+
+  return (
+    <div className="flex items-center justify-between px-4 py-3 border-b border-bd last:border-0 gap-3">
+      <span className="text-[13.5px] font-semibold text-[#374151]">Moneda</span>
+      {editing ? (
+        <div className="flex items-center gap-2 shrink-0">
+          <Select value={val} onChange={e => setVal(e.target.value)} className="h-10 px-3">
+            {MONEDAS_DISPONIBLES.map(m => <option key={m.valor} value={m.valor}>{m.label}</option>)}
+          </Select>
+          <button onClick={guardar} disabled={saving} className="text-[12px] font-bold text-[#15803D] px-2">✓ Guardar</button>
+          <button onClick={() => { setVal(valor || "CLP"); setEditing(false); }} className="text-[12px] font-bold text-muted px-2">✗ Cancelar</button>
+        </div>
+      ) : (
+        <div className="flex items-center gap-3 shrink-0">
+          <span className="font-bold text-[14px]">{valor || "CLP"}</span>
+          <button onClick={() => setEditing(true)} className="w-7 h-7 rounded-full bg-[#F3F4F6] flex items-center justify-center"><Icon.pencil width="12" height="12" /></button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CorrelativoCard({ titulo, claveInicio, valorInicio, proximo, onGuardar }) {
   const [editing, setEditing] = useState(false);
   const [val, setVal] = useState(valorInicio);
@@ -3380,6 +3436,12 @@ function ConfiguracionEmpresaView({ filtro, pushToast }) {
       <div className="bg-white rounded-2xl border border-bd shadow-card overflow-hidden mb-6">
         {CONFIG_ALERTA_FIELDS.map(f => <ConfigRow key={f.clave} clave={f.clave} label={f.label} valor={config[f.clave] != null ? config[f.clave] : 0} onGuardar={guardarValor} />)}
       </div>
+
+      <p className="font-bold text-[15px] mb-2">Moneda</p>
+      <div className="bg-white rounded-2xl border border-bd shadow-card overflow-hidden mb-6">
+        <ConfigMonedaRow valor={config.moneda} onGuardar={guardarValor} />
+      </div>
+      <p className="text-[11.5px] text-muted -mt-4 mb-6">Define en qué moneda se registran las cargas valorizadas (Entrada de neumáticos / insumos) de esta empresa a partir de ahora. No afecta cargas ya guardadas.</p>
 
       <p className="font-bold text-[15px] mb-2">Correlativos</p>
       <CorrelativoCard titulo="Auditorías" claveInicio="numero_auditoria_inicio" valorInicio={config.numero_auditoria_inicio} proximo={proximos.auditoria} onGuardar={guardarValor} />

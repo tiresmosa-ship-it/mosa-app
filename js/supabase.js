@@ -28,7 +28,8 @@ const DEFAULT_CFG = {
   mm_minimo_tracto: 5, mm_minimo_semi: 3, mm_minimo_auxilio: 5,
   mm_amarillo_tracto: 6, mm_amarillo_semi: 4, mm_rotacion_pct: 20,
   numero_auditoria_inicio: 1, numero_cambio_inicio: 1,
-  formula_marca_fuego: "interno+semana+anio+posicion"
+  formula_marca_fuego: "interno+semana+anio+posicion",
+  moneda: "CLP"
 };
 
 const TOOLS_CHECKLIST = [
