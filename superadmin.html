@@ -38,6 +38,7 @@
 <script src="https://unpkg.com/@babel/standalone@7/babel.min.js" crossorigin></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" crossorigin></script>
 <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js" crossorigin></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js" crossorigin></script>
 
 <style>
   html, body { font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Inter, sans-serif; background:#FFFFFF; -webkit-tap-highlight-color: transparent; }
@@ -128,6 +129,7 @@ const Icon = {
   box: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></svg>,
   calendar: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>,
   settings: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09a1.65 1.65 0 00-1-1.51 1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09a1.65 1.65 0 001.51-1 1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>,
+  dollar: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M12 2v20"/><path d="M17 5.5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>,
 };
 
 /* =====================================================================
@@ -322,6 +324,7 @@ const ADMIN_NAV = [
   { id: "dashboard", label: "Dashboard", icon: Icon.home },
   { id: "equipos", label: "Equipos", icon: Icon.truck },
   { id: "jornada", label: "Jornada", icon: Icon.calendar },
+  { id: "costos", label: "Costos", icon: Icon.dollar },
   { id: "maestros", label: "Maestros", icon: Icon.box },
   { id: "alertas", label: "Alertas", icon: Icon.bell },
   { id: "clientes", label: "Clientes", icon: Icon.building },
@@ -387,6 +390,233 @@ function AdminShell({ view, setView, empresaCtl, alertasNoLeidas, children }) {
 }
 
 /* =====================================================================
+   COSTOS / NUMEROS — helpers de agregación (SuperAdmin, solo lectura).
+   lotes_inventario y movimientos_bodega están vacíos en producción hoy
+   (la_portada y bys sin datos reales) -> todo tiene que andar con 0 filas
+   sin tirar error, no asumir que hay datos para probar visualmente.
+   No existe columna perdida_estimada en movimientos_bodega ni un link
+   directo lote<->neumático individual: los importes de este bloque son
+   estimaciones a partir de datos reales (ver comentarios en cada función),
+   no valores contables exactos.
+===================================================================== */
+function formatMoney(n) {
+  if (n == null || isNaN(n)) return "—";
+  return "$" + Math.round(n).toLocaleString("es-CL");
+}
+function rangoPeriodo(periodo) {
+  const hoy = new Date();
+  let desde;
+  if (periodo === "trimestre") desde = new Date(hoy.getFullYear(), hoy.getMonth() - 2, 1);
+  else if (periodo === "anio") desde = new Date(hoy.getFullYear(), 0, 1);
+  else desde = new Date(hoy.getFullYear(), hoy.getMonth(), 1);
+  return { desde: desde.toISOString().slice(0, 10), hasta: todayISO() };
+}
+// Precio de referencia por marca de neumático, a partir de las entradas
+// valorizadas de lotes_inventario. No hay vínculo directo lote<->neumático
+// individual, así que se usa el precio unitario promedio de la marca (y un
+// promedio global de fallback) como proxy razonable de "cuánto vale hoy un
+// neumático de esta marca". Muchos neumáticos viejos tienen marca=null ->
+// se agrupan bajo "Sin marca registrada" en vez de excluirse.
+async function fetchPrecioPorMarca(clienteId) {
+  let q = sb.from("lotes_inventario").select("marca,precio_unitario").eq("categoria", "neumatico");
+  q = filtroCliente(q, clienteId);
+  const { data } = await q;
+  const acc = {};
+  let sumaGlobal = 0, nGlobal = 0;
+  (data || []).forEach(l => {
+    if (l.precio_unitario == null) return;
+    const marca = l.marca || "Sin marca registrada";
+    if (!acc[marca]) acc[marca] = { suma: 0, n: 0 };
+    acc[marca].suma += l.precio_unitario; acc[marca].n++;
+    sumaGlobal += l.precio_unitario; nGlobal++;
+  });
+  const promedios = {};
+  Object.keys(acc).forEach(m => { promedios[m] = acc[m].suma / acc[m].n; });
+  promedios.__global = nGlobal ? sumaGlobal / nGlobal : 0;
+  return promedios;
+}
+function precioDeMarca(promedios, marca) {
+  const key = marca || "Sin marca registrada";
+  return promedios[key] != null ? promedios[key] : (promedios.__global || 0);
+}
+
+const costosDb = {
+  // Valor de inventario (neumáticos + insumos) por empresa.
+  async fetchValorInventarioPorEmpresa(empresas) {
+    const [{ data: lotes }, { data: insumosData }] = await Promise.all([
+      sb.from("lotes_inventario").select("cliente_id,precio_unitario,cantidad_actual").eq("categoria", "neumatico"),
+      sb.from("insumos").select("cliente_id,precio,cantidad").eq("activo", true)
+    ]);
+    const porCliente = {};
+    (empresas || []).forEach(e => { porCliente[e.id_cliente] = { id: e.id_cliente, nombre: e.nombre, neumaticos: 0, insumos: 0 }; });
+    (lotes || []).forEach(l => {
+      if (!porCliente[l.cliente_id]) porCliente[l.cliente_id] = { id: l.cliente_id, nombre: l.cliente_id, neumaticos: 0, insumos: 0 };
+      porCliente[l.cliente_id].neumaticos += (l.precio_unitario || 0) * (l.cantidad_actual || 0);
+    });
+    (insumosData || []).forEach(i => {
+      if (!porCliente[i.cliente_id]) porCliente[i.cliente_id] = { id: i.cliente_id, nombre: i.cliente_id, neumaticos: 0, insumos: 0 };
+      porCliente[i.cliente_id].insumos += (i.precio || 0) * (i.cantidad || 0);
+    });
+    return Object.values(porCliente).map(f => ({ ...f, total: f.neumaticos + f.insumos })).sort((a, b) => (a.nombre || "").localeCompare(b.nombre || ""));
+  },
+
+  // Bajas (salidas por desgaste/daño, origen "baja_*") de un período, con
+  // desglose desgaste vs daño y monto cuando se puede reconstruir el precio.
+  // Las bajas de mecánico.html no llevan precio_unitario propio -> se busca
+  // el precio de la última entrada valorizada con el mismo número de fuego
+  // (movimientos_bodega tipo=entrada). Si no hay match, esa baja se cuenta
+  // pero no aporta $ (no se inventa un precio).
+  async fetchConsumoPeriodo(clienteId, desde, hasta) {
+    let q = sb.from("movimientos_bodega").select("cliente_id,fecha,origen,numero_fuego").eq("categoria", "neumatico").eq("tipo", "salida").gte("fecha", desde).lte("fecha", hasta).like("origen", "baja_%");
+    q = filtroCliente(q, clienteId);
+    const { data } = await q;
+    const bajas = data || [];
+    if (!bajas.length) return { filas: [], totalBajas: 0, totalMonto: 0, desgaste: 0, dano: 0 };
+    const precioPorFuego = await fetchPrecioPorFuego([...new Set(bajas.map(b => b.cliente_id))]);
+    const porCliente = {};
+    bajas.forEach(b => {
+      if (!porCliente[b.cliente_id]) porCliente[b.cliente_id] = { id: b.cliente_id, bajas: 0, monto: 0, desgaste: 0, dano: 0 };
+      const c = porCliente[b.cliente_id];
+      c.bajas++;
+      if (b.origen === "baja_desgaste_normal") c.desgaste++; else c.dano++;
+      const precio = b.numero_fuego ? precioPorFuego[b.cliente_id + "|" + b.numero_fuego] : null;
+      if (precio != null) c.monto += precio;
+    });
+    const filas = Object.values(porCliente);
+    return {
+      filas, totalBajas: bajas.length,
+      totalMonto: filas.reduce((a, f) => a + f.monto, 0),
+      desgaste: filas.reduce((a, f) => a + f.desgaste, 0),
+      dano: filas.reduce((a, f) => a + f.dano, 0)
+    };
+  },
+
+  async fetchCpkPromedio(clienteId) {
+    let qInv = sb.from("movimientos_bodega").select("precio_total").eq("categoria", "neumatico").eq("tipo", "entrada");
+    qInv = filtroCliente(qInv, clienteId);
+    let qEq = sb.from("equipos").select("kilometros").eq("activo", true);
+    qEq = filtroCliente(qEq, clienteId);
+    const [{ data: entradas }, { data: equipos }] = await Promise.all([qInv, qEq]);
+    const inversion = (entradas || []).reduce((a, e) => a + (e.precio_total || 0), 0);
+    const km = (equipos || []).reduce((a, e) => a + (e.kilometros || 0), 0);
+    return km > 0 ? inversion / km : null;
+  },
+
+  async fetchPctInstructivoPromedio(clienteId) {
+    let q = sb.from("auditorias_receta").select("pct_receta_seguida");
+    q = filtroCliente(q, clienteId);
+    const { data } = await q;
+    const vals = (data || []).map(r => r.pct_receta_seguida).filter(v => v != null);
+    return vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : null;
+  },
+
+  // CPK por marca/modelo. No hay historial de "km recorridos por neumático
+  // individual" -> se usa como proxy el km total del equipo donde el
+  // neumático está montado hoy (aproximación explícita, no un cálculo
+  // exacto de vida útil por neumático).
+  async fetchCpkPorMarca(clienteId) {
+    let qN = sb.from("neumaticos").select("marca,modelo,equipo_actual").eq("activo", true).not("equipo_actual", "is", null);
+    qN = filtroCliente(qN, clienteId);
+    const { data: neumaticos } = await qN;
+    if (!neumaticos || !neumaticos.length) return [];
+    const equipoIds = [...new Set(neumaticos.map(n => n.equipo_actual))];
+    const { data: equipos } = await sb.from("equipos").select("id_equipo,kilometros").in("id_equipo", equipoIds);
+    const kmPorEquipo = {}; (equipos || []).forEach(e => { kmPorEquipo[e.id_equipo] = e.kilometros || 0; });
+    const precios = await fetchPrecioPorMarca(clienteId);
+    const grupos = {};
+    neumaticos.forEach(n => {
+      const key = (n.marca || "Sin marca registrada") + " / " + (n.modelo || "-");
+      if (!grupos[key]) grupos[key] = { marca: n.marca || "Sin marca registrada", modelo: n.modelo || "-", cantidad: 0, inversion: 0, km: 0 };
+      const g = grupos[key];
+      g.cantidad++;
+      g.inversion += precioDeMarca(precios, n.marca);
+      g.km += kmPorEquipo[n.equipo_actual] || 0;
+    });
+    return Object.values(grupos).map(g => ({ ...g, cpk: g.km > 0 ? g.inversion / g.km : null })).sort((a, b) => b.inversion - a.inversion);
+  },
+
+  async fetchBajasPorMes(clienteId, meses) {
+    const hoy = new Date();
+    const desdeISO = new Date(hoy.getFullYear(), hoy.getMonth() - (meses - 1), 1).toISOString().slice(0, 10);
+    let q = sb.from("movimientos_bodega").select("cliente_id,fecha,origen,numero_fuego").eq("categoria", "neumatico").eq("tipo", "salida").gte("fecha", desdeISO).like("origen", "baja_%");
+    q = filtroCliente(q, clienteId);
+    const { data } = await q;
+    const bajas = data || [];
+    const precioPorFuego = await fetchPrecioPorFuego([...new Set(bajas.map(b => b.cliente_id))]);
+    const porMes = {};
+    for (let i = 0; i < meses; i++) {
+      const key = new Date(hoy.getFullYear(), hoy.getMonth() - (meses - 1 - i), 1).toISOString().slice(0, 7);
+      porMes[key] = { mes: key, desgaste: 0, dano: 0, perdida: 0 };
+    }
+    bajas.forEach(b => {
+      const key = (b.fecha || "").slice(0, 7);
+      if (!porMes[key]) return;
+      if (b.origen === "baja_desgaste_normal") porMes[key].desgaste++; else porMes[key].dano++;
+      const precio = b.numero_fuego ? precioPorFuego[b.cliente_id + "|" + b.numero_fuego] : null;
+      if (precio != null) porMes[key].perdida += precio;
+    });
+    return Object.values(porMes);
+  },
+
+  // Top equipos por inversión estimada en neumáticos montados hoy (precio
+  // de referencia por marca × cantidad).
+  async fetchTopEquiposCostosos(clienteId, n) {
+    let qN = sb.from("neumaticos").select("marca,equipo_actual").eq("activo", true).not("equipo_actual", "is", null);
+    qN = filtroCliente(qN, clienteId);
+    const { data: neumaticos } = await qN;
+    if (!neumaticos || !neumaticos.length) return [];
+    const equipoIds = [...new Set(neumaticos.map(x => x.equipo_actual))];
+    const { data: equipos } = await sb.from("equipos").select("id_equipo,patente,numero_interno,kilometros").in("id_equipo", equipoIds);
+    const equiposMap = {}; (equipos || []).forEach(e => { equiposMap[e.id_equipo] = e; });
+    const precios = await fetchPrecioPorMarca(clienteId);
+    const porEquipo = {};
+    neumaticos.forEach(nn => {
+      if (!porEquipo[nn.equipo_actual]) porEquipo[nn.equipo_actual] = { equipoId: nn.equipo_actual, inversion: 0 };
+      porEquipo[nn.equipo_actual].inversion += precioDeMarca(precios, nn.marca);
+    });
+    return Object.values(porEquipo).map(e => {
+      const eq = equiposMap[e.equipoId] || {};
+      const km = eq.kilometros || 0;
+      return { equipoId: e.equipoId, patente: eq.patente || "-", numero_interno: eq.numero_interno || null, inversion: e.inversion, km, cpk: km > 0 ? e.inversion / km : null };
+    }).sort((a, b) => b.inversion - a.inversion).slice(0, n || 5);
+  },
+
+  // Valor de inventario al cierre, desglosado por bodega (nuevo / tránsito
+  // / recauchado / en reparación / en equipos / baja / salidas).
+  async fetchValorInventarioPorBodega(clienteId) {
+    let q = sb.from("neumaticos").select("marca,bodega,equipo_actual").eq("activo", true);
+    q = filtroCliente(q, clienteId);
+    const { data } = await q;
+    const precios = await fetchPrecioPorMarca(clienteId);
+    const labels = { nuevo: "Nuevo", transito: "Tránsito", recauchado: "Recauchado", reparacion: "En reparación", en_equipos: "En equipos", baja: "En baja", salidas: "Salida definitiva", otro: "Otro / sin bodega" };
+    const valor = { nuevo: 0, transito: 0, recauchado: 0, reparacion: 0, en_equipos: 0, baja: 0, salidas: 0, otro: 0 };
+    const cantidad = { nuevo: 0, transito: 0, recauchado: 0, reparacion: 0, en_equipos: 0, baja: 0, salidas: 0, otro: 0 };
+    (data || []).forEach(n => {
+      const key = n.equipo_actual ? "en_equipos" : (valor[n.bodega] !== undefined ? n.bodega : "otro");
+      valor[key] += precioDeMarca(precios, n.marca);
+      cantidad[key]++;
+    });
+    return Object.keys(labels).map(k => ({ bodega: k, label: labels[k], cantidad: cantidad[k], valor: valor[k] }));
+  },
+
+  // CPK de un equipo puntual (Equipos > detalle).
+  async fetchCpkEquipo(equipo) {
+    const { data: neumaticos } = await sb.from("neumaticos").select("marca").eq("equipo_actual", equipo.id_equipo).eq("activo", true);
+    const precios = await fetchPrecioPorMarca(equipo.cliente_id);
+    const inversion = (neumaticos || []).reduce((a, n) => a + precioDeMarca(precios, n.marca), 0);
+    const km = equipo.kilometros || 0;
+    return { inversion, km, cpk: km > 0 ? inversion / km : null, cantidadNeumaticos: (neumaticos || []).length };
+  }
+};
+async function fetchPrecioPorFuego(clienteIds) {
+  if (!clienteIds || !clienteIds.length) return {};
+  const { data: entradas } = await sb.from("movimientos_bodega").select("cliente_id,numero_fuego,precio_unitario").eq("categoria", "neumatico").eq("tipo", "entrada").in("cliente_id", clienteIds).not("numero_fuego", "is", null);
+  const map = {};
+  (entradas || []).forEach(e => { if (e.precio_unitario != null) map[e.cliente_id + "|" + e.numero_fuego] = e.precio_unitario; });
+  return map;
+}
+
+/* =====================================================================
    DASHBOARD
 ===================================================================== */
 function KpiCard({ label, value }) {
@@ -433,7 +663,24 @@ function AlertaDetalleModal({ alerta, onClose, onMarcarLeida }) {
     </Modal>
   );
 }
+const LS_DASHBOARD_VISTA = "dashboard_vista_superadmin";
 function DashboardView({ empresaCtl, onAbrirMecanico }) {
+  const [vista, setVista] = useState(() => localStorage.getItem(LS_DASHBOARD_VISTA) || "tecnico");
+  function elegirVista(v) { localStorage.setItem(LS_DASHBOARD_VISTA, v); setVista(v); }
+  return (
+    <div>
+      <h1 className="text-[26px] font-extrabold mb-4">Dashboard</h1>
+      <div className="flex gap-2 mb-6">
+        <button onClick={() => elegirVista("tecnico")} className={cx("px-4 py-2.5 rounded-full text-[13.5px] font-bold", vista === "tecnico" ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>🔧 Técnico</button>
+        <button onClick={() => elegirVista("numeros")} className={cx("px-4 py-2.5 rounded-full text-[13.5px] font-bold", vista === "numeros" ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>💰 Números</button>
+      </div>
+      {vista === "tecnico"
+        ? <DashboardTecnico empresaCtl={empresaCtl} onAbrirMecanico={onAbrirMecanico} />
+        : <DashboardNumeros empresaCtl={empresaCtl} />}
+    </div>
+  );
+}
+function DashboardTecnico({ empresaCtl, onAbrirMecanico }) {
   const { filtro } = empresaCtl;
   const [kpis, setKpis] = useState({ equipos: null, auditorias: null, alertas: null, pct: null });
   const [criticas, setCriticas] = useState([]);
@@ -509,8 +756,6 @@ function DashboardView({ empresaCtl, onAbrirMecanico }) {
   return (
     <div>
       {toastNode}
-      <h1 className="text-[26px] font-extrabold mb-5">Dashboard</h1>
-
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
         <KpiCard label="Equipos activos" value={kpis.equipos} />
         <KpiCard label="Auditorías hoy" value={kpis.auditorias} />
@@ -607,6 +852,156 @@ function DashboardView({ empresaCtl, onAbrirMecanico }) {
       </div>
 
       {verAlerta && <AlertaDetalleModal alerta={verAlerta} onClose={() => setVerAlerta(null)} onMarcarLeida={marcarLeida} />}
+    </div>
+  );
+}
+
+/* =====================================================================
+   DASHBOARD · VISTA NÚMEROS (negocio)
+===================================================================== */
+const PERIODOS_CONSUMO = [
+  { id: "mes", label: "Este mes" }, { id: "trimestre", label: "Trimestre" }, { id: "anio", label: "Año" }
+];
+function DashboardNumeros({ empresaCtl }) {
+  const { filtro, empresas } = empresaCtl;
+  const [loading, setLoading] = useState(true);
+  const [inventario, setInventario] = useState([]);
+  const [cpkProm, setCpkProm] = useState(null);
+  const [pctProm, setPctProm] = useState(null);
+  const [periodo, setPeriodo] = useState("mes");
+  const [consumo, setConsumo] = useState(null);
+  const [loadingConsumo, setLoadingConsumo] = useState(true);
+
+  useEffect(() => {
+    let cancel = false;
+    setLoading(true);
+    (async () => {
+      try {
+        const [inv, cpk, pct] = await Promise.all([
+          costosDb.fetchValorInventarioPorEmpresa(empresas),
+          costosDb.fetchCpkPromedio(filtro),
+          costosDb.fetchPctInstructivoPromedio(filtro)
+        ]);
+        if (cancel) return;
+        setInventario(filtro === "todas" ? inv : inv.filter(f => f.id === filtro));
+        setCpkProm(cpk); setPctProm(pct);
+      } catch (e) { console.error("No se pudo cargar la vista de números", e); }
+      if (!cancel) setLoading(false);
+    })();
+    return () => { cancel = true; };
+  }, [filtro, empresas]);
+
+  useEffect(() => {
+    let cancel = false;
+    setLoadingConsumo(true);
+    const { desde, hasta } = rangoPeriodo(periodo);
+    costosDb.fetchConsumoPeriodo(filtro, desde, hasta).then(c => { if (!cancel) { setConsumo(c); setLoadingConsumo(false); } })
+      .catch(e => { console.error("No se pudo cargar el consumo del período", e); if (!cancel) setLoadingConsumo(false); });
+    return () => { cancel = true; };
+  }, [filtro, periodo]);
+
+  const totalInventario = inventario.reduce((a, f) => a + f.total, 0);
+  const empresasMap = {}; (empresas || []).forEach(e => { empresasMap[e.id_cliente] = e.nombre; });
+
+  // "Ahorro potencial": estimación gruesa, no contable. Toma las bajas por
+  // daño/accidente del período (evitables en teoría siguiendo mejor el
+  // instructivo) y les aplica el % de instructivo NO seguido en promedio,
+  // como proxy de cuánto de esas bajas podría haberse evitado. Se explica
+  // el criterio acá porque no hay forma de calcularlo exacto con los datos
+  // disponibles hoy.
+  const bajasDano = consumo ? consumo.dano : 0;
+  const fraccionNoSeguida = pctProm != null ? Math.max(0, (100 - pctProm) / 100) : null;
+  const montoPromedioBaja = consumo && consumo.dano ? (consumo.totalMonto / Math.max(1, consumo.desgaste + consumo.dano)) : 0;
+  const ahorroPotencial = fraccionNoSeguida != null ? bajasDano * fraccionNoSeguida * montoPromedioBaja : null;
+
+  if (loading) return <div className="flex justify-center py-16"><span className="spinner" /></div>;
+
+  return (
+    <div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
+        <KpiCard label="Inventario total valorizado" value={formatMoney(totalInventario)} />
+        <KpiCard label={`Consumo (${PERIODOS_CONSUMO.find(p => p.id === periodo).label.toLowerCase()})`} value={consumo ? `${consumo.totalBajas} baja${consumo.totalBajas !== 1 ? "s" : ""}` : "—"} />
+        <KpiCard label="CPK promedio" value={cpkProm != null ? `$${cpkProm.toFixed(2)}/km` : "Sin km registrados"} />
+        <KpiCard label="% instructivo seguido prom." value={pctProm != null ? pctProm + "%" : "—"} />
+      </div>
+
+      <p className="font-bold text-[16px] mb-3">Valor de inventario por empresa</p>
+      <div className="bg-white rounded-2xl border border-bd shadow-card overflow-x-auto mb-8">
+        <table className="w-full text-[13.5px]">
+          <thead>
+            <tr className="text-left text-muted text-[11.5px] font-semibold border-b border-bd">
+              <th className="px-4 py-3">Empresa</th>
+              <th className="px-4 py-3">Neumáticos</th>
+              <th className="px-4 py-3">Insumos</th>
+              <th className="px-4 py-3">Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {inventario.map((f, i) => (
+              <tr key={f.id} className={i > 0 ? "border-t border-bd" : ""}>
+                <td className="px-4 py-3 font-bold">{f.nombre}</td>
+                <td className="px-4 py-3">{formatMoney(f.neumaticos)}</td>
+                <td className="px-4 py-3">{formatMoney(f.insumos)}</td>
+                <td className="px-4 py-3 font-bold">{formatMoney(f.total)}</td>
+              </tr>
+            ))}
+            {!inventario.length && <tr><td colSpan="4" className="px-4 py-6 text-center text-muted">Sin datos de inventario valorizado todavía.</td></tr>}
+          </tbody>
+          {inventario.length > 1 && (
+            <tfoot>
+              <tr className="border-t-2 border-bdstrong font-bold">
+                <td className="px-4 py-3">Total</td>
+                <td className="px-4 py-3">{formatMoney(inventario.reduce((a, f) => a + f.neumaticos, 0))}</td>
+                <td className="px-4 py-3">{formatMoney(inventario.reduce((a, f) => a + f.insumos, 0))}</td>
+                <td className="px-4 py-3">{formatMoney(totalInventario)}</td>
+              </tr>
+            </tfoot>
+          )}
+        </table>
+      </div>
+
+      <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
+        <p className="font-bold text-[16px]">Consumo del período por empresa</p>
+        <div className="flex gap-2">
+          {PERIODOS_CONSUMO.map(p => (
+            <button key={p.id} onClick={() => setPeriodo(p.id)} className={cx("px-3.5 py-2 rounded-full text-[12.5px] font-bold", periodo === p.id ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{p.label}</button>
+          ))}
+        </div>
+      </div>
+      <div className="bg-white rounded-2xl border border-bd shadow-card overflow-x-auto mb-4">
+        {loadingConsumo ? <div className="flex justify-center py-8"><span className="spinner" /></div> : (
+          <table className="w-full text-[13.5px]">
+            <thead>
+              <tr className="text-left text-muted text-[11.5px] font-semibold border-b border-bd">
+                <th className="px-4 py-3">Empresa</th>
+                <th className="px-4 py-3">Bajas</th>
+                <th className="px-4 py-3">Desgaste normal</th>
+                <th className="px-4 py-3">Daño / pinchadura / corte / otro</th>
+                <th className="px-4 py-3">$ consumido</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(consumo ? consumo.filas : []).map((f, i) => (
+                <tr key={f.id} className={i > 0 ? "border-t border-bd" : ""}>
+                  <td className="px-4 py-3 font-bold">{empresasMap[f.id] || f.id}</td>
+                  <td className="px-4 py-3">{f.bajas}</td>
+                  <td className="px-4 py-3">{f.desgaste}</td>
+                  <td className="px-4 py-3">{f.dano}</td>
+                  <td className="px-4 py-3">{formatMoney(f.monto)}</td>
+                </tr>
+              ))}
+              {(!consumo || !consumo.filas.length) && <tr><td colSpan="5" className="px-4 py-6 text-center text-muted">Sin bajas registradas en este período.</td></tr>}
+            </tbody>
+          </table>
+        )}
+      </div>
+      <p className="text-[12px] text-muted mb-8">El monto en $ solo se calcula cuando se puede reconstruir el precio de compra del neumático dado de baja (por N° de fuego); las bajas sin esa trazabilidad se cuentan pero no aportan $.</p>
+
+      <p className="font-bold text-[16px] mb-3">Ahorro potencial estimado</p>
+      <Card className="mb-4">
+        <p className="text-[22px] font-extrabold">{ahorroPotencial != null ? formatMoney(ahorroPotencial) : "—"}</p>
+        <p className="text-[12.5px] text-muted mt-2">Estimación: bajas por daño del período ({bajasDano}) × % de instructivo no seguido en promedio ({pctProm != null ? (100 - pctProm) + "%" : "sin datos"}) × monto promedio por baja del período. Es una aproximación orientativa, no un cálculo contable — sirve para dimensionar el impacto de seguir mejor el instructivo, no como cifra exacta.</p>
+      </Card>
     </div>
   );
 }
@@ -911,6 +1306,13 @@ function EquiposView({ empresaCtl, adminUser }) {
    EQUIPOS · DETALLE (vista, no modal) — Info / Mapa / Instructivo / Historial
 ===================================================================== */
 function InfoEquipoTab({ equipo, ultimaAuditoria }) {
+  const [cpk, setCpk] = useState(undefined); // undefined=cargando
+  useEffect(() => {
+    let cancel = false;
+    costosDb.fetchCpkEquipo(equipo).then(r => { if (!cancel) setCpk(r); }).catch(e => { console.error("No se pudo calcular el CPK del equipo", e); if (!cancel) setCpk(null); });
+    return () => { cancel = true; };
+  }, [equipo.id_equipo]);
+
   const rows = [
     ["Patente", equipo.patente || "-"],
     ["Interno", equipo.numero_interno || "-"],
@@ -921,16 +1323,38 @@ function InfoEquipoTab({ equipo, ultimaAuditoria }) {
     ["Última auditoría", ultimaAuditoria === undefined ? "…" : ultimaAuditoria ? `N°${ultimaAuditoria.numero_auditoria} · ${formatDateLong(ultimaAuditoria.fecha)}` : "Sin auditorías registradas"]
   ];
   return (
-    <Card className="max-w-lg">
-      <div className="space-y-3 text-[14px]">
-        {rows.map(([k, v]) => (
-          <div key={k} className="flex items-center justify-between gap-3">
-            <span className="text-muted">{k}</span>
-            <span className="font-bold text-right">{v}</span>
+    <div className="space-y-4 max-w-lg">
+      <Card>
+        <div className="space-y-3 text-[14px]">
+          {rows.map(([k, v]) => (
+            <div key={k} className="flex items-center justify-between gap-3">
+              <span className="text-muted">{k}</span>
+              <span className="font-bold text-right">{v}</span>
+            </div>
+          ))}
+        </div>
+      </Card>
+      <Card>
+        <p className="text-[12.5px] font-bold text-muted mb-3">Costo por kilómetro (CPK)</p>
+        {cpk === undefined ? <div className="flex justify-center py-4"><span className="spinner" /></div> : (
+          <div className="space-y-3 text-[14px]">
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-muted">Neumáticos montados</span>
+              <span className="font-bold">{cpk.cantidadNeumaticos}</span>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-muted">Inversión estimada en neumáticos</span>
+              <span className="font-bold">{formatMoney(cpk.inversion)}</span>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-muted">CPK</span>
+              <span className="font-bold">{cpk.cpk != null ? `$${cpk.cpk.toFixed(2)}/km` : "Sin km registrados"}</span>
+            </div>
+            <p className="text-[11.5px] text-muted">Inversión estimada a partir del precio de referencia por marca (promedio de las entradas valorizadas de esa marca). No es un costo histórico exacto por neumático.</p>
           </div>
-        ))}
-      </div>
-    </Card>
+        )}
+      </Card>
+    </div>
   );
 }
 
@@ -4011,6 +4435,171 @@ function UsuariosView({ empresaCtl }) {
 }
 
 /* =====================================================================
+   COSTOS (SuperAdmin) — CPK por marca, bajas por período, top equipos,
+   valor de inventario al cierre por bodega.
+===================================================================== */
+function BajasPorMesChart({ datos }) {
+  const canvasRef = React.useRef(null);
+  const chartRef = React.useRef(null);
+  useEffect(() => {
+    if (!window.Chart || !canvasRef.current) return;
+    if (chartRef.current) { chartRef.current.destroy(); chartRef.current = null; }
+    chartRef.current = new window.Chart(canvasRef.current.getContext("2d"), {
+      type: "bar",
+      data: {
+        labels: datos.map(d => d.mes),
+        datasets: [
+          { label: "Desgaste normal", data: datos.map(d => d.desgaste), backgroundColor: "#9CA3AF", stack: "s" },
+          { label: "Daño / otro", data: datos.map(d => d.dano), backgroundColor: "#EF4444", stack: "s" }
+        ]
+      },
+      options: { responsive: true, scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true } }, plugins: { legend: { position: "bottom" } } }
+    });
+    return () => { if (chartRef.current) { chartRef.current.destroy(); chartRef.current = null; } };
+  }, [datos]);
+  if (!window.Chart) return <p className="text-[12.5px] text-muted py-4">Chart.js no está disponible — mostrando solo la tabla de detalle.</p>;
+  return <div className="relative" style={{ height: 260 }}><canvas ref={canvasRef} /></div>;
+}
+function CostosView({ empresaCtl }) {
+  const { filtro } = empresaCtl;
+  const [loading, setLoading] = useState(true);
+  const [cpkMarca, setCpkMarca] = useState([]);
+  const [bajasPorMes, setBajasPorMes] = useState([]);
+  const [topEquipos, setTopEquipos] = useState([]);
+  const [porBodega, setPorBodega] = useState([]);
+  const MESES_GRAFICO = 6;
+
+  useEffect(() => {
+    let cancel = false;
+    setLoading(true);
+    (async () => {
+      try {
+        const [cpk, meses, top, bodegas] = await Promise.all([
+          costosDb.fetchCpkPorMarca(filtro),
+          costosDb.fetchBajasPorMes(filtro, MESES_GRAFICO),
+          costosDb.fetchTopEquiposCostosos(filtro, 5),
+          costosDb.fetchValorInventarioPorBodega(filtro)
+        ]);
+        if (cancel) return;
+        setCpkMarca(cpk); setBajasPorMes(meses); setTopEquipos(top); setPorBodega(bodegas);
+      } catch (e) { console.error("No se pudo cargar Costos", e); }
+      if (!cancel) setLoading(false);
+    })();
+    return () => { cancel = true; };
+  }, [filtro]);
+
+  const totalBodegas = porBodega.reduce((a, b) => a + b.valor, 0);
+
+  if (loading) return <div className="flex justify-center py-16"><span className="spinner" /></div>;
+
+  return (
+    <div>
+      <h1 className="text-[26px] font-extrabold mb-6">Costos</h1>
+
+      <p className="font-bold text-[16px] mb-3">CPK por marca / modelo</p>
+      <div className="bg-white rounded-2xl border border-bd shadow-card overflow-x-auto mb-8">
+        <table className="w-full text-[13.5px]">
+          <thead>
+            <tr className="text-left text-muted text-[11.5px] font-semibold border-b border-bd">
+              <th className="px-4 py-3">Marca</th><th className="px-4 py-3">Modelo</th>
+              <th className="px-4 py-3">Cantidad</th><th className="px-4 py-3">Inversión estimada</th><th className="px-4 py-3">CPK</th>
+            </tr>
+          </thead>
+          <tbody>
+            {cpkMarca.map((g, i) => (
+              <tr key={g.marca + g.modelo} className={i > 0 ? "border-t border-bd" : ""}>
+                <td className="px-4 py-3 font-bold">{g.marca}</td>
+                <td className="px-4 py-3">{g.modelo}</td>
+                <td className="px-4 py-3">{g.cantidad}</td>
+                <td className="px-4 py-3">{formatMoney(g.inversion)}</td>
+                <td className="px-4 py-3">{g.cpk != null ? `$${g.cpk.toFixed(2)}/km` : "Sin km"}</td>
+              </tr>
+            ))}
+            {!cpkMarca.length && <tr><td colSpan="5" className="px-4 py-6 text-center text-muted">Sin neumáticos montados con datos suficientes.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[12px] text-muted -mt-6 mb-8">Inversión estimada con el precio de referencia por marca (promedio de entradas valorizadas); el CPK usa el km total del equipo donde cada neumático está montado hoy como proxy (no hay historial de km por neumático individual).</p>
+
+      <p className="font-bold text-[16px] mb-3">Bajas por período (últimos {MESES_GRAFICO} meses)</p>
+      <Card className="mb-4">
+        <BajasPorMesChart datos={bajasPorMes} />
+      </Card>
+      <div className="bg-white rounded-2xl border border-bd shadow-card overflow-x-auto mb-8">
+        <table className="w-full text-[13.5px]">
+          <thead>
+            <tr className="text-left text-muted text-[11.5px] font-semibold border-b border-bd">
+              <th className="px-4 py-3">Mes</th><th className="px-4 py-3">Bajas</th>
+              <th className="px-4 py-3">Desgaste</th><th className="px-4 py-3">Daño</th><th className="px-4 py-3">Pérdida estimada</th>
+            </tr>
+          </thead>
+          <tbody>
+            {bajasPorMes.map((m, i) => (
+              <tr key={m.mes} className={i > 0 ? "border-t border-bd" : ""}>
+                <td className="px-4 py-3 font-bold">{m.mes}</td>
+                <td className="px-4 py-3">{m.desgaste + m.dano}</td>
+                <td className="px-4 py-3">{m.desgaste}</td>
+                <td className="px-4 py-3">{m.dano}</td>
+                <td className="px-4 py-3">{formatMoney(m.perdida)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <p className="font-bold text-[16px] mb-3">Top 5 equipos más costosos</p>
+      <div className="bg-white rounded-2xl border border-bd shadow-card overflow-x-auto mb-8">
+        <table className="w-full text-[13.5px]">
+          <thead>
+            <tr className="text-left text-muted text-[11.5px] font-semibold border-b border-bd">
+              <th className="px-4 py-3">Equipo</th><th className="px-4 py-3">Inversión en neumáticos</th><th className="px-4 py-3">Km</th><th className="px-4 py-3">CPK</th>
+            </tr>
+          </thead>
+          <tbody>
+            {topEquipos.map((e, i) => (
+              <tr key={e.equipoId} className={i > 0 ? "border-t border-bd" : ""}>
+                <td className="px-4 py-3 font-bold">{e.numero_interno ? `${e.numero_interno} · ` : ""}{e.patente}</td>
+                <td className="px-4 py-3">{formatMoney(e.inversion)}</td>
+                <td className="px-4 py-3">{e.km ? e.km.toLocaleString() : "Sin km"}</td>
+                <td className="px-4 py-3">{e.cpk != null ? `$${e.cpk.toFixed(2)}/km` : "—"}</td>
+              </tr>
+            ))}
+            {!topEquipos.length && <tr><td colSpan="4" className="px-4 py-6 text-center text-muted">Sin neumáticos montados en equipos todavía.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      <p className="font-bold text-[16px] mb-3">Valor de inventario al cierre, por bodega</p>
+      <div className="bg-white rounded-2xl border border-bd shadow-card overflow-x-auto">
+        <table className="w-full text-[13.5px]">
+          <thead>
+            <tr className="text-left text-muted text-[11.5px] font-semibold border-b border-bd">
+              <th className="px-4 py-3">Bodega</th><th className="px-4 py-3">Cantidad</th><th className="px-4 py-3">Valor estimado</th>
+            </tr>
+          </thead>
+          <tbody>
+            {porBodega.map((b, i) => (
+              <tr key={b.bodega} className={i > 0 ? "border-t border-bd" : ""}>
+                <td className="px-4 py-3 font-bold">{b.label}</td>
+                <td className="px-4 py-3">{b.cantidad}</td>
+                <td className="px-4 py-3">{formatMoney(b.valor)}</td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr className="border-t-2 border-bdstrong font-bold">
+              <td className="px-4 py-3">Total</td>
+              <td className="px-4 py-3">{porBodega.reduce((a, b) => a + b.cantidad, 0)}</td>
+              <td className="px-4 py-3">{formatMoney(totalBodegas)}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/* =====================================================================
    APP DEL ADMIN
 ===================================================================== */
 function AdminApp({ user, onLogout }) {
@@ -4038,6 +4627,7 @@ function AdminApp({ user, onLogout }) {
   let body;
   if (view === "equipos") body = <EquiposView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} />;
   else if (view === "jornada") body = <JornadaView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} />;
+  else if (view === "costos") body = <CostosView key={refreshToken} empresaCtl={empresaCtl} />;
   else if (view === "maestros") body = <MaestrosView key={refreshToken} empresaCtl={empresaCtl} />;
   else if (view === "alertas") body = <AlertasAdminView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} />;
   else if (view === "clientes") body = <ClientesView key={refreshToken} empresaCtl={empresaCtl} />;
