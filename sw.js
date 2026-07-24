@@ -1,4 +1,4 @@
-const CACHE_NAME = "mosa-tires-shell-v4";
+const CACHE_NAME = "mosa-tires-shell-v5";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -7,7 +7,9 @@ const APP_SHELL = [
   "./superadmin.html",
   "./cliente.html",
   "./cliente-operativo.html",
+  "./cliente-gerencia.html",
   "./js/supabase.js",
+  "./js/ui-components.js",
   "./manifest.json",
   "./icon-192.png",
   "./icon-512.png"
@@ -49,4 +51,13 @@ self.addEventListener("fetch", (event) => {
       return cached || networkFetch;
     })
   );
+});
+
+// Background Sync (best-effort): el SW no tiene acceso a localStorage, asi
+// que no puede sincronizar la cola offline el mismo. Solo puede avisarle a
+// las pestanas abiertas para que reintenten. No soportado en Safari/iOS.
+self.addEventListener("sync", (event) => {
+  if (event.tag === "mosa-sync") {
+    event.waitUntil(self.clients.matchAll().then(clients => clients.forEach(c => c.postMessage({ type: "mosa-sync" }))));
+  }
 });

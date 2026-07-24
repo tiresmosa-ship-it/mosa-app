@@ -274,28 +274,47 @@ function evaluarPosicion(axleCfg, cfg, pos, tipoEquipo, data) {
    MOTOR DE SINCRONIZACION OFFLINE
 ===================================================================== */
 let syncing = false;
+const MAX_INTENTOS_SYNC = 3;
 async function syncQueue(onProgress) {
   if (syncing || !navigator.onLine) return;
+  // Los items que ya agotaron sus reintentos quedan en la cola (para que no
+  // se pierda el dato y el admin los pueda revisar) pero no se vuelven a
+  // intentar en cada pasada automatica.
+  const queue = getQueue().filter(q => (q.intentos || 0) < MAX_INTENTOS_SYNC).sort((a, b) => a.ts - b.ts);
+  if (!queue.length) return; // nada para hacer: no emitir eventos de sync "de la nada"
   syncing = true;
+  let synced = 0, failed = 0;
+  window.dispatchEvent(new CustomEvent("mosa-sync-start"));
   try {
-    let queue = getQueue().slice().sort((a, b) => a.ts - b.ts);
     for (const item of queue) {
       try {
         await enviarItem(item);
         removeFromQueue(item.id);
+        synced++;
         if (onProgress) onProgress(item);
       } catch (e) {
         // 23505 = unique_violation: el insert anterior en realidad SI llego al
         // servidor (la respuesta se perdio por una conexion inestable, tipica
         // en 3G/4G de campo), y el reintento choca con su propio id. Tratamos
         // esto como exito para no dejar el item trabado para siempre.
-        if (e && e.code === "23505") { removeFromQueue(item.id); continue; }
+        if (e && e.code === "23505") { removeFromQueue(item.id); synced++; continue; }
         console.error("Error sincronizando", item, e);
         // No usar "break": un item que sigue fallando (ej. sin conexion real)
         // no debe bloquear la sincronizacion del resto de la cola.
+        const q = getQueue();
+        const idx = q.findIndex(x => x.id === item.id);
+        if (idx !== -1) {
+          q[idx].intentos = (q[idx].intentos || 0) + 1;
+          q[idx].error = (e && e.message) || String(e);
+          setQueue(q);
+        }
+        failed++;
       }
     }
-  } finally { syncing = false; }
+  } finally {
+    syncing = false;
+    window.dispatchEvent(new CustomEvent("mosa-sync-done", { detail: { synced, failed } }));
+  }
 }
 async function enviarItem(item) {
   switch (item.tipo) {
@@ -305,8 +324,24 @@ async function enviarItem(item) {
     case "cierre": return enviarCierre(item.data);
     case "alerta": return enviarAlerta(item.data);
     case "discrepancia_auditoria": return enviarDiscrepanciaAuditoria(item.data);
+    case "discrepancia": return enviarDiscrepancia(item.data);
+    case "update_equipo_km": return enviarUpdateEquipoKm(item.data);
     default: throw new Error("tipo desconocido " + item.tipo);
   }
+}
+async function enviarDiscrepancia(data) {
+  if (data.rows && data.rows.length) {
+    const { error } = await sb.from("discrepancias_inventario").insert(data.rows);
+    if (error) throw error;
+  }
+  if (data.alerta) {
+    const { error: e2 } = await sb.from("alertas").insert(data.alerta);
+    if (e2) throw e2;
+  }
+}
+async function enviarUpdateEquipoKm(data) {
+  const { error } = await sb.from("equipos").update({ kilometros: data.kilometros }).eq("id_equipo", data.equipo_id);
+  if (error) throw error;
 }
 async function enviarDiscrepanciaAuditoria(data) {
   const { error } = await sb.from("discrepancias_inventario").insert(data);
@@ -468,6 +503,21 @@ async function actualizarNeumaticoEntra(clienteId, equipoId, en) {
 window.addEventListener("online", () => syncQueue());
 setInterval(() => { if (navigator.onLine) syncQueue(); }, 15000);
 
+// Background Sync (best-effort): el SW no tiene acceso a localStorage, asi
+// que no puede sincronizar la cola por si solo. Lo unico que puede hacer es
+// avisarle a las pestanas abiertas ("mosa-sync") para que reintenten. En
+// Safari/iOS esto no tiene ningun efecto (no soportan Background Sync API);
+// ahi la sincronizacion sigue dependiendo solo del listener "online" y del
+// setInterval de arriba mientras la app esta abierta.
+if ("serviceWorker" in navigator && "SyncManager" in window) {
+  navigator.serviceWorker.ready.then(reg => reg.sync.register("mosa-sync").catch(() => {}));
+}
+if (navigator.serviceWorker) {
+  navigator.serviceWorker.addEventListener("message", (e) => {
+    if (e.data && e.data.type === "mosa-sync") syncQueue();
+  });
+}
+
 /* =====================================================================
    CHECK DIARIO — campos de conteo y comparación de inventario
 ===================================================================== */
@@ -506,13 +556,16 @@ async function registrarDiscrepancias(clienteId, mecanicoId, fecha, diffs) {
     valor_sistema: d.sistema, valor_fisico: d.fisico, diferencia: d.fisico - d.sistema,
     cliente_id: clienteId, mecanico_id: mecanicoId, fecha
   }));
-  if (rows.length) await sb.from("discrepancias_inventario").insert(rows);
-  await sb.from("alertas").insert({
+  const alerta = {
     id: uuid(), cliente_id: clienteId, equipo_id: null, mecanico_id: mecanicoId,
     tipo: "discrepancia_inventario", severidad: "rojo", titulo: "Discrepancia en el check diario",
     descripcion: diffs.map(d => `${d.label}: sistema ${d.sistema} · contado ${d.fisico}`).join(" · "),
     leida_mecanico: true, leida_admin: false, leida_superadmin: false
-  });
+  };
+  // Encolado (no llamada directa a sb): si el mecanico esta offline al
+  // terminar el check diario, estas discrepancias/alerta no deben perderse.
+  pushQueue({ id: uuid(), tipo: "discrepancia", clienteId, ts: Date.now(), data: { rows, alerta } });
+  syncQueue();
   return rows.map(r => r.id);
 }
 async function guardarObservacionDiscrepancia(ids, texto) {

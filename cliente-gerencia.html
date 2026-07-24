@@ -65,6 +65,29 @@
 const { useState, useEffect, useCallback } = React;
 
 /* =====================================================================
+   ESTADO OFFLINE / SYNC (mismos hooks que el resto de la app)
+===================================================================== */
+function useOnline() {
+  const [online, setOnline] = useState(navigator.onLine);
+  useEffect(() => {
+    const on = () => setOnline(true), off = () => setOnline(false);
+    window.addEventListener("online", on); window.addEventListener("offline", off);
+    return () => { window.removeEventListener("online", on); window.removeEventListener("offline", off); };
+  }, []);
+  return online;
+}
+function useQueueCount() {
+  const [count, setCount] = useState(getQueue().length);
+  useEffect(() => {
+    const upd = () => setCount(getQueue().length);
+    window.addEventListener("mosa-queue-changed", upd);
+    const t = setInterval(upd, 3000);
+    return () => { window.removeEventListener("mosa-queue-changed", upd); clearInterval(t); };
+  }, []);
+  return count;
+}
+
+/* =====================================================================
    ICONOS
 ===================================================================== */
 const Icon = {
@@ -133,10 +156,11 @@ function Modal({ title, onClose, children, wide, footer }) {
     </div>
   );
 }
-function Toast({ msg, onDone }) {
+function Toast({ msg, onDone, color = "green" }) {
   useEffect(() => { const t = setTimeout(onDone, 2000); return () => clearTimeout(t); }, []);
+  const styles = color === "amber" ? { background: "#FEF3C7", color: "#92400E" } : { background: "#DCFCE7", color: "#15803D" };
   return (
-    <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[80] px-4 py-3 rounded-2xl shadow-lg text-sm font-semibold flex items-center gap-3" style={{ background: "#DCFCE7", color: "#15803D" }}>
+    <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[80] px-4 py-3 rounded-2xl shadow-lg text-sm font-semibold flex items-center gap-3" style={styles}>
       <span>{msg}</span>
       <button onClick={onDone} className="opacity-60">✕</button>
     </div>
@@ -144,10 +168,47 @@ function Toast({ msg, onDone }) {
 }
 function useToasts() {
   const [toasts, setToasts] = useState([]);
-  const push = useCallback((msg) => setToasts(t => [...t, { id: uuid(), msg }]), []);
+  const push = useCallback((msg, color = "green") => setToasts(t => [...t, { id: uuid(), msg, color }]), []);
   const remove = (id) => setToasts(t => t.filter(x => x.id !== id));
-  const node = <div>{toasts.map(t => <Toast key={t.id} msg={t.msg} onDone={() => remove(t.id)} />)}</div>;
+  const node = <div>{toasts.map(t => <Toast key={t.id} msg={t.msg} color={t.color} onDone={() => remove(t.id)} />)}</div>;
   return [push, node];
+}
+function SyncStatusToast() {
+  const [state, setState] = useState(null); // null | {type:'syncing'} | {type:'done', failed}
+  useEffect(() => {
+    let doneTimer;
+    const onStart = () => { clearTimeout(doneTimer); setState({ type: "syncing" }); };
+    const onDone = (e) => {
+      const failed = (e.detail && e.detail.failed) || 0;
+      setState({ type: "done", failed });
+      doneTimer = setTimeout(() => setState(null), failed > 0 ? 3500 : 2000);
+    };
+    window.addEventListener("mosa-sync-start", onStart);
+    window.addEventListener("mosa-sync-done", onDone);
+    return () => { window.removeEventListener("mosa-sync-start", onStart); window.removeEventListener("mosa-sync-done", onDone); clearTimeout(doneTimer); };
+  }, []);
+  if (!state) return null;
+  let bg = "#E5E7EB", color = "#374151", text = "🔄 Sincronizando…";
+  if (state.type === "done") {
+    if (state.failed === 0) { bg = "#DCFCE7"; color = "#15803D"; text = "✓ Todo sincronizado"; }
+    else { bg = "#FEF3C7"; color = "#92400E"; text = `⚠ ${state.failed} registro${state.failed !== 1 ? "s" : ""} no pudieron sincronizarse`; }
+  }
+  return (
+    <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[85] px-4 py-3 rounded-2xl shadow-lg text-sm font-semibold" style={{ background: bg, color }}>
+      {text}
+    </div>
+  );
+}
+function OfflineBadge() {
+  const online = useOnline();
+  const pending = useQueueCount();
+  if (online && pending === 0) return null;
+  return (
+    <div className="px-4">
+      {!online && <div className="mb-2 rounded-xl bg-[#FEE2E2] text-[#B91C1C] text-xs font-bold px-3 py-2 text-center">Sin conexión</div>}
+      {pending > 0 && <div className="mb-2 rounded-xl bg-[#FEF3C7] text-[#92400E] text-xs font-bold px-3 py-2 text-center">{pending} registro{pending !== 1 ? "s" : ""} pendiente{pending !== 1 ? "s" : ""} de sincronizar</div>}
+    </div>
+  );
 }
 function Confirm({ title, desc, onConfirm, onCancel }) {
   return (
@@ -1256,6 +1317,8 @@ function ClienteShell({ view, setView, empresaNombre, children }) {
           <span className="font-extrabold text-[15px]">{empresaNombre || "MOSA TIRES"}</span>
           <button onClick={() => setView("perfil")} className="w-9 h-9 rounded-full bg-[#F3F4F6] flex items-center justify-center"><Icon.user width="16" height="16" /></button>
         </div>
+        <div className="pt-2"><OfflineBadge /></div>
+        <SyncStatusToast />
         <div className="px-5 py-6">{children}</div>
       </div>
       <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-bd safe-bottom z-30 md:hidden">

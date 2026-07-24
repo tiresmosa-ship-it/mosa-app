@@ -203,10 +203,11 @@ function Modal({ title, onClose, children, wide, footer }) {
     </div>
   );
 }
-function Toast({ msg, onDone }) {
+function Toast({ msg, onDone, color = "green" }) {
   useEffect(() => { const t = setTimeout(onDone, 2000); return () => clearTimeout(t); }, []);
+  const styles = color === "amber" ? { background: "#FEF3C7", color: "#92400E" } : { background: "#DCFCE7", color: "#15803D" };
   return (
-    <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[80] px-4 py-3 rounded-2xl shadow-lg text-sm font-semibold flex items-center gap-3" style={{ background: "#DCFCE7", color: "#15803D" }}>
+    <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[80] px-4 py-3 rounded-2xl shadow-lg text-sm font-semibold flex items-center gap-3" style={styles}>
       <span>{msg}</span>
       <button onClick={onDone} className="opacity-60">✕</button>
     </div>
@@ -214,10 +215,36 @@ function Toast({ msg, onDone }) {
 }
 function useToasts() {
   const [toasts, setToasts] = useState([]);
-  const push = useCallback((msg) => setToasts(t => [...t, { id: uuid(), msg }]), []);
+  const push = useCallback((msg, color = "green") => setToasts(t => [...t, { id: uuid(), msg, color }]), []);
   const remove = (id) => setToasts(t => t.filter(x => x.id !== id));
-  const node = <div>{toasts.map(t => <Toast key={t.id} msg={t.msg} onDone={() => remove(t.id)} />)}</div>;
+  const node = <div>{toasts.map(t => <Toast key={t.id} msg={t.msg} color={t.color} onDone={() => remove(t.id)} />)}</div>;
   return [push, node];
+}
+function SyncStatusToast() {
+  const [state, setState] = useState(null); // null | {type:'syncing'} | {type:'done', failed}
+  useEffect(() => {
+    let doneTimer;
+    const onStart = () => { clearTimeout(doneTimer); setState({ type: "syncing" }); };
+    const onDone = (e) => {
+      const failed = (e.detail && e.detail.failed) || 0;
+      setState({ type: "done", failed });
+      doneTimer = setTimeout(() => setState(null), failed > 0 ? 3500 : 2000);
+    };
+    window.addEventListener("mosa-sync-start", onStart);
+    window.addEventListener("mosa-sync-done", onDone);
+    return () => { window.removeEventListener("mosa-sync-start", onStart); window.removeEventListener("mosa-sync-done", onDone); clearTimeout(doneTimer); };
+  }, []);
+  if (!state) return null;
+  let bg = "#E5E7EB", color = "#374151", text = "🔄 Sincronizando…";
+  if (state.type === "done") {
+    if (state.failed === 0) { bg = "#DCFCE7"; color = "#15803D"; text = "✓ Todo sincronizado"; }
+    else { bg = "#FEF3C7"; color = "#92400E"; text = `⚠ ${state.failed} registro${state.failed !== 1 ? "s" : ""} no pudieron sincronizarse`; }
+  }
+  return (
+    <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[85] px-4 py-3 rounded-2xl shadow-lg text-sm font-semibold" style={{ background: bg, color }}>
+      {text}
+    </div>
+  );
 }
 function Confirm({ title, desc, onConfirm, onCancel }) {
   return (
@@ -400,7 +427,7 @@ function CheckDiario({ user, clienteId, onDone }) {
       }
     } catch (e) { console.error("No se pudo comparar el inventario", e); }
 
-    pushToast("✓ Check diario completado");
+    pushToast(navigator.onLine ? "✓ Check diario completado" : "📋 Guardado localmente — se sincronizará al reconectar", navigator.onLine ? "green" : "amber");
     setSaving(false);
     setTimeout(onDone, 700);
   }
@@ -1100,9 +1127,11 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
   }
 
   if (!kmSet) {
-    return <KmModal kmActual={equipo.kilometros} km={km} setKm={setKm} onContinue={async () => {
+    return <KmModal kmActual={equipo.kilometros} km={km} setKm={setKm} onContinue={() => {
       // Entrada directa (sin venir de auditoria): persistir los km en el equipo.
-      try { await sb.from("equipos").update({ kilometros: parseInt(km, 10) }).eq("id_equipo", equipo.id_equipo); } catch (e) { console.error(e); }
+      // Encolado (no llamada directa a sb) para no perder el dato si esta offline.
+      pushQueue({ id: uuid(), tipo: "update_equipo_km", clienteId, ts: Date.now(), data: { equipo_id: equipo.id_equipo, kilometros: parseInt(km, 10) } });
+      syncQueue();
       setKmSet(true);
     }} />;
   }
@@ -1539,6 +1568,18 @@ function MecanicoApp({ user }) {
     }
   }, []);
   useEffect(() => { if (clienteId) db.fetchConfig(clienteId).then(setCfg).catch(() => setCfg(getCache(LS.cfg(clienteId), DEFAULT_CFG))); }, [clienteId]);
+  // Precarga de equipos apenas se conoce la empresa (no espera a que el mecanico
+  // entre a la pantalla de seleccion): asi la cache de LS.equipos queda lista
+  // para trabajar offline aunque despues se pierda la conexion antes de llegar ahi.
+  useEffect(() => { if (clienteId && navigator.onLine) db.fetchEquipos(clienteId).catch(() => {}); }, [clienteId]);
+  // Reintenta la precarga cada vez que vuelve la conexion, para que la lista de
+  // equipos (y sus altas/bajas) se mantenga al dia mientras el mecanico trabaja.
+  useEffect(() => {
+    if (!clienteId) return;
+    const onOnline = () => db.fetchEquipos(clienteId).catch(() => {});
+    window.addEventListener("online", onOnline);
+    return () => window.removeEventListener("online", onOnline);
+  }, [clienteId]);
 
   if (!empresaConfirmada) {
     return <SeleccionEmpresa user={user} onConfirm={(cid) => { setClienteId(cid); setEmpresaConfirmada(true); setTurno({ clienteId: cid, fecha: todayISO(), checkDone: false }); }} />;
@@ -1591,13 +1632,15 @@ function MecanicoApp({ user }) {
         onContinuar={async () => {
           const res = await construirYGuardarAuditoria({ user, clienteId, equipo: flow.equipo, cfg, posData: flow.posData, axleCfg: flow.axleCfg, km: flow.km, checklist: flow.checklist, recsInfo: flow.recsInfo, discrepanciasNeumaticos: flow.discrepanciasNeumaticos, recetaEstado: "en_proceso" });
           const n = res.alertas;
-          pushToast(n > 0 ? `✓ Auditoría guardada · ${n} alerta${n !== 1 ? "s" : ""} generada${n !== 1 ? "s" : ""}` : "✓ Auditoría guardada");
+          if (navigator.onLine) pushToast(n > 0 ? `✓ Auditoría guardada · ${n} alerta${n !== 1 ? "s" : ""} generada${n !== 1 ? "s" : ""}` : "✓ Auditoría guardada");
+          else pushToast("📋 Guardado localmente — se sincronizará al reconectar", "amber");
           setFlow({ stage: "cambio", equipo: flow.equipo, axleCfg: flow.axleCfg, posData: flow.posData, checklist: flow.checklist, kmInicial: flow.km, recetaIdInicial: res.recetaId });
         }}
         onCerrar={async () => {
           const res = await construirYGuardarAuditoria({ user, clienteId, equipo: flow.equipo, cfg, posData: flow.posData, axleCfg: flow.axleCfg, km: flow.km, checklist: flow.checklist, recsInfo: flow.recsInfo, discrepanciasNeumaticos: flow.discrepanciasNeumaticos, recetaEstado: "pendiente" });
           const n = res.alertas;
-          pushToast(n > 0 ? `✓ Auditoría guardada · ${n} alerta${n !== 1 ? "s" : ""} generada${n !== 1 ? "s" : ""}` : "✓ Auditoría guardada");
+          if (navigator.onLine) pushToast(n > 0 ? `✓ Auditoría guardada · ${n} alerta${n !== 1 ? "s" : ""} generada${n !== 1 ? "s" : ""}` : "✓ Auditoría guardada");
+          else pushToast("📋 Guardado localmente — se sincronizará al reconectar", "amber");
           setFlow(null);
         }} />
     );
@@ -1623,6 +1666,7 @@ function MecanicoApp({ user }) {
   return (
     <div>
       <div className="fixed top-2 left-0 right-0 z-40"><OfflineBadge /></div>
+      <SyncStatusToast />
       {toastNode}
       {body}
       {showBottomNav && <BottomNav view={tab} setView={(t) => { setTab(t); setFlow(null); }} disabledExcept={jornadaCerrada ? ["alertas", "perfil"] : null} alertasNoLeidas={alertasNoLeidas} />}

@@ -140,10 +140,11 @@ function Modal({ title, onClose, children, wide, footer }) {
     </div>
   );
 }
-function Toast({ msg, onDone }) {
+function Toast({ msg, onDone, color = "green" }) {
   useEffect(() => { const t = setTimeout(onDone, 2000); return () => clearTimeout(t); }, []);
+  const styles = color === "amber" ? { background: "#FEF3C7", color: "#92400E" } : { background: "#DCFCE7", color: "#15803D" };
   return (
-    <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[80] px-4 py-3 rounded-2xl shadow-lg text-sm font-semibold flex items-center gap-3" style={{ background: "#DCFCE7", color: "#15803D" }}>
+    <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[80] px-4 py-3 rounded-2xl shadow-lg text-sm font-semibold flex items-center gap-3" style={styles}>
       <span>{msg}</span>
       <button onClick={onDone} className="opacity-60">✕</button>
     </div>
@@ -151,10 +152,36 @@ function Toast({ msg, onDone }) {
 }
 function useToasts() {
   const [toasts, setToasts] = useState([]);
-  const push = useCallback((msg) => setToasts(t => [...t, { id: uuid(), msg }]), []);
+  const push = useCallback((msg, color = "green") => setToasts(t => [...t, { id: uuid(), msg, color }]), []);
   const remove = (id) => setToasts(t => t.filter(x => x.id !== id));
-  const node = <div>{toasts.map(t => <Toast key={t.id} msg={t.msg} onDone={() => remove(t.id)} />)}</div>;
+  const node = <div>{toasts.map(t => <Toast key={t.id} msg={t.msg} color={t.color} onDone={() => remove(t.id)} />)}</div>;
   return [push, node];
+}
+function SyncStatusToast() {
+  const [state, setState] = useState(null); // null | {type:'syncing'} | {type:'done', failed}
+  useEffect(() => {
+    let doneTimer;
+    const onStart = () => { clearTimeout(doneTimer); setState({ type: "syncing" }); };
+    const onDone = (e) => {
+      const failed = (e.detail && e.detail.failed) || 0;
+      setState({ type: "done", failed });
+      doneTimer = setTimeout(() => setState(null), failed > 0 ? 3500 : 2000);
+    };
+    window.addEventListener("mosa-sync-start", onStart);
+    window.addEventListener("mosa-sync-done", onDone);
+    return () => { window.removeEventListener("mosa-sync-start", onStart); window.removeEventListener("mosa-sync-done", onDone); clearTimeout(doneTimer); };
+  }, []);
+  if (!state) return null;
+  let bg = "#E5E7EB", color = "#374151", text = "🔄 Sincronizando…";
+  if (state.type === "done") {
+    if (state.failed === 0) { bg = "#DCFCE7"; color = "#15803D"; text = "✓ Todo sincronizado"; }
+    else { bg = "#FEF3C7"; color = "#92400E"; text = `⚠ ${state.failed} registro${state.failed !== 1 ? "s" : ""} no pudieron sincronizarse`; }
+  }
+  return (
+    <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[85] px-4 py-3 rounded-2xl shadow-lg text-sm font-semibold" style={{ background: bg, color }}>
+      {text}
+    </div>
+  );
 }
 function Confirm({ title, desc, onConfirm, onCancel }) {
   return (
