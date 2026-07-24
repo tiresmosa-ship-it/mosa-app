@@ -83,6 +83,10 @@ DELETE FROM usuarios WHERE usuario = 'clienteoperativo_test';
 -- falta borrar el movimiento (anon no tiene DELETE).
 DELETE FROM movimientos_bodega WHERE numero_documento = 'TEST-MONEDA-1';
 
+-- Usuarios de prueba para verificar cliente-gerencia.html (rol=cliente,
+-- subtipo=dueno) y la creacion de operativos desde ese panel.
+DELETE FROM usuarios WHERE usuario IN ('clientegerencia_test', 'operativo_prueba2_test');
+
 -- =====================================================================
 -- Verificacion (deberia devolver 0 en todas)
 -- =====================================================================

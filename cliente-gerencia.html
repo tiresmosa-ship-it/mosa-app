@@ -1,0 +1,1343 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+<title>MOSA TIRES</title>
+<meta name="description" content="MOSA TIRES - Panel de Cliente (gerencia)" />
+<meta name="theme-color" content="#FFFFFF" />
+<link rel="manifest" href="manifest.json" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+<link rel="icon" href="icon-192.png" />
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          ink: '#0A0A0A',
+          sub: '#6B7280',
+          muted: '#9CA3AF',
+          card: '#FFFFFF',
+          subtlebg: '#F7F7F7',
+          bd: '#EFEFEF',
+          bdstrong: '#E5E7EB'
+        },
+        boxShadow: {
+          card: '0 1px 2px rgba(0,0,0,0.03), 0 6px 16px rgba(0,0,0,0.04)'
+        },
+        borderRadius: { card: '16px' }
+      }
+    }
+  }
+</script>
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone@7/babel.min.js" crossorigin></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" crossorigin></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js" crossorigin></script>
+
+<style>
+  html, body { font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Inter, sans-serif; background:#FFFFFF; -webkit-tap-highlight-color: transparent; }
+  * { -webkit-font-smoothing: antialiased; }
+  .safe-top { padding-top: env(safe-area-inset-top); }
+  .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spinner { border: 3px solid #E5E7EB; border-top-color: #111111; border-radius: 50%; width: 22px; height: 22px; animation: spin 0.7s linear infinite; margin: 0 auto; }
+</style>
+</head>
+<body class="bg-white text-ink">
+<div id="root"></div>
+
+<script src="js/supabase.js"></script>
+<script type="text/babel" data-presets="react">
+/* =====================================================================
+   MOSA TIRES — cliente-gerencia.html
+   Panel para el subtipo "dueno" del rol cliente: vista ejecutiva de
+   negocio (Resumen + Costos, copiados de la vista [Numeros] del Dashboard
+   y de la seccion Costos de superadmin.html) mas Flota (vista simplificada
+   sin datos tecnicos exactos) y gestion de usuarios operativos de su
+   propia empresa. Todo escrito para un solo cliente_id fijo (tomado de la
+   sesion) — sin selector de empresa en ningun lado.
+===================================================================== */
+const { useState, useEffect, useCallback } = React;
+
+/* =====================================================================
+   ICONOS
+===================================================================== */
+const Icon = {
+  home: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg>,
+  truck: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><rect x="1" y="7" width="14" height="10"/><path d="M15 10h4l3 3v4h-7z"/><circle cx="6" cy="19" r="1.6"/><circle cx="17.5" cy="19" r="1.6"/></svg>,
+  dollar: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M12 2v20"/><path d="M17 5.5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>,
+  users: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><circle cx="9" cy="8" r="3.2"/><path d="M2.5 20c0-3.4 3-5.4 6.5-5.4s6.5 2 6.5 5.4"/><circle cx="17" cy="8.5" r="2.6"/><path d="M15.7 14.8c2.9.4 5.3 2.2 5.3 5.2"/></svg>,
+  user: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>,
+  search: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>,
+  back: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M15 18l-6-6 6-6"/></svg>,
+  close: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M18 6L6 18M6 6l12 12"/></svg>,
+  menu: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M3 6h18M3 12h18M3 18h18"/></svg>,
+  gauge: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M12 15l3-3"/><circle cx="12" cy="14" r="8"/><path d="M6 8l1.5 1.5M18 8l-1.5 1.5M4 14h2M18 14h2M12 5v2"/></svg>,
+  pencil: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z"/></svg>,
+};
+
+/* =====================================================================
+   UI BASICOS (mismo kit que el resto de la app)
+===================================================================== */
+function Button({ variant = "primary", className = "", children, ...props }) {
+  const base = "h-14 px-5 rounded-2xl font-bold text-[15px] transition active:scale-[0.98] disabled:opacity-50 disabled:active:scale-100 flex items-center justify-center gap-2";
+  const variants = {
+    primary: "bg-ink text-white",
+    ghost: "bg-transparent text-ink border border-bdstrong",
+    danger: "bg-[#FEE2E2] text-[#B91C1C]",
+    subtle: "bg-[#F3F4F6] text-ink"
+  };
+  return <button className={cx(base, variants[variant], className)} {...props}>{children}</button>;
+}
+function Field({ label, required, children, hint }) {
+  return (
+    <label className="block">
+      <span className="block text-[13px] font-semibold text-[#374151] mb-1.5">{label}{required && <span className="text-red-500"> *</span>}</span>
+      {children}
+      {hint && <span className="block text-xs text-muted mt-1">{hint}</span>}
+    </label>
+  );
+}
+function TextInput({ className = "", ...props }) {
+  return <input className={cx("w-full h-[52px] px-4 rounded-2xl border bg-[#F3F4F6] border-[#E5E7EB] focus:outline-none focus:ring-2 focus:ring-ink/20 placeholder:text-muted", className)} {...props} />;
+}
+function Select({ className = "", children, ...props }) {
+  return <select className={cx("w-full h-[52px] px-4 rounded-2xl border bg-[#F3F4F6] border-[#E5E7EB] focus:outline-none focus:ring-2 focus:ring-ink/20", className)} {...props}>{children}</select>;
+}
+function Card({ className = "", children }) {
+  return <div className={cx("bg-white rounded-card shadow-card border border-bd p-5", className)}>{children}</div>;
+}
+function Badge({ children, color = "gray" }) {
+  const colors = {
+    gray: "bg-[#F3F4F6] text-[#374151]", green: "bg-[#DCFCE7] text-[#15803D]",
+    red: "bg-[#FEE2E2] text-[#B91C1C]", amber: "bg-[#FEF3C7] text-[#92400E]", black: "bg-ink text-white"
+  };
+  return <span className={cx("px-3 py-1 rounded-full text-[12px] font-bold", colors[color])}>{children}</span>;
+}
+function Modal({ title, onClose, children, wide, footer }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 p-0 sm:p-4" onClick={(e) => { if (e.target === e.currentTarget && onClose) onClose(); }}>
+      <div className={cx("bg-white w-full sm:rounded-card rounded-t-[24px] max-h-[92vh] overflow-y-auto", wide ? "sm:max-w-2xl" : "sm:max-w-md")}>
+        <div className="sticky top-0 bg-white border-b border-bd px-5 py-4 flex items-center justify-between z-10">
+          <h3 className="text-lg font-extrabold">{title}</h3>
+          {onClose && <button onClick={onClose} className="w-9 h-9 rounded-full hover:bg-[#F3F4F6] flex items-center justify-center text-sub"><Icon.close width="18" height="18"/></button>}
+        </div>
+        <div className="p-5">{children}</div>
+        {footer && <div className="sticky bottom-0 bg-white border-t border-bd p-4">{footer}</div>}
+      </div>
+    </div>
+  );
+}
+function Toast({ msg, onDone }) {
+  useEffect(() => { const t = setTimeout(onDone, 2000); return () => clearTimeout(t); }, []);
+  return (
+    <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[80] px-4 py-3 rounded-2xl shadow-lg text-sm font-semibold flex items-center gap-3" style={{ background: "#DCFCE7", color: "#15803D" }}>
+      <span>{msg}</span>
+      <button onClick={onDone} className="opacity-60">✕</button>
+    </div>
+  );
+}
+function useToasts() {
+  const [toasts, setToasts] = useState([]);
+  const push = useCallback((msg) => setToasts(t => [...t, { id: uuid(), msg }]), []);
+  const remove = (id) => setToasts(t => t.filter(x => x.id !== id));
+  const node = <div>{toasts.map(t => <Toast key={t.id} msg={t.msg} onDone={() => remove(t.id)} />)}</div>;
+  return [push, node];
+}
+function Confirm({ title, desc, onConfirm, onCancel }) {
+  return (
+    <Modal title={title} onClose={onCancel}>
+      <p className="text-[14px] text-[#374151] mb-5">{desc}</p>
+      <div className="flex gap-3">
+        <Button variant="subtle" className="flex-1" onClick={onCancel}>Cancelar</Button>
+        <Button className="flex-1" onClick={onConfirm}>Confirmar</Button>
+      </div>
+    </Modal>
+  );
+}
+function Toggle({ checked, onChange }) {
+  return (
+    <button onClick={() => onChange(!checked)} className={cx("w-11 h-6 rounded-full relative transition shrink-0", checked ? "bg-ink" : "bg-[#E5E7EB]")}>
+      <span className="absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all" style={{ left: checked ? "22px" : "2px" }} />
+    </button>
+  );
+}
+
+/* =====================================================================
+   COSTOS / NUMEROS — copiado exacto de superadmin.html (mismos helpers y
+   mismo objeto costosDb), unica diferencia: en vez de un `filtro` variable
+   elegido por selector de empresa, todas las llamadas de esta pagina usan
+   siempre `clienteId` (fijo, de la sesion). Ver notas originales en
+   superadmin.html sobre cada estimacion.
+===================================================================== */
+function monedaSimbolo(moneda) {
+  const m = moneda || "CLP";
+  return m === "USD" ? "US$" : m === "ARS" ? "AR$" : "$";
+}
+function formatMoney(n, moneda) {
+  if (n == null || isNaN(n)) return "—";
+  const m = moneda || "CLP";
+  if (m === "USD") return "US$" + Number(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  if (m === "ARS") return "AR$" + Math.round(n).toLocaleString("es-AR");
+  return "$" + Math.round(n).toLocaleString("es-CL");
+}
+function formatMoneyDecimal(n, moneda) {
+  if (n == null || isNaN(n)) return "—";
+  return monedaSimbolo(moneda) + Number(n).toFixed(2);
+}
+function sumPorMoneda(filas, campo) {
+  const acc = {};
+  (filas || []).forEach(f => {
+    const mon = f.moneda || "CLP";
+    const v = typeof campo === "function" ? campo(f) : f[campo];
+    if (v == null || isNaN(v)) return;
+    acc[mon] = (acc[mon] || 0) + Number(v);
+  });
+  const orden = ["CLP", "ARS", "USD"];
+  return Object.keys(acc).sort((a, b) => orden.indexOf(a) - orden.indexOf(b)).map(moneda => ({ moneda, total: acc[moneda] }));
+}
+function formatMoneyGrouped(grupos) {
+  if (!grupos || !grupos.length) return "—";
+  return grupos.map(g => formatMoney(g.total, g.moneda)).join(" · ");
+}
+function MoneyGroupedStack({ grupos, className }) {
+  if (!grupos || !grupos.length) return <span className={className}>—</span>;
+  return (
+    <span className={className}>
+      {grupos.map((g, i) => <span key={g.moneda} className={i > 0 ? "block" : ""}>{formatMoney(g.total, g.moneda)}</span>)}
+    </span>
+  );
+}
+function rangoPeriodo(periodo) {
+  const hoy = new Date();
+  let desde;
+  if (periodo === "trimestre") desde = new Date(hoy.getFullYear(), hoy.getMonth() - 2, 1);
+  else if (periodo === "anio") desde = new Date(hoy.getFullYear(), 0, 1);
+  else desde = new Date(hoy.getFullYear(), hoy.getMonth(), 1);
+  return { desde: desde.toISOString().slice(0, 10), hasta: todayISO() };
+}
+function fetchPrecioPorMarcaAcc(data) {
+  const acc = {};
+  let sumaGlobal = 0, nGlobal = 0;
+  const monedasGlobal = {};
+  (data || []).forEach(l => {
+    if (l.precio_unitario == null) return;
+    const marca = l.marca || "Sin marca registrada";
+    const mon = l.moneda || "CLP";
+    if (!acc[marca]) acc[marca] = { suma: 0, n: 0, monedas: {} };
+    acc[marca].suma += l.precio_unitario; acc[marca].n++;
+    acc[marca].monedas[mon] = (acc[marca].monedas[mon] || 0) + 1;
+    sumaGlobal += l.precio_unitario; nGlobal++;
+    monedasGlobal[mon] = (monedasGlobal[mon] || 0) + 1;
+  });
+  const modaMoneda = (monedas) => Object.keys(monedas).sort((a, b) => monedas[b] - monedas[a])[0] || "CLP";
+  const promedios = {};
+  Object.keys(acc).forEach(m => { promedios[m] = { precio: acc[m].suma / acc[m].n, moneda: modaMoneda(acc[m].monedas) }; });
+  promedios.__global = { precio: nGlobal ? sumaGlobal / nGlobal : 0, moneda: modaMoneda(monedasGlobal) };
+  return promedios;
+}
+async function fetchPrecioPorMarca(clienteId) {
+  let q = sb.from("lotes_inventario").select("marca,precio_unitario,moneda").eq("categoria", "neumatico");
+  q = filtroCliente(q, clienteId);
+  const { data } = await q;
+  return fetchPrecioPorMarcaAcc(data);
+}
+function precioDeMarca(promedios, marca) {
+  const key = marca || "Sin marca registrada";
+  return promedios[key] != null ? promedios[key] : (promedios.__global || { precio: 0, moneda: "CLP" });
+}
+async function fetchPrecioPorFuego(clienteIds) {
+  if (!clienteIds || !clienteIds.length) return {};
+  const { data: entradas } = await sb.from("movimientos_bodega").select("cliente_id,numero_fuego,precio_unitario,moneda").eq("categoria", "neumatico").eq("tipo", "entrada").in("cliente_id", clienteIds).not("numero_fuego", "is", null);
+  const map = {};
+  (entradas || []).forEach(e => { if (e.precio_unitario != null) map[e.cliente_id + "|" + e.numero_fuego] = { precio: e.precio_unitario, moneda: e.moneda || "CLP" }; });
+  return map;
+}
+const costosDb = {
+  async fetchValorInventarioPorEmpresa(empresas) {
+    const [{ data: lotes }, { data: insumosData }] = await Promise.all([
+      sb.from("lotes_inventario").select("cliente_id,precio_unitario,cantidad_actual,moneda").eq("categoria", "neumatico"),
+      sb.from("insumos").select("cliente_id,precio,cantidad,moneda").eq("activo", true)
+    ]);
+    const porCliente = {};
+    (empresas || []).forEach(e => { porCliente[e.id_cliente] = { id: e.id_cliente, nombre: e.nombre, neumaticosFilas: [], insumosFilas: [] }; });
+    (lotes || []).forEach(l => {
+      if (!porCliente[l.cliente_id]) porCliente[l.cliente_id] = { id: l.cliente_id, nombre: l.cliente_id, neumaticosFilas: [], insumosFilas: [] };
+      porCliente[l.cliente_id].neumaticosFilas.push({ moneda: l.moneda, valor: (l.precio_unitario || 0) * (l.cantidad_actual || 0) });
+    });
+    (insumosData || []).forEach(i => {
+      if (!porCliente[i.cliente_id]) porCliente[i.cliente_id] = { id: i.cliente_id, nombre: i.cliente_id, neumaticosFilas: [], insumosFilas: [] };
+      porCliente[i.cliente_id].insumosFilas.push({ moneda: i.moneda, valor: (i.precio || 0) * (i.cantidad || 0) });
+    });
+    return Object.values(porCliente).map(f => {
+      const neumaticos = sumPorMoneda(f.neumaticosFilas, "valor");
+      const insumos = sumPorMoneda(f.insumosFilas, "valor");
+      const total = sumPorMoneda([...f.neumaticosFilas, ...f.insumosFilas], "valor");
+      return { id: f.id, nombre: f.nombre, neumaticos, insumos, total };
+    }).sort((a, b) => (a.nombre || "").localeCompare(b.nombre || ""));
+  },
+  async fetchConsumoPeriodo(clienteId, desde, hasta) {
+    let q = sb.from("movimientos_bodega").select("cliente_id,fecha,origen,numero_fuego").eq("categoria", "neumatico").eq("tipo", "salida").gte("fecha", desde).lte("fecha", hasta).like("origen", "baja_%");
+    q = filtroCliente(q, clienteId);
+    const { data } = await q;
+    const bajas = data || [];
+    if (!bajas.length) return { filas: [], totalBajas: 0, totalMontoGrupos: [], desgaste: 0, dano: 0 };
+    const precioPorFuego = await fetchPrecioPorFuego([...new Set(bajas.map(b => b.cliente_id))]);
+    const porCliente = {};
+    const montoFilasGlobal = [];
+    bajas.forEach(b => {
+      if (!porCliente[b.cliente_id]) porCliente[b.cliente_id] = { id: b.cliente_id, bajas: 0, montoFilas: [], desgaste: 0, dano: 0 };
+      const c = porCliente[b.cliente_id];
+      c.bajas++;
+      if (b.origen === "baja_desgaste_normal") c.desgaste++; else c.dano++;
+      const entry = b.numero_fuego ? precioPorFuego[b.cliente_id + "|" + b.numero_fuego] : null;
+      if (entry != null) { c.montoFilas.push(entry); montoFilasGlobal.push(entry); }
+    });
+    const filas = Object.values(porCliente).map(c => ({ ...c, montoGrupos: sumPorMoneda(c.montoFilas, "precio") }));
+    return {
+      filas, totalBajas: bajas.length,
+      totalMontoGrupos: sumPorMoneda(montoFilasGlobal, "precio"),
+      desgaste: filas.reduce((a, f) => a + f.desgaste, 0),
+      dano: filas.reduce((a, f) => a + f.dano, 0)
+    };
+  },
+  async fetchCpkPromedio(clienteId) {
+    let qInv = sb.from("movimientos_bodega").select("precio_total,moneda").eq("categoria", "neumatico").eq("tipo", "entrada");
+    qInv = filtroCliente(qInv, clienteId);
+    let qEq = sb.from("equipos").select("kilometros").eq("activo", true);
+    qEq = filtroCliente(qEq, clienteId);
+    const [{ data: entradas }, { data: equipos }] = await Promise.all([qInv, qEq]);
+    const km = (equipos || []).reduce((a, e) => a + (e.kilometros || 0), 0);
+    const inversionGrupos = sumPorMoneda(entradas, "precio_total");
+    if (km <= 0) return [];
+    return inversionGrupos.map(g => ({ moneda: g.moneda, cpk: g.total / km }));
+  },
+  async fetchPctInstructivoPromedio(clienteId) {
+    let q = sb.from("auditorias_receta").select("pct_receta_seguida");
+    q = filtroCliente(q, clienteId);
+    const { data } = await q;
+    const vals = (data || []).map(r => r.pct_receta_seguida).filter(v => v != null);
+    return vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : null;
+  },
+  async fetchCpkPorMarca(clienteId) {
+    let qN = sb.from("neumaticos").select("marca,modelo,equipo_actual").eq("activo", true).not("equipo_actual", "is", null);
+    qN = filtroCliente(qN, clienteId);
+    const { data: neumaticos } = await qN;
+    if (!neumaticos || !neumaticos.length) return [];
+    const equipoIds = [...new Set(neumaticos.map(n => n.equipo_actual))];
+    const { data: equipos } = await sb.from("equipos").select("id_equipo,kilometros").in("id_equipo", equipoIds);
+    const kmPorEquipo = {}; (equipos || []).forEach(e => { kmPorEquipo[e.id_equipo] = e.kilometros || 0; });
+    const precios = await fetchPrecioPorMarca(clienteId);
+    const grupos = {};
+    neumaticos.forEach(n => {
+      const key = (n.marca || "Sin marca registrada") + " / " + (n.modelo || "-");
+      const p = precioDeMarca(precios, n.marca);
+      if (!grupos[key]) grupos[key] = { marca: n.marca || "Sin marca registrada", modelo: n.modelo || "-", cantidad: 0, inversion: 0, moneda: p.moneda, km: 0 };
+      const g = grupos[key];
+      g.cantidad++;
+      g.inversion += p.precio;
+      g.km += kmPorEquipo[n.equipo_actual] || 0;
+    });
+    return Object.values(grupos).map(g => ({ ...g, cpk: g.km > 0 ? g.inversion / g.km : null })).sort((a, b) => b.inversion - a.inversion);
+  },
+  async fetchBajasPorMes(clienteId, meses) {
+    const hoy = new Date();
+    const desdeISO = new Date(hoy.getFullYear(), hoy.getMonth() - (meses - 1), 1).toISOString().slice(0, 10);
+    let q = sb.from("movimientos_bodega").select("cliente_id,fecha,origen,numero_fuego").eq("categoria", "neumatico").eq("tipo", "salida").gte("fecha", desdeISO).like("origen", "baja_%");
+    q = filtroCliente(q, clienteId);
+    const { data } = await q;
+    const bajas = data || [];
+    const precioPorFuego = await fetchPrecioPorFuego([...new Set(bajas.map(b => b.cliente_id))]);
+    const porMes = {};
+    for (let i = 0; i < meses; i++) {
+      const key = new Date(hoy.getFullYear(), hoy.getMonth() - (meses - 1 - i), 1).toISOString().slice(0, 7);
+      porMes[key] = { mes: key, desgaste: 0, dano: 0, perdidaFilas: [] };
+    }
+    bajas.forEach(b => {
+      const key = (b.fecha || "").slice(0, 7);
+      if (!porMes[key]) return;
+      if (b.origen === "baja_desgaste_normal") porMes[key].desgaste++; else porMes[key].dano++;
+      const entry = b.numero_fuego ? precioPorFuego[b.cliente_id + "|" + b.numero_fuego] : null;
+      if (entry != null) porMes[key].perdidaFilas.push(entry);
+    });
+    return Object.values(porMes).map(m => ({ mes: m.mes, desgaste: m.desgaste, dano: m.dano, perdidaGrupos: sumPorMoneda(m.perdidaFilas, "precio") }));
+  },
+  async fetchTopEquiposCostosos(clienteId, n) {
+    let qN = sb.from("neumaticos").select("marca,equipo_actual").eq("activo", true).not("equipo_actual", "is", null);
+    qN = filtroCliente(qN, clienteId);
+    const { data: neumaticos } = await qN;
+    if (!neumaticos || !neumaticos.length) return [];
+    const equipoIds = [...new Set(neumaticos.map(x => x.equipo_actual))];
+    const { data: equipos } = await sb.from("equipos").select("id_equipo,patente,numero_interno,kilometros").in("id_equipo", equipoIds);
+    const equiposMap = {}; (equipos || []).forEach(e => { equiposMap[e.id_equipo] = e; });
+    const precios = await fetchPrecioPorMarca(clienteId);
+    const porEquipo = {};
+    neumaticos.forEach(nn => {
+      const p = precioDeMarca(precios, nn.marca);
+      if (!porEquipo[nn.equipo_actual]) porEquipo[nn.equipo_actual] = { equipoId: nn.equipo_actual, inversion: 0, moneda: p.moneda };
+      porEquipo[nn.equipo_actual].inversion += p.precio;
+    });
+    return Object.values(porEquipo).map(e => {
+      const eq = equiposMap[e.equipoId] || {};
+      const km = eq.kilometros || 0;
+      return { equipoId: e.equipoId, patente: eq.patente || "-", numero_interno: eq.numero_interno || null, inversion: e.inversion, moneda: e.moneda, km, cpk: km > 0 ? e.inversion / km : null };
+    }).sort((a, b) => b.inversion - a.inversion).slice(0, n || 5);
+  },
+  async fetchValorInventarioPorBodega(clienteId) {
+    let q = sb.from("neumaticos").select("marca,bodega,equipo_actual").eq("activo", true);
+    q = filtroCliente(q, clienteId);
+    const { data } = await q;
+    const precios = await fetchPrecioPorMarca(clienteId);
+    const labels = { nuevo: "Nuevo", transito: "Tránsito", recauchado: "Recauchado", reparacion: "En reparación", en_equipos: "En equipos", baja: "En baja", salidas: "Salida definitiva", otro: "Otro / sin bodega" };
+    const filas = { nuevo: [], transito: [], recauchado: [], reparacion: [], en_equipos: [], baja: [], salidas: [], otro: [] };
+    const cantidad = { nuevo: 0, transito: 0, recauchado: 0, reparacion: 0, en_equipos: 0, baja: 0, salidas: 0, otro: 0 };
+    (data || []).forEach(n => {
+      const key = n.equipo_actual ? "en_equipos" : (filas[n.bodega] !== undefined ? n.bodega : "otro");
+      const p = precioDeMarca(precios, n.marca);
+      filas[key].push({ moneda: p.moneda, valor: p.precio });
+      cantidad[key]++;
+    });
+    return Object.keys(labels).map(k => ({ bodega: k, label: labels[k], cantidad: cantidad[k], valorGrupos: sumPorMoneda(filas[k], "valor") }));
+  },
+  async fetchCpkEquipo(equipo) {
+    const { data: neumaticos } = await sb.from("neumaticos").select("marca").eq("equipo_actual", equipo.id_equipo).eq("activo", true);
+    const precios = await fetchPrecioPorMarca(equipo.cliente_id);
+    const precioFilas = (neumaticos || []).map(n => { const p = precioDeMarca(precios, n.marca); return { moneda: p.moneda, valor: p.precio }; });
+    const inversionGrupos = sumPorMoneda(precioFilas, "valor");
+    const grupoPrincipal = inversionGrupos[0] || { moneda: "CLP", total: 0 };
+    const km = equipo.kilometros || 0;
+    return { inversion: grupoPrincipal.total, moneda: grupoPrincipal.moneda, inversionGrupos, km, cpk: km > 0 ? grupoPrincipal.total / km : null, cantidadNeumaticos: (neumaticos || []).length };
+  }
+};
+
+/* =====================================================================
+   SECCION 1 — RESUMEN (copia de DashboardNumeros de superadmin.html;
+   unica diferencia: `empresas` es un array de un solo elemento —
+   el propio cliente_id_fijo— en vez de venir de un selector).
+===================================================================== */
+function KpiCard({ label, value }) {
+  return (
+    <div className="bg-[#F9FAFB] rounded-[18px] p-4">
+      <p className="text-[22px] font-extrabold leading-none">{value == null ? "—" : value}</p>
+      <p className="text-[11.5px] font-semibold text-muted mt-1.5">{label}</p>
+    </div>
+  );
+}
+const PERIODOS_CONSUMO = [
+  { id: "mes", label: "Este mes" }, { id: "trimestre", label: "Trimestre" }, { id: "anio", label: "Año" }
+];
+function ResumenView({ clienteId, empresaNombre }) {
+  const empresas = [{ id_cliente: clienteId, nombre: empresaNombre || clienteId }];
+  const [loading, setLoading] = useState(true);
+  const [inventario, setInventario] = useState([]);
+  const [cpkProm, setCpkProm] = useState(null);
+  const [pctProm, setPctProm] = useState(null);
+  const [periodo, setPeriodo] = useState("mes");
+  const [consumo, setConsumo] = useState(null);
+  const [loadingConsumo, setLoadingConsumo] = useState(true);
+
+  useEffect(() => {
+    let cancel = false;
+    setLoading(true);
+    (async () => {
+      try {
+        const [inv, cpk, pct] = await Promise.all([
+          costosDb.fetchValorInventarioPorEmpresa(empresas),
+          costosDb.fetchCpkPromedio(clienteId),
+          costosDb.fetchPctInstructivoPromedio(clienteId)
+        ]);
+        if (cancel) return;
+        setInventario(inv);
+        setCpkProm(cpk); setPctProm(pct);
+      } catch (e) { console.error("No se pudo cargar el resumen", e); }
+      if (!cancel) setLoading(false);
+    })();
+    return () => { cancel = true; };
+  }, [clienteId, empresaNombre]);
+
+  useEffect(() => {
+    let cancel = false;
+    setLoadingConsumo(true);
+    const { desde, hasta } = rangoPeriodo(periodo);
+    costosDb.fetchConsumoPeriodo(clienteId, desde, hasta).then(c => { if (!cancel) { setConsumo(c); setLoadingConsumo(false); } })
+      .catch(e => { console.error("No se pudo cargar el consumo del período", e); if (!cancel) setLoadingConsumo(false); });
+    return () => { cancel = true; };
+  }, [clienteId, periodo]);
+
+  const totalInventarioGrupos = sumPorMoneda(inventario.flatMap(f => f.total), "total");
+  const empresasMap = { [clienteId]: empresaNombre || clienteId };
+
+  const bajasDano = consumo ? consumo.dano : 0;
+  const fraccionNoSeguida = pctProm != null ? Math.max(0, (100 - pctProm) / 100) : null;
+  const montoGrupoPrincipal = consumo && consumo.totalMontoGrupos && consumo.totalMontoGrupos.length
+    ? consumo.totalMontoGrupos.slice().sort((a, b) => b.total - a.total)[0] : null;
+  const montoPromedioBaja = consumo && consumo.dano && montoGrupoPrincipal ? (montoGrupoPrincipal.total / Math.max(1, consumo.desgaste + consumo.dano)) : 0;
+  const ahorroPotencial = fraccionNoSeguida != null ? bajasDano * fraccionNoSeguida * montoPromedioBaja : null;
+  const ahorroPotencialMoneda = montoGrupoPrincipal ? montoGrupoPrincipal.moneda : "CLP";
+
+  if (loading) return <div className="flex justify-center py-16"><span className="spinner" /></div>;
+
+  return (
+    <div>
+      <h1 className="text-[26px] font-extrabold mb-4">Resumen</h1>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
+        <KpiCard label="Inventario total valorizado" value={<MoneyGroupedStack grupos={totalInventarioGrupos} />} />
+        <KpiCard label={`Consumo (${PERIODOS_CONSUMO.find(p => p.id === periodo).label.toLowerCase()})`} value={consumo ? `${consumo.totalBajas} baja${consumo.totalBajas !== 1 ? "s" : ""}` : "—"} />
+        <KpiCard label="CPK promedio" value={cpkProm && cpkProm.length ? cpkProm.map(g => `${formatMoneyDecimal(g.cpk, g.moneda)}/km`).join(" · ") : "Sin km registrados"} />
+        <KpiCard label="% instructivo seguido prom." value={pctProm != null ? pctProm + "%" : "—"} />
+      </div>
+
+      <p className="font-bold text-[16px] mb-3">Valor de inventario</p>
+      <div className="bg-white rounded-2xl border border-bd shadow-card overflow-x-auto mb-8">
+        <table className="w-full text-[13.5px]">
+          <thead>
+            <tr className="text-left text-muted text-[11.5px] font-semibold border-b border-bd">
+              <th className="px-4 py-3">Empresa</th>
+              <th className="px-4 py-3">Neumáticos</th>
+              <th className="px-4 py-3">Insumos</th>
+              <th className="px-4 py-3">Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {inventario.map((f, i) => (
+              <tr key={f.id} className={i > 0 ? "border-t border-bd" : ""}>
+                <td className="px-4 py-3 font-bold">{f.nombre}</td>
+                <td className="px-4 py-3">{formatMoneyGrouped(f.neumaticos)}</td>
+                <td className="px-4 py-3">{formatMoneyGrouped(f.insumos)}</td>
+                <td className="px-4 py-3 font-bold">{formatMoneyGrouped(f.total)}</td>
+              </tr>
+            ))}
+            {!inventario.length && <tr><td colSpan="4" className="px-4 py-6 text-center text-muted">Sin datos de inventario valorizado todavía.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
+        <p className="font-bold text-[16px]">Consumo del período</p>
+        <div className="flex gap-2">
+          {PERIODOS_CONSUMO.map(p => (
+            <button key={p.id} onClick={() => setPeriodo(p.id)} className={cx("px-3.5 py-2 rounded-full text-[12.5px] font-bold", periodo === p.id ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{p.label}</button>
+          ))}
+        </div>
+      </div>
+      <div className="bg-white rounded-2xl border border-bd shadow-card overflow-x-auto mb-4">
+        {loadingConsumo ? <div className="flex justify-center py-8"><span className="spinner" /></div> : (
+          <table className="w-full text-[13.5px]">
+            <thead>
+              <tr className="text-left text-muted text-[11.5px] font-semibold border-b border-bd">
+                <th className="px-4 py-3">Empresa</th>
+                <th className="px-4 py-3">Bajas</th>
+                <th className="px-4 py-3">Desgaste normal</th>
+                <th className="px-4 py-3">Daño / pinchadura / corte / otro</th>
+                <th className="px-4 py-3">$ consumido</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(consumo ? consumo.filas : []).map((f, i) => (
+                <tr key={f.id} className={i > 0 ? "border-t border-bd" : ""}>
+                  <td className="px-4 py-3 font-bold">{empresasMap[f.id] || f.id}</td>
+                  <td className="px-4 py-3">{f.bajas}</td>
+                  <td className="px-4 py-3">{f.desgaste}</td>
+                  <td className="px-4 py-3">{f.dano}</td>
+                  <td className="px-4 py-3">{formatMoneyGrouped(f.montoGrupos)}</td>
+                </tr>
+              ))}
+              {(!consumo || !consumo.filas.length) && <tr><td colSpan="5" className="px-4 py-6 text-center text-muted">Sin bajas registradas en este período.</td></tr>}
+            </tbody>
+          </table>
+        )}
+      </div>
+      <p className="text-[12px] text-muted mb-8">El monto en $ solo se calcula cuando se puede reconstruir el precio de compra del neumático dado de baja (por N° de fuego); las bajas sin esa trazabilidad se cuentan pero no aportan $.</p>
+
+      <p className="font-bold text-[16px] mb-3">Ahorro potencial estimado</p>
+      <Card className="mb-4">
+        <p className="text-[22px] font-extrabold">{ahorroPotencial != null ? formatMoney(ahorroPotencial, ahorroPotencialMoneda) : "—"}</p>
+        <p className="text-[12.5px] text-muted mt-2">Estimación: bajas por daño del período ({bajasDano}) × % de instructivo no seguido en promedio ({pctProm != null ? (100 - pctProm) + "%" : "sin datos"}) × monto promedio por baja del período. Es una aproximación orientativa, no un cálculo contable.</p>
+      </Card>
+    </div>
+  );
+}
+
+/* =====================================================================
+   SECCION 2 — COSTOS (copia exacta de CostosView de superadmin.html,
+   `filtro` reemplazado por `clienteId` fijo).
+===================================================================== */
+function BajasPorMesChart({ datos }) {
+  const canvasRef = React.useRef(null);
+  const chartRef = React.useRef(null);
+  useEffect(() => {
+    if (!window.Chart || !canvasRef.current) return;
+    if (chartRef.current) { chartRef.current.destroy(); chartRef.current = null; }
+    chartRef.current = new window.Chart(canvasRef.current.getContext("2d"), {
+      type: "bar",
+      data: {
+        labels: datos.map(d => d.mes),
+        datasets: [
+          { label: "Desgaste normal", data: datos.map(d => d.desgaste), backgroundColor: "#9CA3AF", stack: "s" },
+          { label: "Daño / otro", data: datos.map(d => d.dano), backgroundColor: "#EF4444", stack: "s" }
+        ]
+      },
+      options: { responsive: true, scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true } }, plugins: { legend: { position: "bottom" } } }
+    });
+    return () => { if (chartRef.current) { chartRef.current.destroy(); chartRef.current = null; } };
+  }, [datos]);
+  if (!window.Chart) return <p className="text-[12.5px] text-muted py-4">Chart.js no está disponible — mostrando solo la tabla de detalle.</p>;
+  return <div className="relative" style={{ height: 260 }}><canvas ref={canvasRef} /></div>;
+}
+function CostosView({ clienteId }) {
+  const [loading, setLoading] = useState(true);
+  const [cpkMarca, setCpkMarca] = useState([]);
+  const [bajasPorMes, setBajasPorMes] = useState([]);
+  const [topEquipos, setTopEquipos] = useState([]);
+  const [porBodega, setPorBodega] = useState([]);
+  const MESES_GRAFICO = 6;
+
+  useEffect(() => {
+    let cancel = false;
+    setLoading(true);
+    (async () => {
+      try {
+        const [cpk, meses, top, bodegas] = await Promise.all([
+          costosDb.fetchCpkPorMarca(clienteId),
+          costosDb.fetchBajasPorMes(clienteId, MESES_GRAFICO),
+          costosDb.fetchTopEquiposCostosos(clienteId, 5),
+          costosDb.fetchValorInventarioPorBodega(clienteId)
+        ]);
+        if (cancel) return;
+        setCpkMarca(cpk); setBajasPorMes(meses); setTopEquipos(top); setPorBodega(bodegas);
+      } catch (e) { console.error("No se pudo cargar Costos", e); }
+      if (!cancel) setLoading(false);
+    })();
+    return () => { cancel = true; };
+  }, [clienteId]);
+
+  const totalBodegasGrupos = sumPorMoneda(porBodega.flatMap(b => b.valorGrupos), "total");
+
+  if (loading) return <div className="flex justify-center py-16"><span className="spinner" /></div>;
+
+  return (
+    <div>
+      <h1 className="text-[26px] font-extrabold mb-6">Costos</h1>
+
+      <p className="font-bold text-[16px] mb-3">CPK por marca / modelo</p>
+      <div className="bg-white rounded-2xl border border-bd shadow-card overflow-x-auto mb-8">
+        <table className="w-full text-[13.5px]">
+          <thead>
+            <tr className="text-left text-muted text-[11.5px] font-semibold border-b border-bd">
+              <th className="px-4 py-3">Marca</th><th className="px-4 py-3">Modelo</th>
+              <th className="px-4 py-3">Cantidad</th><th className="px-4 py-3">Inversión estimada</th><th className="px-4 py-3">CPK</th>
+            </tr>
+          </thead>
+          <tbody>
+            {cpkMarca.map((g, i) => (
+              <tr key={g.marca + g.modelo} className={i > 0 ? "border-t border-bd" : ""}>
+                <td className="px-4 py-3 font-bold">{g.marca}</td>
+                <td className="px-4 py-3">{g.modelo}</td>
+                <td className="px-4 py-3">{g.cantidad}</td>
+                <td className="px-4 py-3">{formatMoney(g.inversion, g.moneda)}</td>
+                <td className="px-4 py-3">{g.cpk != null ? `${formatMoneyDecimal(g.cpk, g.moneda)}/km` : "Sin km"}</td>
+              </tr>
+            ))}
+            {!cpkMarca.length && <tr><td colSpan="5" className="px-4 py-6 text-center text-muted">Sin neumáticos montados con datos suficientes.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[12px] text-muted -mt-6 mb-8">Inversión estimada con el precio de referencia por marca (promedio de entradas valorizadas); el CPK usa el km total del equipo donde cada neumático está montado hoy como proxy.</p>
+
+      <p className="font-bold text-[16px] mb-3">Bajas por período (últimos {MESES_GRAFICO} meses)</p>
+      <Card className="mb-4">
+        <BajasPorMesChart datos={bajasPorMes} />
+      </Card>
+      <div className="bg-white rounded-2xl border border-bd shadow-card overflow-x-auto mb-8">
+        <table className="w-full text-[13.5px]">
+          <thead>
+            <tr className="text-left text-muted text-[11.5px] font-semibold border-b border-bd">
+              <th className="px-4 py-3">Mes</th><th className="px-4 py-3">Bajas</th>
+              <th className="px-4 py-3">Desgaste</th><th className="px-4 py-3">Daño</th><th className="px-4 py-3">Pérdida estimada</th>
+            </tr>
+          </thead>
+          <tbody>
+            {bajasPorMes.map((m, i) => (
+              <tr key={m.mes} className={i > 0 ? "border-t border-bd" : ""}>
+                <td className="px-4 py-3 font-bold">{m.mes}</td>
+                <td className="px-4 py-3">{m.desgaste + m.dano}</td>
+                <td className="px-4 py-3">{m.desgaste}</td>
+                <td className="px-4 py-3">{m.dano}</td>
+                <td className="px-4 py-3">{formatMoneyGrouped(m.perdidaGrupos)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <p className="font-bold text-[16px] mb-3">Top 5 equipos más costosos</p>
+      <div className="bg-white rounded-2xl border border-bd shadow-card overflow-x-auto mb-8">
+        <table className="w-full text-[13.5px]">
+          <thead>
+            <tr className="text-left text-muted text-[11.5px] font-semibold border-b border-bd">
+              <th className="px-4 py-3">Equipo</th><th className="px-4 py-3">Inversión en neumáticos</th><th className="px-4 py-3">Km</th><th className="px-4 py-3">CPK</th>
+            </tr>
+          </thead>
+          <tbody>
+            {topEquipos.map((e, i) => (
+              <tr key={e.equipoId} className={i > 0 ? "border-t border-bd" : ""}>
+                <td className="px-4 py-3 font-bold">{e.numero_interno ? `${e.numero_interno} · ` : ""}{e.patente}</td>
+                <td className="px-4 py-3">{formatMoney(e.inversion, e.moneda)}</td>
+                <td className="px-4 py-3">{e.km ? e.km.toLocaleString() : "Sin km"}</td>
+                <td className="px-4 py-3">{e.cpk != null ? `${formatMoneyDecimal(e.cpk, e.moneda)}/km` : "—"}</td>
+              </tr>
+            ))}
+            {!topEquipos.length && <tr><td colSpan="4" className="px-4 py-6 text-center text-muted">Sin neumáticos montados en equipos todavía.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      <p className="font-bold text-[16px] mb-3">Valor de inventario al cierre, por bodega</p>
+      <div className="bg-white rounded-2xl border border-bd shadow-card overflow-x-auto">
+        <table className="w-full text-[13.5px]">
+          <thead>
+            <tr className="text-left text-muted text-[11.5px] font-semibold border-b border-bd">
+              <th className="px-4 py-3">Bodega</th><th className="px-4 py-3">Cantidad</th><th className="px-4 py-3">Valor estimado</th>
+            </tr>
+          </thead>
+          <tbody>
+            {porBodega.map((b, i) => (
+              <tr key={b.bodega} className={i > 0 ? "border-t border-bd" : ""}>
+                <td className="px-4 py-3 font-bold">{b.label}</td>
+                <td className="px-4 py-3">{b.cantidad}</td>
+                <td className="px-4 py-3">{formatMoneyGrouped(b.valorGrupos)}</td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr className="border-t-2 border-bdstrong font-bold">
+              <td className="px-4 py-3">Total</td>
+              <td className="px-4 py-3">{porBodega.reduce((a, b) => a + b.cantidad, 0)}</td>
+              <td className="px-4 py-3">{formatMoneyGrouped(totalBodegasGrupos)}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/* =====================================================================
+   SECCION 3 — FLOTA (vista ejecutiva, sin detalle tecnico exacto)
+===================================================================== */
+const FLOTA_BADGE_INFO = {
+  verde: { icon: "🟢", label: "Operativo", color: "green" },
+  amarillo: { icon: "🟡", label: "Requiere atención", color: "amber" },
+  rojo: { icon: "🔴", label: "Requiere intervención", color: "red" }
+};
+async function fetchFlotaEstado(clienteId) {
+  const { data: equipos, error } = await sb.from("equipos").select("*").eq("cliente_id", clienteId).eq("activo", true).order("numero_interno");
+  if (error) throw error;
+  if (!equipos || !equipos.length) return [];
+  const ids = equipos.map(e => e.id_equipo);
+
+  const [{ data: alertas }, { data: auditorias }] = await Promise.all([
+    sb.from("alertas").select("equipo_id").eq("severidad", "rojo").eq("leida_admin", false).in("equipo_id", ids),
+    sb.from("auditorias").select("id_auditoria,equipo_id,fecha,creado_en").in("equipo_id", ids).order("fecha", { ascending: false }).order("creado_en", { ascending: false })
+  ]);
+
+  const alertasPorEquipo = {};
+  (alertas || []).forEach(a => { alertasPorEquipo[a.equipo_id] = (alertasPorEquipo[a.equipo_id] || 0) + 1; });
+
+  const ultimaAuditoriaPorEquipo = {};
+  (auditorias || []).forEach(a => { if (!ultimaAuditoriaPorEquipo[a.equipo_id]) ultimaAuditoriaPorEquipo[a.equipo_id] = a; });
+
+  const auditoriaIdsUltimas = Object.values(ultimaAuditoriaPorEquipo).map(a => a.id_auditoria);
+  const recetaPorAuditoria = {};
+  if (auditoriaIdsUltimas.length) {
+    const { data: recetas } = await sb.from("auditorias_receta").select("auditoria_id,estado").in("auditoria_id", auditoriaIdsUltimas);
+    (recetas || []).forEach(r => { recetaPorAuditoria[r.auditoria_id] = r.estado; });
+  }
+
+  return equipos.map(eq => {
+    const alertasCount = alertasPorEquipo[eq.id_equipo] || 0;
+    const ultima = ultimaAuditoriaPorEquipo[eq.id_equipo];
+    const estadoInstructivo = ultima ? recetaPorAuditoria[ultima.id_auditoria] : null;
+    let badge;
+    if (alertasCount > 0) badge = "rojo";
+    else if (estadoInstructivo === "pendiente" || estadoInstructivo === "parcial") badge = "amarillo";
+    else badge = "verde";
+    return { ...eq, badge };
+  });
+}
+function EquipoFlotaRow({ eq, onClick }) {
+  const info = FLOTA_BADGE_INFO[eq.badge];
+  return (
+    <button onClick={onClick} className="w-full bg-white rounded-2xl border border-bd shadow-card p-4 flex items-center justify-between gap-3 text-left">
+      <div className="min-w-0">
+        <p className="font-bold text-[14.5px] truncate">{eq.numero_interno ? `${eq.numero_interno} · ` : ""}{eq.patente}</p>
+        <p className="text-[12.5px] text-muted mt-0.5">{eq.kilometros != null ? eq.kilometros.toLocaleString("es-AR") + " km" : "Sin km"}</p>
+      </div>
+      <Badge color={info.color}>{info.icon} {info.label}</Badge>
+    </button>
+  );
+}
+/* Mapa simplificado: solo el color de cada posicion (sin PSI/mm/N° fuego). */
+function TireCircleSimple({ pos, filled, status, selected, onTap }) {
+  const styles = {
+    empty: "border-2 border-dashed border-[#D1D5DB] bg-[#F9FAFB]",
+    ok: "border-2 border-[#D1D5DB] bg-[#DCFCE7]",
+    atencion: "border-2 border-[#F59E0B] bg-[#FEF3C7]",
+    alerta: "border-2 border-[#EF4444] bg-[#FEE2E2]"
+  };
+  const key = !filled ? "empty" : (status || "ok");
+  return (
+    <button type="button" disabled={!filled} onClick={onTap}
+      className={cx("w-[46px] h-[46px] rounded-full flex items-center justify-center shrink-0 shadow-sm transition",
+        styles[key], selected && "ring-2 ring-ink")}>
+      <span className="text-[10px] font-bold opacity-60">P{pos}</span>
+    </button>
+  );
+}
+function MapaSimplificado({ cfg, porPosicion, colorDePosicion }) {
+  return (
+    <div className="space-y-5">
+      {cfg.rows.map(row => (
+        <div key={row.label} className={cx("relative", row.type === "auxilio" && "mt-3 pt-3 border-t border-dashed border-bdstrong")}>
+          <div className="flex items-center gap-3">
+            <span className="text-[12px] font-bold text-muted w-6 shrink-0">{row.label}</span>
+            <div className="flex-1 relative flex items-center justify-around">
+              <div className="absolute left-0 right-0 h-[1.5px] bg-[#E5E7EB]" />
+              {row.positions.map(pos => (
+                <div key={pos} className="relative z-10">
+                  <TireCircleSimple pos={pos} filled={!!porPosicion[pos]} status={colorDePosicion(pos)} />
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+function FlotaMapaTab({ equipo }) {
+  const [posiciones, setPosiciones] = useState(null);
+
+  useEffect(() => {
+    let cancel = false;
+    (async () => {
+      const { data: neumaticos } = await sb.from("neumaticos").select("*").eq("equipo_actual", equipo.id_equipo).eq("estado_actual", "en_uso");
+      const numerosFuego = (neumaticos || []).map(n => n.numero_fuego).filter(Boolean);
+      const mmPorFuego = {};
+      if (numerosFuego.length) {
+        const { data: ultimaAud } = await sb.from("auditorias").select("id_auditoria").eq("equipo_id", equipo.id_equipo).order("fecha", { ascending: false }).order("creado_en", { ascending: false }).limit(1);
+        if (ultimaAud && ultimaAud[0]) {
+          const { data: posAud } = await sb.from("auditoria_posiciones").select("numero_fuego,milimetros,psi,mm_borde_izq,mm_centro,mm_borde_der").eq("auditoria_id", ultimaAud[0].id_auditoria).in("numero_fuego", numerosFuego);
+          (posAud || []).forEach(p => { mmPorFuego[p.numero_fuego] = p; });
+        }
+      }
+      if (!cancel) setPosiciones((neumaticos || []).map(n => ({ ...n, aud: mmPorFuego[n.numero_fuego] || null })));
+    })();
+    return () => { cancel = true; };
+  }, [equipo.id_equipo]);
+
+  if (!equipo.configuracion_ejes && equipo.tipo !== "SEMI") {
+    return <p className="text-[13.5px] text-muted py-6">Configuración de ejes no definida</p>;
+  }
+  if (posiciones === null) return <div className="flex justify-center py-10"><span className="spinner" /></div>;
+
+  const cfg = axleConfigFor(equipo);
+  const porPosicion = {};
+  posiciones.forEach(p => { porPosicion[p.posicion_actual] = p; });
+
+  function evaluar(pos) {
+    const n = porPosicion[pos];
+    if (!n) return null;
+    const data = {
+      psi: n.psi_actual != null ? n.psi_actual : (n.aud ? n.aud.psi : null),
+      mm_borde_izq: n.aud ? n.aud.mm_borde_izq : null,
+      mm_centro: n.aud ? (n.aud.mm_centro != null ? n.aud.mm_centro : n.aud.milimetros) : null,
+      mm_borde_der: n.aud ? n.aud.mm_borde_der : null
+    };
+    return evaluarPosicion(cfg, DEFAULT_CFG, pos, equipo.tipo, data);
+  }
+  function colorDePosicion(pos) {
+    const ev = evaluar(pos);
+    return ev ? ev.status : "empty";
+  }
+  const posicionesAtencion = cfg.rows.flatMap(r => r.positions).filter(pos => {
+    const ev = evaluar(pos);
+    return ev && (ev.status === "atencion" || ev.status === "alerta");
+  });
+
+  return (
+    <div>
+      {posicionesAtencion.length > 0 && (
+        <div className="mb-4 rounded-2xl bg-[#FEF3C7] text-[#92400E] text-[13px] font-bold px-4 py-3">
+          ⚠ {posicionesAtencion.length} posición{posicionesAtencion.length !== 1 ? "es" : ""} requiere{posicionesAtencion.length !== 1 ? "n" : ""} atención
+        </div>
+      )}
+      <Card>
+        <MapaSimplificado cfg={cfg} porPosicion={porPosicion} colorDePosicion={colorDePosicion} />
+      </Card>
+      <div className="flex gap-4 mt-5 text-[12px] text-muted flex-wrap px-1">
+        <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full border-2 border-[#D1D5DB] bg-[#DCFCE7] inline-block" /> Verde</span>
+        <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full border-2 border-[#F59E0B] bg-[#FEF3C7] inline-block" /> Amarillo</span>
+        <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full border-2 border-[#EF4444] bg-[#FEE2E2] inline-block" /> Rojo</span>
+      </div>
+    </div>
+  );
+}
+// Resultado general de una auditoria (peor estado entre sus posiciones), sin
+// exponer PSI/mm/N° fuego — solo ok/atencion/alerta, para la vista ejecutiva.
+async function fetchUltimasAuditoriasResumen(equipo) {
+  const { data: auds } = await sb.from("auditorias").select("id_auditoria,fecha,numero_auditoria,bultero_id,creado_en").eq("equipo_id", equipo.id_equipo)
+    .order("fecha", { ascending: false }).order("creado_en", { ascending: false }).limit(3);
+  if (!auds || !auds.length) return [];
+  const cfg = axleConfigFor(equipo);
+  const mecanicoIds = [...new Set(auds.map(a => a.bultero_id).filter(Boolean))];
+  const mecanicosMap = {};
+  if (mecanicoIds.length) {
+    const { data: mecs } = await sb.from("usuarios").select("id,nombre,apellido").in("id", mecanicoIds);
+    (mecs || []).forEach(m => { mecanicosMap[m.id] = m; });
+  }
+  const resultados = await Promise.all(auds.map(async a => {
+    const { data: pos } = await sb.from("auditoria_posiciones").select("posicion,psi,milimetros,mm_borde_izq,mm_centro,mm_borde_der").eq("auditoria_id", a.id_auditoria);
+    let peor = "ok";
+    (pos || []).forEach(p => {
+      const ev = evaluarPosicion(cfg, DEFAULT_CFG, p.posicion, equipo.tipo, p);
+      if (ev.status === "alerta") peor = "alerta";
+      else if (ev.status === "atencion" && peor !== "alerta") peor = "atencion";
+    });
+    const mec = mecanicosMap[a.bultero_id];
+    return { ...a, resultado: peor, mecanicoNombre: mec ? `${mec.nombre} ${mec.apellido || ""}`.trim() : "-" };
+  }));
+  return resultados;
+}
+const RESULTADO_AUDITORIA_INFO = { ok: { label: "OK", color: "green" }, atencion: { label: "Atención", color: "amber" }, alerta: { label: "Alerta", color: "red" } };
+function FlotaUltimasAuditorias({ equipo }) {
+  const [items, setItems] = useState(null);
+  useEffect(() => {
+    let cancel = false;
+    fetchUltimasAuditoriasResumen(equipo).then(r => { if (!cancel) setItems(r); });
+    return () => { cancel = true; };
+  }, [equipo.id_equipo]);
+  if (items === null) return <div className="flex justify-center py-8"><span className="spinner" /></div>;
+  if (!items.length) return <p className="text-[13.5px] text-muted py-4">Sin auditorías registradas.</p>;
+  return (
+    <div className="bg-white rounded-2xl border border-bd shadow-card overflow-hidden">
+      {items.map((a, i) => (
+        <div key={a.id_auditoria} className={cx("flex items-center justify-between px-4 py-3", i > 0 && "border-t border-bd")}>
+          <div>
+            <p className="font-bold text-[13.5px]">{formatDateLong(a.fecha)}</p>
+            <p className="text-[12px] text-muted mt-0.5">{a.mecanicoNombre}</p>
+          </div>
+          <Badge color={RESULTADO_AUDITORIA_INFO[a.resultado].color}>{RESULTADO_AUDITORIA_INFO[a.resultado].label}</Badge>
+        </div>
+      ))}
+    </div>
+  );
+}
+function FlotaCostoOperativo({ equipo }) {
+  const [costo, setCosto] = useState(null);
+  useEffect(() => {
+    let cancel = false;
+    costosDb.fetchCpkEquipo(equipo).then(c => { if (!cancel) setCosto(c); }).catch(e => console.error("No se pudo cargar el costo del equipo", e));
+    return () => { cancel = true; };
+  }, [equipo.id_equipo]);
+  if (!costo) return <div className="flex justify-center py-8"><span className="spinner" /></div>;
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+      <KpiCard label="Inversión total en neumáticos" value={<MoneyGroupedStack grupos={costo.inversionGrupos} />} />
+      <KpiCard label="CPK del equipo" value={costo.cpk != null ? `${formatMoneyDecimal(costo.cpk, costo.moneda)}/km` : "Sin km"} />
+      <KpiCard label="Km recorridos totales" value={costo.km ? costo.km.toLocaleString("es-AR") + " km" : "0 km"} />
+    </div>
+  );
+}
+function FlotaEquipoDetalle({ equipo, onBack }) {
+  return (
+    <div>
+      <button onClick={onBack} className="flex items-center gap-2 text-[13.5px] font-bold text-muted mb-4"><Icon.back width="15" height="15" /> Flota</button>
+      <h1 className="text-[24px] font-extrabold mb-1">{equipo.numero_interno ? `${equipo.numero_interno} · ` : ""}{equipo.patente}</h1>
+      <p className="text-[13px] text-muted mb-6">{equipo.modelo || "Sin modelo registrado"} · {equipo.kilometros != null ? equipo.kilometros.toLocaleString("es-AR") + " km" : "Sin km"}</p>
+
+      <p className="font-bold text-[15px] mb-3">Mapa</p>
+      <div className="mb-8"><FlotaMapaTab equipo={equipo} /></div>
+
+      <p className="font-bold text-[15px] mb-3">Últimas 3 auditorías</p>
+      <div className="mb-8"><FlotaUltimasAuditorias equipo={equipo} /></div>
+
+      <p className="font-bold text-[15px] mb-3">Costo operativo del equipo</p>
+      <FlotaCostoOperativo equipo={equipo} />
+    </div>
+  );
+}
+function FlotaView({ clienteId }) {
+  const [equipos, setEquipos] = useState(null);
+  const [busqueda, setBusqueda] = useState("");
+  const [seleccionado, setSeleccionado] = useState(null);
+
+  useEffect(() => {
+    fetchFlotaEstado(clienteId).then(setEquipos).catch(e => { console.error("No se pudo cargar la flota", e); setEquipos([]); });
+  }, [clienteId]);
+
+  if (seleccionado) return <FlotaEquipoDetalle equipo={seleccionado} onBack={() => setSeleccionado(null)} />;
+  if (equipos === null) return <div className="flex justify-center py-16"><span className="spinner" /></div>;
+
+  const q = busqueda.trim().toLowerCase();
+  const filtrados = q ? equipos.filter(e => (e.patente || "").toLowerCase().includes(q) || String(e.numero_interno || "").toLowerCase().includes(q)) : equipos;
+
+  return (
+    <div>
+      <h1 className="text-[26px] font-extrabold mb-5">Flota</h1>
+      <div className="relative mb-5">
+        <Icon.search width="16" height="16" className="absolute left-4 top-1/2 -translate-y-1/2 text-muted" />
+        <TextInput className="pl-11" placeholder="Buscar por patente o número interno" value={busqueda} onChange={e => setBusqueda(e.target.value)} />
+      </div>
+      <div className="space-y-2">
+        {filtrados.map(eq => <EquipoFlotaRow key={eq.id_equipo} eq={eq} onClick={() => setSeleccionado(eq)} />)}
+        {!filtrados.length && <p className="text-[13.5px] text-muted py-6 text-center">Sin equipos para mostrar.</p>}
+      </div>
+    </div>
+  );
+}
+
+/* =====================================================================
+   SECCION 4 — USUARIOS (gestion de usuarios propios, rol='cliente')
+===================================================================== */
+const SUBTIPO_LABELS = { dueno: "Gerencia", operativo: "Operativo" };
+function UsuarioOperativoModal({ usuario, clienteId, onClose, onSaved, pushToast, usuariosExistentes }) {
+  const editando = !!usuario;
+  const [nombre, setNombre] = useState(usuario ? usuario.nombre : "");
+  const [apellido, setApellido] = useState(usuario ? (usuario.apellido || "") : "");
+  const [email, setEmail] = useState(usuario ? (usuario.email || "") : "");
+  const [usuarioLogin, setUsuarioLogin] = useState(usuario ? usuario.usuario : "");
+  const [password, setPassword] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function guardar() {
+    setError("");
+    if (!nombre.trim()) { setError("El nombre es obligatorio."); return; }
+    const usuarioTrim = usuarioLogin.trim();
+    if (!usuarioTrim) { setError("El usuario es obligatorio."); return; }
+    if (usuariosExistentes.some(u => u.usuario === usuarioTrim && (!editando || u.id !== usuario.id))) {
+      setError("Ya existe un usuario con ese nombre de usuario."); return;
+    }
+    if (!editando && !password) { setError("La contraseña es obligatoria."); return; }
+    setSaving(true);
+    try {
+      const payload = {
+        nombre: nombre.trim(), apellido: apellido.trim() || null, email: email.trim() || null,
+        usuario: usuarioTrim, rol: "cliente", subtipo: "operativo", cliente_id: clienteId
+      };
+      if (password) payload.password_hash = await sha256Hex(password);
+      if (editando) {
+        const { error: e1 } = await sb.from("usuarios").update(payload).eq("id", usuario.id);
+        if (e1) throw e1;
+        pushToast("✓ Usuario actualizado");
+      } else {
+        const { error: e1 } = await sb.from("usuarios").insert({ id: uuid(), ...payload, activo: true });
+        if (e1) throw e1;
+        pushToast("✓ Usuario operativo creado");
+      }
+      onSaved();
+    } catch (e) {
+      console.error("No se pudo guardar el usuario operativo", e);
+      setError(e.message || "No se pudo guardar el usuario.");
+    }
+    setSaving(false);
+  }
+
+  return (
+    <Modal title={editando ? "Editar usuario operativo" : "Nuevo usuario operativo"} onClose={onClose}>
+      <div className="space-y-4">
+        <Field label="Nombre" required><TextInput value={nombre} onChange={e => setNombre(e.target.value)} /></Field>
+        <Field label="Apellido"><TextInput value={apellido} onChange={e => setApellido(e.target.value)} /></Field>
+        <Field label="Email"><TextInput type="email" value={email} onChange={e => setEmail(e.target.value)} /></Field>
+        <Field label="Usuario" required><TextInput value={usuarioLogin} onChange={e => setUsuarioLogin(e.target.value)} /></Field>
+        <Field label="Contraseña" required={!editando} hint={editando ? "Dejar vacío para no cambiarla." : ""}>
+          <TextInput type="password" value={password} onChange={e => setPassword(e.target.value)} />
+        </Field>
+        {error && <p className="text-[13px] text-red-600 font-semibold">{error}</p>}
+        <Button className="w-full" disabled={saving} onClick={guardar}>{saving ? "Guardando…" : "Guardar"}</Button>
+      </div>
+    </Modal>
+  );
+}
+function UsuariosGerenciaView({ clienteId, currentUserId }) {
+  const [usuarios, setUsuarios] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [modal, setModal] = useState(null); // null | "nuevo" | usuario-obj
+  const [pushToast, toastNode] = useToasts();
+
+  async function cargar() {
+    setLoading(true);
+    const { data, error } = await sb.from("usuarios").select("*").eq("cliente_id", clienteId).eq("rol", "cliente").order("subtipo").order("nombre");
+    if (error) console.error("No se pudieron cargar los usuarios", error);
+    setUsuarios(data || []);
+    setLoading(false);
+  }
+  useEffect(() => { cargar(); }, [clienteId]);
+
+  async function toggleActivo(u) {
+    if (u.id === currentUserId) return; // no puede desactivarse a si mismo
+    const { error } = await sb.from("usuarios").update({ activo: !u.activo }).eq("id", u.id);
+    if (error) { console.error(error); return; }
+    pushToast(u.activo ? "✓ Usuario desactivado" : "✓ Usuario activado");
+    cargar();
+  }
+
+  if (loading) return <div className="flex justify-center py-16"><span className="spinner" /></div>;
+
+  return (
+    <div>
+      {toastNode}
+      <div className="flex items-center justify-between mb-5 flex-wrap gap-3">
+        <h1 className="text-[26px] font-extrabold">Usuarios</h1>
+        <Button className="h-11 px-4 text-[13.5px]" onClick={() => setModal("nuevo")}>+ Nuevo usuario operativo</Button>
+      </div>
+
+      <div className="bg-white rounded-2xl border border-bd shadow-card overflow-x-auto">
+        <table className="w-full text-[13.5px]">
+          <thead>
+            <tr className="text-left text-muted text-[11.5px] font-semibold border-b border-bd">
+              <th className="px-4 py-3">Nombre</th>
+              <th className="px-4 py-3">Usuario</th>
+              <th className="px-4 py-3">Tipo</th>
+              <th className="px-4 py-3">Estado</th>
+              <th className="px-4 py-3"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {usuarios.map((u, i) => (
+              <tr key={u.id} className={i > 0 ? "border-t border-bd" : ""}>
+                <td className="px-4 py-3 font-bold">{u.nombre} {u.apellido || ""}</td>
+                <td className="px-4 py-3 text-muted">{u.usuario}</td>
+                <td className="px-4 py-3"><Badge color={u.subtipo === "dueno" ? "black" : "gray"}>{SUBTIPO_LABELS[u.subtipo] || u.subtipo || "-"}</Badge></td>
+                <td className="px-4 py-3">
+                  {u.subtipo === "operativo" ? (
+                    <button onClick={() => toggleActivo(u)} disabled={u.id === currentUserId}>
+                      <Badge color={u.activo ? "green" : "red"}>{u.activo ? "Activo" : "Inactivo"}</Badge>
+                    </button>
+                  ) : (
+                    <Badge color={u.activo ? "green" : "red"}>{u.activo ? "Activo" : "Inactivo"}</Badge>
+                  )}
+                </td>
+                <td className="px-4 py-3 text-right">
+                  {u.subtipo === "operativo" && (
+                    <button onClick={() => setModal(u)} className="w-9 h-9 rounded-full hover:bg-[#F3F4F6] inline-flex items-center justify-center"><Icon.pencil width="15" height="15" /></button>
+                  )}
+                </td>
+              </tr>
+            ))}
+            {!usuarios.length && <tr><td colSpan="5" className="px-4 py-6 text-center text-muted">Sin usuarios registrados para esta empresa.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[12px] text-muted mt-3">Los usuarios de Gerencia son de solo lectura acá — no se pueden crear ni editar otros usuarios de gerencia.</p>
+
+      {(modal === "nuevo" || (modal && typeof modal === "object")) && (
+        <UsuarioOperativoModal usuario={typeof modal === "object" ? modal : null} clienteId={clienteId} usuariosExistentes={usuarios}
+          onClose={() => setModal(null)} pushToast={pushToast}
+          onSaved={() => { setModal(null); cargar(); }} />
+      )}
+    </div>
+  );
+}
+
+/* =====================================================================
+   SECCION 5 — PERFIL
+===================================================================== */
+function CambiarPasswordModal({ user, onClose, pushToast }) {
+  const [actual, setActual] = useState("");
+  const [nueva, setNueva] = useState("");
+  const [confirmar, setConfirmar] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function guardar() {
+    setError("");
+    if (!actual || !nueva || !confirmar) { setError("Completá los 3 campos."); return; }
+    if (nueva.length < 4) { setError("La nueva contraseña debe tener al menos 4 caracteres."); return; }
+    if (nueva !== confirmar) { setError("La confirmación no coincide con la nueva contraseña."); return; }
+    setSaving(true);
+    try {
+      const hashActual = await sha256Hex(actual);
+      if (hashActual !== user.password_hash) { setError("La contraseña actual es incorrecta."); setSaving(false); return; }
+      const hashNueva = await sha256Hex(nueva);
+      const { error: e } = await sb.from("usuarios").update({ password_hash: hashNueva }).eq("id", user.id);
+      if (e) throw e;
+      pushToast("✓ Contraseña actualizada");
+      onClose();
+    } catch (e) { console.error("No se pudo cambiar la contraseña", e); setError("No se pudo guardar. Intentá de nuevo."); }
+    setSaving(false);
+  }
+
+  return (
+    <Modal title="Cambiar contraseña" onClose={onClose}>
+      <div className="space-y-4">
+        <Field label="Contraseña actual" required><TextInput type="password" value={actual} onChange={e => setActual(e.target.value)} /></Field>
+        <Field label="Nueva contraseña" required><TextInput type="password" value={nueva} onChange={e => setNueva(e.target.value)} /></Field>
+        <Field label="Confirmar nueva contraseña" required><TextInput type="password" value={confirmar} onChange={e => setConfirmar(e.target.value)} /></Field>
+        {error && <p className="text-[12.5px] font-bold text-[#B91C1C]">{error}</p>}
+        <Button className="w-full" disabled={saving} onClick={guardar}>{saving ? <span className="spinner" /> : "Cambiar contraseña"}</Button>
+      </div>
+    </Modal>
+  );
+}
+function PerfilView({ user, onLogout }) {
+  const [confirming, setConfirming] = useState(false);
+  const [cambiarPassword, setCambiarPassword] = useState(false);
+  const [pushToast, toastNode] = useToasts();
+
+  return (
+    <div>
+      {toastNode}
+      <h1 className="text-[26px] font-extrabold mb-5">Perfil</h1>
+      <Card className="mb-6 max-w-md">
+        <div className="flex items-center gap-3">
+          <div className="w-12 h-12 rounded-full bg-[#F3F4F6] flex items-center justify-center"><Icon.user width="22" height="22" /></div>
+          <div>
+            <p className="font-bold text-[16px]">{user.nombre} {user.apellido || ""}</p>
+            <p className="text-[12.5px] text-muted">{user.email || "Sin email registrado"}</p>
+            <p className="text-[12.5px] text-muted">Usuario: {user.usuario}</p>
+          </div>
+        </div>
+      </Card>
+      <Button variant="subtle" className="w-full max-w-md mb-4" onClick={() => setCambiarPassword(true)}>Cambiar contraseña</Button>
+      <Button variant="danger" className="w-full max-w-md" onClick={() => setConfirming(true)}>Cerrar sesión</Button>
+
+      {confirming && (
+        <Confirm title="Cerrar sesión" desc="¿Seguro que querés cerrar tu sesión?"
+          onCancel={() => setConfirming(false)} onConfirm={onLogout} />
+      )}
+      {cambiarPassword && <CambiarPasswordModal user={user} pushToast={pushToast} onClose={() => setCambiarPassword(false)} />}
+    </div>
+  );
+}
+
+/* =====================================================================
+   NAV / SHELL
+===================================================================== */
+const CLIENTE_NAV = [
+  { id: "resumen", label: "Resumen", icon: Icon.home },
+  { id: "costos", label: "Costos", icon: Icon.dollar },
+  { id: "flota", label: "Flota", icon: Icon.truck },
+  { id: "usuarios", label: "Usuarios", icon: Icon.users },
+  { id: "perfil", label: "Perfil", icon: Icon.user }
+];
+function ClienteShell({ view, setView, empresaNombre, children }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const NavList = ({ onPick }) => (
+    <nav className="space-y-1">
+      {CLIENTE_NAV.map(it => (
+        <button key={it.id} onClick={() => { setView(it.id); if (onPick) onPick(); }}
+          className={cx("w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-[14.5px] font-bold text-left", view === it.id ? "bg-ink text-white" : "text-[#374151] hover:bg-[#F3F4F6]")}>
+          <it.icon width="19" height="19" />
+          {it.label}
+        </button>
+      ))}
+    </nav>
+  );
+  return (
+    <div className="min-h-screen md:flex">
+      <div className="hidden md:flex md:flex-col md:w-64 md:shrink-0 border-r border-bd p-5 sticky top-0 h-screen">
+        <div className="flex items-center gap-2 mb-1 px-1">
+          <div className="w-9 h-9 rounded-xl bg-ink flex items-center justify-center"><Icon.gauge width="18" height="18" className="text-white" /></div>
+          <span className="font-extrabold text-[16px]">MOSA TIRES</span>
+        </div>
+        <p className="text-[12px] text-muted px-1 mb-7">{empresaNombre || ""}</p>
+        <NavList />
+      </div>
+      <div className="flex-1 min-w-0 pb-20 md:pb-0">
+        <div className="sticky top-0 z-30 bg-white/90 backdrop-blur border-b border-bd px-5 py-3 flex items-center justify-between safe-top md:hidden">
+          <button className="w-9 h-9 rounded-full bg-[#F3F4F6] flex items-center justify-center" onClick={() => setMenuOpen(true)}><Icon.menu width="18" height="18" /></button>
+          <span className="font-extrabold text-[15px]">{empresaNombre || "MOSA TIRES"}</span>
+          <button onClick={() => setView("perfil")} className="w-9 h-9 rounded-full bg-[#F3F4F6] flex items-center justify-center"><Icon.user width="16" height="16" /></button>
+        </div>
+        <div className="px-5 py-6">{children}</div>
+      </div>
+      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-bd safe-bottom z-30 md:hidden">
+        <div className="flex">
+          {CLIENTE_NAV.map(it => {
+            const active = view === it.id;
+            return (
+              <button key={it.id} onClick={() => setView(it.id)} className="flex-1 flex flex-col items-center gap-1 py-2.5">
+                <it.icon width="22" height="22" className={active ? "text-ink" : "text-[#B0B3B8]"} />
+                <span className={cx("text-[10px] font-semibold", active ? "text-ink" : "text-[#B0B3B8]")}>{it.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      {menuOpen && (
+        <div className="fixed inset-0 z-50 md:hidden">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setMenuOpen(false)} />
+          <div className="absolute left-0 top-0 bottom-0 w-72 bg-white p-5 safe-top">
+            <div className="flex items-center justify-between mb-8">
+              <span className="font-extrabold text-[16px]">MOSA TIRES</span>
+              <button onClick={() => setMenuOpen(false)} className="w-9 h-9 rounded-full bg-[#F3F4F6] flex items-center justify-center"><Icon.close width="16" height="16" /></button>
+            </div>
+            <NavList onPick={() => setMenuOpen(false)} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* =====================================================================
+   APP CLIENTE GERENCIA
+===================================================================== */
+function ClienteGerenciaApp({ user, onLogout }) {
+  const [view, setView] = useState("resumen");
+  const [empresa, setEmpresa] = useState(null);
+
+  useEffect(() => { db.fetchCliente(user.cliente_id).then(setEmpresa).catch(() => {}); }, [user.cliente_id]);
+
+  let body;
+  if (view === "costos") body = <CostosView clienteId={user.cliente_id} />;
+  else if (view === "flota") body = <FlotaView clienteId={user.cliente_id} />;
+  else if (view === "usuarios") body = <UsuariosGerenciaView clienteId={user.cliente_id} currentUserId={user.id} />;
+  else if (view === "perfil") body = <PerfilView user={user} onLogout={onLogout} />;
+  else body = <ResumenView clienteId={user.cliente_id} empresaNombre={empresa ? empresa.nombre : ""} />;
+
+  return (
+    <ClienteShell view={view} setView={setView} empresaNombre={empresa ? empresa.nombre : ""}>
+      {body}
+    </ClienteShell>
+  );
+}
+
+/* =====================================================================
+   ENTRADA DE LA PAGINA — guarda de sesion (rol cliente + subtipo dueno)
+===================================================================== */
+function ClienteGerenciaPage() {
+  const [user, setUser] = useState(null);
+  const [checking, setChecking] = useState(true);
+
+  useEffect(() => {
+    const cached = getSession();
+    if (!cached || cached.rol !== "cliente" || cached.subtipo !== "dueno") { location.replace("index.html"); return; }
+    db.fetchUsuario(cached.id).then(fresh => {
+      if (!fresh || !fresh.activo || fresh.rol !== "cliente" || fresh.subtipo !== "dueno") { clearSession(); location.replace("index.html"); return; }
+      setSession(fresh); setUser(fresh); setChecking(false);
+    }).catch(() => { setUser(cached); setChecking(false); }); // sin conexion: seguir con la sesion cacheada
+  }, []);
+
+  function handleLogout() { clearSession(); location.href = "index.html"; }
+
+  if (checking || !user) return <div className="min-h-screen flex items-center justify-center"><span className="spinner" /></div>;
+  return <ClienteGerenciaApp user={user} onLogout={handleLogout} />;
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<ClienteGerenciaPage />);
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => { navigator.serviceWorker.register("./sw.js").catch(e => console.error("SW registration failed", e)); });
+}
+</script>
+</body>
+</html>

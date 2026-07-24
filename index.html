@@ -477,6 +477,7 @@ function App() {
     if (user.rol === "admin") location.replace("admin.html");
     else if (user.rol === "superadmin") location.replace("superadmin.html");
     else if (user.rol === "cliente" && user.subtipo === "operativo") location.replace("cliente-operativo.html");
+    else if (user.rol === "cliente" && user.subtipo === "dueno") location.replace("cliente-gerencia.html");
     else if (user.rol === "cliente") location.replace("cliente.html");
   }, [user]);
 
