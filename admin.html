@@ -3874,6 +3874,124 @@ function CorrelativoCard({ titulo, claveInicio, valorInicio, proximo, onGuardar 
   );
 }
 
+/* =====================================================================
+   CONFIGURACION · CATALOGO DE NEUMATICOS (marcas_modelos_cliente)
+   Usado por el mecanico en el modal de posicion de la auditoria (dropdown
+   de Marca/Modelo en vez de texto libre).
+===================================================================== */
+const TIPO_NEUMATICO_OPCIONES = [
+  { id: "direccional", label: "Direccional" }, { id: "traccional", label: "Traccional" },
+  { id: "eje_libre", label: "Eje libre" }, { id: "auxilio", label: "Auxilio" }
+];
+const TIPO_NEUMATICO_LABELS = Object.fromEntries(TIPO_NEUMATICO_OPCIONES.map(t => [t.id, t.label]));
+
+function CatalogoNeumaticoModal({ item, filtro, onClose, onSaved, pushToast }) {
+  const editando = !!item;
+  const [marca, setMarca] = useState(item ? item.marca : "");
+  const [modelo, setModelo] = useState(item ? item.modelo : "");
+  const [tipo, setTipo] = useState(item ? item.tipo : "traccional");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function guardar() {
+    setError("");
+    if (!marca.trim() || !modelo.trim()) { setError("Marca y modelo son obligatorios."); return; }
+    setSaving(true);
+    try {
+      const payload = { marca: marca.trim().toUpperCase(), modelo: modelo.trim().toUpperCase(), tipo };
+      if (editando) {
+        const { error: e } = await sb.from("marcas_modelos_cliente").update(payload).eq("id", item.id);
+        if (e) throw e;
+        pushToast("✓ Catálogo actualizado");
+      } else {
+        const { error: e } = await sb.from("marcas_modelos_cliente").insert({ ...payload, id: uuid(), cliente_id: filtro, activo: true });
+        if (e) throw e;
+        pushToast("✓ Marca/modelo agregado al catálogo");
+      }
+      onSaved();
+    } catch (e) { console.error("No se pudo guardar el catálogo", e); setError("No se pudo guardar. Intentá de nuevo."); }
+    setSaving(false);
+  }
+
+  return (
+    <Modal title={editando ? "Editar marca/modelo" : "Agregar marca/modelo"} onClose={onClose}>
+      <div className="space-y-4">
+        <Field label="Marca" required><TextInput value={marca} onChange={e => setMarca(e.target.value)} /></Field>
+        <Field label="Modelo" required><TextInput value={modelo} onChange={e => setModelo(e.target.value)} /></Field>
+        <Field label="Tipo" required>
+          <div className="flex gap-2 flex-wrap">
+            {TIPO_NEUMATICO_OPCIONES.map(t => (
+              <button key={t.id} type="button" onClick={() => setTipo(t.id)}
+                className={cx("px-3.5 h-10 rounded-2xl text-[13px] font-bold", tipo === t.id ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{t.label}</button>
+            ))}
+          </div>
+        </Field>
+        {error && <p className="text-[12.5px] font-bold text-[#B91C1C]">{error}</p>}
+        <Button className="w-full" disabled={saving} onClick={guardar}>{saving ? <span className="spinner" /> : (editando ? "Guardar cambios" : "Agregar")}</Button>
+      </div>
+    </Modal>
+  );
+}
+
+function CatalogoNeumaticosSection({ filtro, pushToast }) {
+  const [lista, setLista] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [modal, setModal] = useState(undefined);
+
+  function cargar() {
+    setLoading(true);
+    sb.from("marcas_modelos_cliente").select("*").eq("cliente_id", filtro).order("marca").order("modelo")
+      .then(({ data, error }) => { if (error) console.error(error); setLista(data || []); setLoading(false); });
+  }
+  useEffect(() => { cargar(); }, [filtro]);
+
+  async function toggleActivo(item) {
+    await sb.from("marcas_modelos_cliente").update({ activo: !item.activo }).eq("id", item.id);
+    setLista(ls => ls.map(x => x.id === item.id ? { ...x, activo: !item.activo } : x));
+    pushToast(item.activo ? "✓ Desactivado" : "✓ Activado");
+  }
+
+  return (
+    <div>
+      <div className="flex items-center justify-between gap-3 mb-2 flex-wrap">
+        <p className="font-bold text-[15px]">Catálogo de neumáticos</p>
+        <Button className="h-10 px-4 text-[13px]" onClick={() => setModal(null)}>+ Agregar</Button>
+      </div>
+      <p className="text-[11.5px] text-muted mb-3">Marcas y modelos disponibles para el mecánico al cargar una posición en la auditoría. Si está vacío, el mecánico completa esos campos con texto libre.</p>
+      {loading ? <div className="flex justify-center py-8"><span className="spinner" /></div> : (
+        <div className="bg-white rounded-2xl border border-bd shadow-card overflow-x-auto mb-6">
+          <table className="w-full text-[13.5px] min-w-[500px]">
+            <thead><tr className="text-left text-muted border-b border-bd">
+              <th className="font-semibold py-3 px-4">Marca</th><th className="font-semibold py-3 px-4">Modelo</th>
+              <th className="font-semibold py-3 px-4">Tipo</th><th className="font-semibold py-3 px-4">Estado</th><th className="font-semibold py-3 px-4"></th>
+            </tr></thead>
+            <tbody>
+              {lista.map(item => (
+                <tr key={item.id} className="border-b border-bd last:border-0">
+                  <td className="py-2.5 px-4 font-bold">{item.marca}</td><td className="py-2.5 px-4">{item.modelo}</td>
+                  <td className="py-2.5 px-4">{TIPO_NEUMATICO_LABELS[item.tipo] || item.tipo}</td>
+                  <td className="py-2.5 px-4"><Badge color={item.activo ? "green" : "gray"}>{item.activo ? "Activo" : "Inactivo"}</Badge></td>
+                  <td className="py-2.5 px-4">
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => setModal(item)} className="w-8 h-8 rounded-full bg-[#F3F4F6] flex items-center justify-center"><Icon.pencil width="13" height="13" /></button>
+                      <button onClick={() => toggleActivo(item)} className="text-[11.5px] font-bold text-ink px-2.5 py-1.5 rounded-full bg-[#F3F4F6] whitespace-nowrap">{item.activo ? "Desactivar" : "Activar"}</button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {!lista.length && <tr><td colSpan="5" className="text-center text-muted py-8">Catálogo vacío para esta empresa.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {modal !== undefined && (
+        <CatalogoNeumaticoModal item={modal} filtro={filtro} pushToast={pushToast}
+          onClose={() => setModal(undefined)} onSaved={() => { setModal(undefined); cargar(); }} />
+      )}
+    </div>
+  );
+}
+
 function ConfiguracionEmpresaView({ filtro, pushToast }) {
   const [config, setConfig] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -3980,6 +4098,8 @@ function ConfiguracionEmpresaView({ filtro, pushToast }) {
           </div>
         )}
       </Card>
+
+      <CatalogoNeumaticosSection filtro={filtro} pushToast={pushToast} />
 
       <Button variant="danger" className="w-full max-w-md" onClick={() => setRestaurando(true)}>Restaurar valores por defecto</Button>
       {restaurando && (

@@ -434,3 +434,46 @@ ALTER TABLE movimientos_bodega ADD COLUMN IF NOT EXISTS moneda TEXT NOT NULL DEF
   CHECK (moneda IN ('CLP', 'ARS', 'USD'));
 ALTER TABLE insumos ADD COLUMN IF NOT EXISTS moneda TEXT NOT NULL DEFAULT 'CLP'
   CHECK (moneda IN ('CLP', 'ARS', 'USD'));
+
+-- =====================================================================
+-- 28) Catalogo de marcas/modelos de neumaticos por cliente (Admin >
+-- Configuracion > Catalogo de neumaticos), usado por el modal de carga de
+-- posicion de la auditoria del mecanico para reemplazar Marca/Modelo de
+-- texto libre por un dropdown con las opciones del cliente. auditoria_posiciones
+-- no tenia columnas marca/modelo (solo se guardaban en el JSONB del
+-- instructivo, no en la fila de la posicion), asi que se agregan aca.
+-- =====================================================================
+CREATE TABLE IF NOT EXISTS marcas_modelos_cliente (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  cliente_id TEXT NOT NULL REFERENCES clientes(id_cliente),
+  marca TEXT NOT NULL,
+  modelo TEXT NOT NULL,
+  tipo TEXT NOT NULL CHECK (tipo IN ('direccional', 'traccional', 'eje_libre', 'auxilio')),
+  activo BOOLEAN NOT NULL DEFAULT true,
+  creado_en TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (cliente_id, marca, modelo)
+);
+GRANT SELECT, INSERT, UPDATE ON marcas_modelos_cliente TO anon;
+ALTER TABLE marcas_modelos_cliente ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS anon_all ON marcas_modelos_cliente;
+CREATE POLICY anon_all ON marcas_modelos_cliente FOR ALL TO anon USING (true) WITH CHECK (true);
+
+ALTER TABLE auditoria_posiciones ADD COLUMN IF NOT EXISTS marca TEXT;
+ALTER TABLE auditoria_posiciones ADD COLUMN IF NOT EXISTS modelo TEXT;
+
+-- Datos iniciales de La Portada, solo si el catalogo de ese cliente esta vacio.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM marcas_modelos_cliente WHERE cliente_id = 'la_portada') THEN
+    INSERT INTO marcas_modelos_cliente (cliente_id, marca, modelo, tipo) VALUES
+    ('la_portada','GOODYEAR','KMAX D','traccional'),
+    ('la_portada','GOODYEAR','KMAX S','traccional'),
+    ('la_portada','GOODYEAR','REGIONAL RHD II','direccional'),
+    ('la_portada','MICHELIN','X MULTI D','traccional'),
+    ('la_portada','MICHELIN','X MULTI Z','direccional'),
+    ('la_portada','BRIDGESTONE','R150','traccional'),
+    ('la_portada','TRIANGLE','TRT02','traccional'),
+    ('la_portada','WESLAKE','WTR69','traccional')
+    ON CONFLICT DO NOTHING;
+  END IF;
+END $$;

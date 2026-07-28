@@ -29,7 +29,8 @@ const DEFAULT_CFG = {
   mm_amarillo_tracto: 6, mm_amarillo_semi: 4, mm_rotacion_pct: 20,
   numero_auditoria_inicio: 1, numero_cambio_inicio: 1,
   formula_marca_fuego: "interno+semana+anio+posicion",
-  moneda: "CLP"
+  moneda: "CLP",
+  meses_vencimiento_auditoria: 6
 };
 
 const TOOLS_CHECKLIST = [
@@ -213,7 +214,8 @@ const db = {
     const { data, error } = await sb.from("config_cliente").select("*").eq("cliente_id", clienteId);
     if (error) throw error;
     const map = { ...DEFAULT_CFG };
-    (data || []).forEach(r => { const n = parseFloat(r.valor); map[r.clave] = isNaN(n) || r.clave === "formula_marca_fuego" ? r.valor : n; });
+    const CLAVES_TEXTO = ["formula_marca_fuego", "medida_default", "moneda"];
+    (data || []).forEach(r => { const n = parseFloat(r.valor); map[r.clave] = isNaN(n) || CLAVES_TEXTO.includes(r.clave) ? r.valor : n; });
     setCache(LS.cfg(clienteId), map);
     return map;
   },
@@ -240,8 +242,122 @@ const db = {
     const { data, error } = await sb.from("auditorias").select("equipo_id, fecha").eq("fecha", todayISO());
     if (error) throw error;
     return data || [];
+  },
+  // Estado de auditoria por equipo (para los 4 badges de la lista de equipos):
+  // ultima auditoria de cada equipo + estado de su auditorias_receta, mas si
+  // el equipo tiene una auditoria de HOY con receta en_proceso (excepcion del
+  // boton "Continuar hoja de cambio").
+  async fetchEstadoAuditorias(clienteId) {
+    const { data: eqs, error: eErr } = await sb.from("equipos").select("id_equipo").eq("cliente_id", clienteId).eq("activo", true);
+    if (eErr) throw eErr;
+    const equipoIds = (eqs || []).map(e => e.id_equipo);
+    if (!equipoIds.length) return {};
+    const { data: auds, error } = await sb.from("auditorias").select("id_auditoria,equipo_id,fecha").in("equipo_id", equipoIds);
+    if (error) throw error;
+    const porEquipo = {};
+    (auds || []).forEach(a => {
+      const cur = porEquipo[a.equipo_id];
+      if (!cur || (a.fecha || "") > (cur.fecha || "")) porEquipo[a.equipo_id] = a;
+    });
+    const idsUltimas = Object.values(porEquipo).map(a => a.id_auditoria);
+    let recetaPorAuditoria = {};
+    if (idsUltimas.length) {
+      const { data: recetas } = await sb.from("auditorias_receta").select("auditoria_id,estado").in("auditoria_id", idsUltimas);
+      (recetas || []).forEach(r => { recetaPorAuditoria[r.auditoria_id] = r.estado; });
+    }
+    const hoy = todayISO();
+    const idsHoy = (auds || []).filter(a => a.fecha === hoy).map(a => a.id_auditoria);
+    let enProcesoEquipos = {};
+    if (idsHoy.length) {
+      const { data: recetasHoy } = await sb.from("auditorias_receta").select("auditoria_id,estado").in("auditoria_id", idsHoy).eq("estado", "en_proceso");
+      const audMapHoy = {}; (auds || []).filter(a => a.fecha === hoy).forEach(a => { audMapHoy[a.id_auditoria] = a; });
+      (recetasHoy || []).forEach(r => { const a = audMapHoy[r.auditoria_id]; if (a) enProcesoEquipos[a.equipo_id] = true; });
+    }
+    const resultado = {};
+    Object.entries(porEquipo).forEach(([equipoId, a]) => {
+      resultado[equipoId] = { fecha: a.fecha, estadoReceta: recetaPorAuditoria[a.id_auditoria] || null, enProcesoHoy: !!enProcesoEquipos[equipoId] };
+    });
+    return resultado;
+  },
+  // Estado de auditoria de UN equipo (usado al elegirlo, para pintar el boton
+  // Auditoria en rojo si esta vencida/sin auditoria).
+  async fetchEstadoAuditoriaEquipo(equipoId) {
+    const { data: auds, error } = await sb.from("auditorias").select("id_auditoria,fecha").eq("equipo_id", equipoId).order("fecha", { ascending: false }).limit(1);
+    if (error) throw error;
+    if (!auds || !auds.length) return null;
+    const { data: receta } = await sb.from("auditorias_receta").select("estado").eq("auditoria_id", auds[0].id_auditoria).limit(1);
+    return { fecha: auds[0].fecha, estadoReceta: (receta && receta[0] && receta[0].estado) || null };
+  },
+  // Instructivo en curso (auditorias_receta.estado='en_proceso') de la auditoria
+  // de HOY de este equipo, para retomar la hoja de cambio sin pasar de nuevo
+  // por la auditoria.
+  async fetchRecetaEnProcesoHoy(equipoId) {
+    const { data, error } = await sb.from("auditorias_receta")
+      .select("id,auditoria_id,estado,posiciones_alerta,tareas_extra,auditorias!inner(equipo_id,fecha)")
+      .eq("auditorias.equipo_id", equipoId).eq("auditorias.fecha", todayISO()).eq("estado", "en_proceso")
+      .order("creado_en", { ascending: false }).limit(1);
+    if (error) throw error;
+    return (data && data[0]) || null;
+  },
+  // Tareas sin terminar de auditorias anteriores de este equipo (para el modal
+  // "Tenes tareas sin terminar" antes de mostrar el instructivo).
+  async fetchTareasPendientesAnteriores(equipoId, excluirAuditoriaId) {
+    let q = sb.from("auditorias_receta")
+      .select("id,auditoria_id,tareas_pendientes,posiciones_alerta,auditorias!inner(id_auditoria,fecha,equipo_id)")
+      .eq("auditorias.equipo_id", equipoId).in("estado", ["pendiente", "parcial"])
+      .order("fecha", { foreignTable: "auditorias", ascending: false }).limit(3);
+    if (excluirAuditoriaId) q = q.neq("auditoria_id", excluirAuditoriaId);
+    const { data, error } = await q;
+    if (error) throw error;
+    return data || [];
+  },
+  async marcarRecetasSinCambio(ids) {
+    if (!ids || !ids.length) return;
+    await sb.from("auditorias_receta").update({ estado: "sin_cambio" }).in("id", ids);
+  },
+  // Catalogo de marcas/modelos del cliente (modal de posicion de la auditoria
+  // y Admin > Configuracion > Catalogo de neumaticos). Incluye inactivos: el
+  // llamador filtra segun lo que necesite.
+  async fetchMarcasModelosCliente(clienteId) {
+    const { data, error } = await sb.from("marcas_modelos_cliente").select("*").eq("cliente_id", clienteId).order("marca").order("modelo");
+    if (error) throw error;
+    return data || [];
   }
 };
+
+/* =====================================================================
+   ESTADO DE AUDITORIA POR EQUIPO (4 badges de la lista de equipos)
+===================================================================== */
+function dentroDePeriodoAuditoria(fechaISO, meses) {
+  if (!fechaISO) return false;
+  const limite = new Date();
+  limite.setMonth(limite.getMonth() - (parseFloat(meses) || 0));
+  return new Date(fechaISO + "T00:00:00") >= limite;
+}
+function equipoAuditEstado(info, mesesVencimiento) {
+  if (!info) return "sin_auditoria";
+  if (dentroDePeriodoAuditoria(info.fecha, mesesVencimiento)) {
+    return info.estadoReceta === "completado" ? "al_dia" : "abierta";
+  }
+  return "vencida";
+}
+function equipoAuditColor(estado) {
+  return estado === "al_dia" ? "green" : estado === "abierta" ? "amber" : "red";
+}
+function equipoAuditLabel(estado) {
+  if (estado === "al_dia") return "Al día";
+  if (estado === "abierta") return "Aud. Abierta";
+  if (estado === "vencida") return "Aud. Vencida";
+  return "Sin Auditoría";
+}
+// Tareas incompletas de un instructivo (auditorias_receta), leidas desde su
+// posiciones_alerta.recomendaciones/tareas_extra (tareas_pendientes es solo un contador).
+function tareasIncompletasDeReceta(receta) {
+  const pa = (receta && receta.posiciones_alerta) || {};
+  const recs = (pa.recomendaciones || []).filter(r => !r.done).map(r => r.texto);
+  const extra = (pa.tareas_extra || []).filter(t => !t.done).map(t => t.texto);
+  return [...recs, ...extra];
+}
 
 /* =====================================================================
    ESTADO DE NEUMATICO (alertas en tiempo real)
@@ -376,9 +492,10 @@ async function enviarAuditoria(data) {
   for (const p of posiciones) {
     if (p.numero_fuego) await asegurarNeumatico(cliente_id, p.numero_fuego, cab.equipo_id, p.posicion, p);
   }
-  const rows = posiciones.filter(p => p.numero_fuego).map(p => ({
-    id: p.id, posicion: p.posicion, numero_fuego: p.numero_fuego,
+  const rows = posiciones.map(p => ({
+    id: p.id, posicion: p.posicion, numero_fuego: p.numero_fuego || null,
     milimetros: p.milimetros, psi: p.psi, mm_borde_izq: p.mm_borde_izq, mm_centro: p.mm_centro, mm_borde_der: p.mm_borde_der,
+    tipo_desgaste: p.tipo_desgaste || null, marca: p.marca || null, modelo: p.modelo || null,
     auditoria_id: cab.id_auditoria
   }));
   if (rows.length) { const { error: e2 } = await sb.from("auditoria_posiciones").insert(rows); if (e2) throw e2; }
@@ -716,18 +833,19 @@ async function construirYGuardarAuditoria({ user, clienteId, equipo, cfg, posDat
     const mmVals = [d.mm_borde_izq, d.mm_centro, d.mm_borde_der].map(v => parseFloat(v)).filter(v => !isNaN(v));
     const promedioMM = mmVals.length ? Math.round((mmVals.reduce((a, b) => a + b, 0) / mmVals.length) * 100) / 100 : null;
     return {
-      id: uuid(), posicion: d.posicion, numero_fuego: d.numero_fuego,
+      id: uuid(), posicion: d.posicion, numero_fuego: d.numero_fuego || null,
       milimetros: promedioMM, psi: d.psi ? parseInt(d.psi, 10) : null,
       mm_borde_izq: d.mm_borde_izq !== "" ? parseFloat(d.mm_borde_izq) : null,
       mm_centro: d.mm_centro !== "" ? parseFloat(d.mm_centro) : null,
-      mm_borde_der: d.mm_borde_der !== "" ? parseFloat(d.mm_borde_der) : null
+      mm_borde_der: d.mm_borde_der !== "" ? parseFloat(d.mm_borde_der) : null,
+      tipo_desgaste: d.tipo_desgaste || null, marca: d.marca || null, modelo: d.modelo || null
     };
   });
 
   // Recomendaciones reales (se excluye el placeholder "Todo en orden").
   const realRecs = recsInfo.recs.filter(r => r.key);
   const recomendacionesJSON = realRecs.map(r => ({ id: r.id, key: r.key, texto: r.texto, done: !!(checklist.find(c => c.id === r.id) || {}).done }));
-  const tareasExtraJSON = checklist.filter(c => c.extra).map(c => ({ texto: c.texto, done: c.done }));
+  const tareasExtraJSON = checklist.filter(c => c.extra).map(c => ({ texto: c.texto, done: c.done, origen: c.origen || null }));
   const totalTareas = realRecs.length;
 
   // Alerta amarilla por cada rotacion recomendada (desgaste desparejo entre

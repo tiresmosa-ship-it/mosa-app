@@ -509,10 +509,9 @@ function CheckDiario({ user, clienteId, onDone }) {
 /* =====================================================================
    PANTALLA 3 - SELECCION DE EQUIPO
 ===================================================================== */
-function SeleccionEquipo({ clienteId, onPick }) {
+function SeleccionEquipo({ clienteId, cfg, onPick }) {
   const [equipos, setEquipos] = useState(() => getCache(LS.equipos(clienteId), []));
-  const [alertasByEquipo, setAlertasByEquipo] = useState({});
-  const [auditadosHoy, setAuditadosHoy] = useState({});
+  const [estadosByEquipo, setEstadosByEquipo] = useState({});
   const [filter, setFilter] = useState("todos");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
@@ -524,21 +523,16 @@ function SeleccionEquipo({ clienteId, onPick }) {
         const eqs = await db.fetchEquipos(clienteId);
         if (cancel) return;
         setEquipos(eqs);
-        const alertas = await db.fetchAlertas(clienteId);
-        const map = {};
-        alertas.filter(a => !a.leida_mecanico && a.equipo_id).forEach(a => { map[a.equipo_id] = map[a.equipo_id] === "alerta" ? "alerta" : (a.severidad === "rojo" ? "alerta" : "atencion"); });
-        setAlertasByEquipo(map);
-        const hoy = await db.fetchAuditoriasHoy(clienteId);
-        const hm = {}; hoy.forEach(h => hm[h.equipo_id] = true);
-        setAuditadosHoy(hm);
+        const estados = await db.fetchEstadoAuditorias(clienteId);
+        if (!cancel) setEstadosByEquipo(estados);
       } catch (e) { console.error(e); } finally { if (!cancel) setLoading(false); }
     })();
     return () => { cancel = true; };
   }, [clienteId]);
 
   const filtered = equipos.filter(eq => {
-    if (filter === "alertas" && !alertasByEquipo[eq.id_equipo]) return false;
-    if (filter === "hoy" && !auditadosHoy[eq.id_equipo]) return false;
+    const estado = equipoAuditEstado(estadosByEquipo[eq.id_equipo], cfg.meses_vencimiento_auditoria);
+    if (filter !== "todos" && filter !== estado) return false;
     if (search) {
       const s = search.toLowerCase();
       if (!(eq.patente || "").toLowerCase().includes(s) && !(eq.numero_interno || "").toLowerCase().includes(s)) return false;
@@ -554,14 +548,14 @@ function SeleccionEquipo({ clienteId, onPick }) {
       </div>
       <TextInput placeholder="Buscar por patente o número interno" value={search} onChange={e => setSearch(e.target.value)} className="mb-4" />
       <div className="flex gap-2 mb-5 overflow-x-auto">
-        {[["todos", "Todos"], ["alertas", "Con alertas"], ["hoy", "Auditados hoy"]].map(([k, l]) => (
+        {[["todos", "Todos"], ["al_dia", "Al día"], ["abierta", "Aud. Abierta"], ["vencida", "Aud. Vencida"], ["sin_auditoria", "Sin Auditoría"]].map(([k, l]) => (
           <button key={k} onClick={() => setFilter(k)} className={cx("px-4 py-2 rounded-full text-[13px] font-bold whitespace-nowrap", filter === k ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{l}</button>
         ))}
       </div>
       {loading && <div className="flex justify-center py-10"><span className="spinner" /></div>}
       <div className="space-y-3">
         {filtered.map(eq => {
-          const st = alertasByEquipo[eq.id_equipo] || "ok";
+          const estado = equipoAuditEstado(estadosByEquipo[eq.id_equipo], cfg.meses_vencimiento_auditoria);
           return (
             <button key={eq.id_equipo} onClick={() => onPick(eq)} className="w-full text-left bg-white rounded-[20px] border border-bd shadow-card p-4 flex items-center gap-3">
               <div className="w-[52px] h-[52px] rounded-2xl bg-[#F3F4F6] flex items-center justify-center shrink-0"><Icon.truck width="26" height="26" /></div>
@@ -569,7 +563,7 @@ function SeleccionEquipo({ clienteId, onPick }) {
                 <p className="font-bold text-[15.5px] truncate">{eq.numero_interno ? `${eq.numero_interno} · ` : ""}{eq.patente}</p>
                 <p className="text-[12.5px] text-muted truncate">{eq.tipo === "SEMI" ? "Semirremolque" : `Tracto ${eq.configuracion_ejes || ""}`} · {eq.modelo || ""}</p>
               </div>
-              <Badge color={statusColor(st)}>{statusLabel(st)}</Badge>
+              <Badge color={equipoAuditColor(estado)}>{equipoAuditLabel(estado)}</Badge>
             </button>
           );
         })}
@@ -579,12 +573,14 @@ function SeleccionEquipo({ clienteId, onPick }) {
   );
 }
 
-function AccionEquipo({ equipo, onClose, onAuditoria, onCambio }) {
+function AccionEquipo({ equipo, estadoInfo, onClose, onAuditoria, onContinuarCambio }) {
   return (
     <Modal title={`${equipo.numero_interno || ""} · ${equipo.patente}`} onClose={onClose}>
       <div className="space-y-3">
-        <Button className="w-full" onClick={onAuditoria}><Icon.audit width="20" height="20" /> Auditoría</Button>
-        <Button variant="subtle" className="w-full" onClick={onCambio}><Icon.swap width="20" height="20" /> Hoja de cambio</Button>
+        <Button className="w-full" variant={estadoInfo && estadoInfo.vencida ? "danger" : "primary"} onClick={onAuditoria}><Icon.audit width="20" height="20" /> Auditoría</Button>
+        {estadoInfo && estadoInfo.enProcesoHoy && (
+          <Button variant="subtle" className="w-full" onClick={onContinuarCambio}><Icon.swap width="20" height="20" /> Continuar hoja de cambio</Button>
+        )}
       </div>
     </Modal>
   );
@@ -593,7 +589,7 @@ function AccionEquipo({ equipo, onClose, onAuditoria, onCambio }) {
 /* =====================================================================
    MAPA DE NEUMATICOS (compartido entre Auditoria / Instructivo / Cambio)
 ===================================================================== */
-function TireCircle({ pos, filled, status, mm, psi, fuego, selected, onTap, dragHandlers }) {
+function TireCircle({ pos, filled, status, mm, psi, fuego, selected, onTap, dragHandlers, desgasteIrregular }) {
   const styles = {
     empty: "border-2 border-dashed border-[#D1D5DB] bg-[#F9FAFB] text-muted",
     ok: "border-2 border-[#D1D5DB] bg-white text-ink",
@@ -604,8 +600,9 @@ function TireCircle({ pos, filled, status, mm, psi, fuego, selected, onTap, drag
   return (
     <button type="button" data-pos={pos} onClick={onTap} {...dragHandlers}
       style={dragHandlers ? { touchAction: "none" } : undefined}
-      className={cx("w-[54px] h-[54px] rounded-full flex flex-col items-center justify-center shrink-0 shadow-sm transition",
+      className={cx("relative w-[54px] h-[54px] rounded-full flex flex-col items-center justify-center shrink-0 shadow-sm transition",
         styles[key], selected && "ring-2 ring-ink anim-blink")}>
+      {desgasteIrregular && <span className="absolute -top-1.5 -right-1 text-[13px] leading-none">⚠️</span>}
       <span className="text-[9.5px] font-bold opacity-70 leading-none">P{pos}</span>
       {filled ? (
         <>
@@ -630,9 +627,10 @@ function AxleMap({ cfg, posData, selectedPos, onTap, getDragHandlers }) {
                 const d = posData[p] || {};
                 return (
                   <div key={p} className="relative z-10">
-                    <TireCircle pos={p} filled={!!d.numero_fuego} status={d.status} mm={d.minMM} psi={d.psi} fuego={d.numero_fuego}
+                    <TireCircle pos={p} filled={d.posicion != null} status={d.status} mm={d.minMM} psi={d.psi} fuego={d.numero_fuego}
                       selected={selectedPos === p} onTap={() => onTap(p)}
-                      dragHandlers={getDragHandlers ? getDragHandlers(p) : undefined} />
+                      dragHandlers={getDragHandlers ? getDragHandlers(p) : undefined}
+                      desgasteIrregular={d.tipo_desgaste === "irregular"} />
                   </div>
                 );
               })}
@@ -656,46 +654,142 @@ function GhostTire({ x, y }) {
 /* =====================================================================
    PANTALLA 4 - AUDITORIA
 ===================================================================== */
-function KmModal({ kmActual, km, setKm, onContinue }) {
+function KmModal({ equipo, clienteId, mecanicoId, km, setKm, onContinue }) {
+  const kmActual = equipo.kilometros;
   const kmNum = parseInt(km, 10);
-  const invalid = km !== "" && !isNaN(kmNum) && kmActual && kmNum < kmActual;
+  const menor = km !== "" && !isNaN(kmNum) && kmActual != null && kmNum < kmActual;
+  const igual = km !== "" && !isNaN(kmNum) && kmActual != null && kmNum === kmActual;
+  const [confirmandoIgual, setConfirmandoIgual] = useState(false);
+
+  function intentarContinuar() {
+    if (menor) return;
+    if (igual) { setConfirmandoIgual(true); return; }
+    onContinue();
+  }
+  function confirmarIgual() {
+    pushQueue({
+      id: uuid(), tipo: "alerta", clienteId, ts: Date.now(), data: {
+        id: uuid(), cliente_id: clienteId, equipo_id: equipo.id_equipo, mecanico_id: mecanicoId,
+        tipo: "km_repetidos", severidad: "amarillo", titulo: `KM repetidos — ${equipo.patente}`,
+        descripcion: `El mecánico ingresó los mismos km que el registro anterior: ${km}`,
+        leida_mecanico: true, leida_admin: false, leida_superadmin: false
+      }
+    });
+    syncQueue();
+    setConfirmandoIgual(false);
+    onContinue();
+  }
+
   return (
     <Modal title="Kilometraje actual">
-      <Field label="Kilómetros" required hint={kmActual ? `Último registrado: ${kmActual} km` : null}>
-        <TextInput type="number" inputMode="numeric" value={km} alert={invalid} onChange={e => setKm(e.target.value.replace(/[^0-9]/g, ""))} placeholder="Ej: 154200" />
+      <Field label="Kilómetros" required>
+        <TextInput type="number" inputMode="numeric" value={km} alert={menor} onChange={e => setKm(e.target.value.replace(/[^0-9]/g, ""))} placeholder="Ingresá los km actuales" />
       </Field>
-      {invalid && <p className="text-[12.5px] font-bold text-[#B91C1C] mt-2">Los km no pueden ser menores a los {kmActual} km ya registrados.</p>}
-      <Button className="w-full mt-5" disabled={!km || invalid} onClick={onContinue}>Continuar</Button>
+      {menor && <p className="text-[12.5px] font-bold text-[#B91C1C] mt-2">Los km ingresados son menores al último registro. Verificá el odómetro.</p>}
+      {igual && !confirmandoIgual && <p className="text-[12.5px] font-bold text-[#92400E] mt-2">⚠ Los km son iguales al último registro. ¿Estás seguro?</p>}
+      <Button className="w-full mt-5" disabled={!km || menor} onClick={intentarContinuar}>Continuar</Button>
+      {confirmandoIgual && (
+        <Confirm title="KM repetidos" desc={`Ingresaste ${km} km, igual al último registro. ¿Confirmás que es correcto?`}
+          onConfirm={confirmarIgual} onCancel={() => setConfirmandoIgual(false)} />
+      )}
+    </Modal>
+  );
+}
+
+function TareasPendientesModal({ pendientes, onSumar, onSoloHoy }) {
+  return (
+    <Modal title="Tenés tareas sin terminar">
+      <p className="text-[13.5px] text-sub mb-4">Tenés tareas sin terminar de auditorías anteriores de este equipo.</p>
+      <div className="space-y-3 mb-5">
+        {pendientes.map(p => {
+          const fecha = p.auditorias ? p.auditorias.fecha : null;
+          const tareas = tareasIncompletasDeReceta(p);
+          return (
+            <div key={p.id} className="bg-[#FEF3C7] rounded-2xl px-4 py-3">
+              <p className="font-bold text-[13.5px] text-[#92400E]">Auditoría {fecha ? formatDateLong(fecha) : "—"}</p>
+              <p className="text-[12.5px] text-[#92400E] mt-1">{tareas.length} tarea{tareas.length !== 1 ? "s" : ""} pendiente{tareas.length !== 1 ? "s" : ""}{tareas.length ? ": " + tareas.join(", ") : ""}</p>
+            </div>
+          );
+        })}
+      </div>
+      <p className="text-[14px] text-[#374151] mb-5">¿Querés sumar estas tareas al instructivo de hoy?</p>
+      <div className="space-y-3">
+        <Button className="w-full" onClick={onSumar}>Sí, sumar tareas</Button>
+        <Button variant="ghost" className="w-full" onClick={onSoloHoy}>No, solo las de hoy</Button>
+      </div>
     </Modal>
   );
 }
 
 function AuditoriaForm({ user, clienteId, equipo, cfg, onCancel, onGenerarInstructivo }) {
   const [frioConfirmado, setFrioConfirmado] = useState(false);
-  const [km, setKm] = useState(equipo.kilometros || "");
+  const [km, setKm] = useState("");
   const [kmSet, setKmSet] = useState(false);
   const axleCfg = axleConfigFor(equipo);
   const allPositions = axleCfg.rows.flatMap(r => r.positions);
   const [posData, setPosData] = useState({});
   const [editingPos, setEditingPos] = useState(null);
   const [generando, setGenerando] = useState(false);
+  const [pendientesAnteriores, setPendientesAnteriores] = useState(null); // null = sin chequear
   const startedAt = useRef(Date.now());
+
+  async function generarInstructivo() {
+    setGenerando(true);
+    try {
+      if (pendientesAnteriores === null) {
+        const pend = await db.fetchTareasPendientesAnteriores(equipo.id_equipo).catch(() => []);
+        if (pend && pend.length) { setPendientesAnteriores(pend); setGenerando(false); return; }
+      }
+      await onGenerarInstructivo(posData, axleCfg, km, startedAt.current, []);
+    } catch (e) { setGenerando(false); }
+  }
+  async function confirmarSumarTareas() {
+    const fecha = pendientesAnteriores[0] && pendientesAnteriores[0].auditorias ? pendientesAnteriores[0].auditorias.fecha : null;
+    const tareasExtra = [];
+    pendientesAnteriores.forEach(p => {
+      const f = p.auditorias ? p.auditorias.fecha : fecha;
+      tareasIncompletasDeReceta(p).forEach(texto => tareasExtra.push({ texto, origen: f }));
+    });
+    db.marcarRecetasSinCambio(pendientesAnteriores.map(p => p.id)).catch(e => console.error(e));
+    setPendientesAnteriores([]);
+    setGenerando(true);
+    try { await onGenerarInstructivo(posData, axleCfg, km, startedAt.current, tareasExtra); } catch (e) { setGenerando(false); }
+  }
+  async function confirmarSoloHoy() {
+    setPendientesAnteriores([]);
+    setGenerando(true);
+    try { await onGenerarInstructivo(posData, axleCfg, km, startedAt.current, []); } catch (e) { setGenerando(false); }
+  }
 
   function abrirPosicion(p) { setEditingPos(p); }
 
   function guardarPosicion(p, data) {
     const ev = evaluarPosicion(axleCfg, cfg, p, equipo.tipo, data);
+    if (data.marca_modelo_no_registrado) {
+      pushQueue({
+        id: uuid(), tipo: "alerta", clienteId, ts: Date.now(), data: {
+          id: uuid(), cliente_id: clienteId, equipo_id: equipo.id_equipo, mecanico_id: user.id,
+          tipo: "marca_modelo_no_registrado", severidad: "amarillo",
+          titulo: `Marca/modelo no registrado — ${equipo.patente} pos ${p}`,
+          descripcion: `El mecánico ingresó ${data.marca || ""} ${data.modelo || ""} que no está en el catálogo del cliente`,
+          posicion: p, numero_fuego: data.numero_fuego || null,
+          leida_mecanico: true, leida_admin: false, leida_superadmin: false
+        }
+      });
+      syncQueue();
+    }
     setPosData(s => ({ ...s, [p]: { ...data, posicion: p, status: ev.status, minMM: ev.minMM, motivos: ev.motivos } }));
     setEditingPos(null);
   }
 
-  const completas = allPositions.filter(p => posData[p] && posData[p].numero_fuego).length;
+  const completas = allPositions.filter(p => posData[p] && posData[p].posicion != null).length;
   const todasCompletas = completas === allPositions.length;
 
   if (!frioConfirmado) {
     return (
       <Modal title="Antes de empezar">
-        <p className="text-[14px] text-[#374151] mb-5">Las presiones de aire deben controlarse en frío. ¿Confirmás que los neumáticos están fríos?</p>
+        <p className="text-[14px] text-[#374151] mb-2">Las presiones de aire deben controlarse en frío. ¿Confirmás que los neumáticos están fríos?</p>
+        <p className="text-[14px] text-[#374151] mb-5">Recordá los mm mínimos de retiro: Tracto: {cfg.mm_minimo_tracto}mm · Semi: {cfg.mm_minimo_semi}mm · Auxilio: {cfg.mm_minimo_auxilio}mm</p>
         <div className="flex gap-3">
           <Button variant="subtle" className="flex-1" onClick={onCancel}>Cancelar</Button>
           <Button className="flex-1" onClick={() => setFrioConfirmado(true)}>Confirmar</Button>
@@ -704,7 +798,7 @@ function AuditoriaForm({ user, clienteId, equipo, cfg, onCancel, onGenerarInstru
     );
   }
   if (!kmSet) {
-    return <KmModal kmActual={equipo.kilometros} km={km} setKm={setKm} onContinue={() => setKmSet(true)} />;
+    return <KmModal equipo={equipo} clienteId={clienteId} mecanicoId={user.id} km={km} setKm={setKm} onContinue={() => setKmSet(true)} />;
   }
 
   return (
@@ -725,8 +819,7 @@ function AuditoriaForm({ user, clienteId, equipo, cfg, onCancel, onGenerarInstru
       <p className="text-[12.5px] text-muted px-1">{completas}/{allPositions.length} posiciones cargadas</p>
 
       <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-bd p-4 safe-bottom">
-        <Button className="w-full" disabled={!todasCompletas || generando}
-          onClick={async () => { setGenerando(true); try { await onGenerarInstructivo(posData, axleCfg, km, startedAt.current); } catch (e) { setGenerando(false); } }}>
+        <Button className="w-full" disabled={!todasCompletas || generando} onClick={generarInstructivo}>
           {generando ? <span className="spinner" /> : "Generar Instructivo"}
         </Button>
       </div>
@@ -739,18 +832,87 @@ function AuditoriaForm({ user, clienteId, equipo, cfg, onCancel, onGenerarInstru
           onSave={(data) => guardarPosicion(editingPos, data)}
         />
       )}
+
+      {pendientesAnteriores && pendientesAnteriores.length > 0 && (
+        <TareasPendientesModal pendientes={pendientesAnteriores} onSumar={confirmarSumarTareas} onSoloHoy={confirmarSoloHoy} />
+      )}
     </div>
   );
 }
 
+// Marca/Modelo del modal de posicion de la auditoria: dropdown con el catalogo
+// del cliente (marcas_modelos_cliente) en vez de texto libre. Si el catalogo
+// esta vacio para el cliente, cae a texto libre sin generar alertas. Si el
+// mecanico elige "+ Otra marca"/"+ Otro modelo", el campo se vuelve texto
+// libre y se marca noRegistrado=true para que el llamador genere la alerta
+// al guardar la posicion. Uso exclusivo del modal de auditoria — la hoja de
+// cambio (MarcaSelect / MontajeModal) no se toca.
+function MarcaModeloAuditoriaField({ clienteId, marca, modelo, onChange }) {
+  const [catalogo, setCatalogo] = useState(null); // null = cargando
+  const [otraMarca, setOtraMarca] = useState(false);
+  const [otroModelo, setOtroModelo] = useState(false);
+  useEffect(() => { db.fetchMarcasModelosCliente(clienteId).then(setCatalogo).catch(() => setCatalogo([])); }, [clienteId]);
+
+  if (catalogo === null) {
+    return (
+      <>
+        <Field label="Marca"><TextInput disabled placeholder="Cargando..." /></Field>
+        <Field label="Modelo"><TextInput disabled placeholder="Cargando..." /></Field>
+      </>
+    );
+  }
+  const activos = catalogo.filter(c => c.activo);
+  if (!activos.length) {
+    return (
+      <>
+        <Field label="Marca"><TextInput placeholder="Marca" value={marca} onChange={e => onChange(e.target.value, modelo, false)} /></Field>
+        <Field label="Modelo"><TextInput placeholder="Modelo" value={modelo} onChange={e => onChange(marca, e.target.value, false)} /></Field>
+      </>
+    );
+  }
+  const marcas = [...new Set(activos.map(c => c.marca))].sort();
+  const marcaEsOtra = otraMarca || (marca && !marcas.includes(marca));
+  const modelos = marca && !marcaEsOtra ? [...new Set(activos.filter(c => c.marca === marca).map(c => c.modelo))].sort() : [];
+  const modeloEsOtro = otroModelo || (modelo && !marcaEsOtra && modelos.length && !modelos.includes(modelo));
+
+  return (
+    <>
+      <Field label="Marca">
+        {marcaEsOtra ? (
+          <TextInput placeholder="Escribí la marca" value={marca} onChange={e => onChange(e.target.value, modelo, true)} />
+        ) : (
+          <Select value={marca} onChange={e => {
+            const v = e.target.value;
+            if (v === "__otra__") { setOtraMarca(true); onChange("", "", true); }
+            else { setOtraMarca(false); setOtroModelo(false); onChange(v, "", false); }
+          }}>
+            <option value="">Seleccionar</option>
+            {marcas.map(m => <option key={m} value={m}>{m}</option>)}
+            <option value="__otra__">+ Otra marca</option>
+          </Select>
+        )}
+      </Field>
+      <Field label="Modelo">
+        {marcaEsOtra || modeloEsOtro ? (
+          <TextInput placeholder="Escribí el modelo" value={modelo} disabled={!marca} onChange={e => onChange(marca, e.target.value, true)} />
+        ) : (
+          <Select value={modelo} disabled={!marca} onChange={e => {
+            const v = e.target.value;
+            if (v === "__otro__") { setOtroModelo(true); onChange(marca, "", true); }
+            else { setOtroModelo(false); onChange(marca, v, marcaEsOtra); }
+          }}>
+            <option value="">Seleccionar</option>
+            {modelos.map(m => <option key={m} value={m}>{m}</option>)}
+            <option value="__otro__">+ Otro modelo</option>
+          </Select>
+        )}
+      </Field>
+    </>
+  );
+}
+
 function PosicionModal({ pos, equipo, cfg, clienteId, axleCfg, existing, onClose, onSave }) {
-  const [form, setForm] = useState(() => existing || { numero_fuego: "", marca: "", medida: "", psi: "", mm_borde_izq: "", mm_centro: "", mm_borde_der: "" });
-  useEffect(() => {
-    if (existing) return;
-    generarNumeroFuegoSugerido(clienteId, cfg, equipo.numero_interno, pos, todayISO())
-      .then(sug => setForm(f => (f.numero_fuego ? f : { ...f, numero_fuego: sug })))
-      .catch(() => {});
-  }, []);
+  const [form, setForm] = useState(() => existing || { numero_fuego: "", marca: "", modelo: "", medida: cfg.medida_default || "", psi: "", mm_borde_izq: "", mm_centro: "", mm_borde_der: "", tipo_desgaste: "normal", marca_modelo_no_registrado: false });
   const ev = evaluarPosicion(axleCfg, cfg, pos, equipo.tipo, form);
   const mmAlert = ["mm_borde_izq", "mm_centro", "mm_borde_der"].some(k => form[k] !== "" && parseFloat(form[k]) < ev.mmMin);
   const mmWarn = ["mm_borde_izq", "mm_centro", "mm_borde_der"].some(k => form[k] !== "" && parseFloat(form[k]) < ev.mmAmarillo);
@@ -761,13 +923,14 @@ function PosicionModal({ pos, equipo, cfg, clienteId, axleCfg, existing, onClose
   return (
     <Modal title={`Posición P${pos}`} onClose={onClose}>
       <div className="space-y-4">
-        <Field label="N° de fuego" required hint="Sugerido automáticamente, podés modificarlo (solo números)">
-          <TextInput inputMode="numeric" value={form.numero_fuego} onChange={e => setForm(f => ({ ...f, numero_fuego: e.target.value.replace(/[^0-9]/g, "") }))} className="font-extrabold" />
+        <Field label="N° de fuego">
+          <TextInput inputMode="numeric" value={form.numero_fuego} onChange={e => setForm(f => ({ ...f, numero_fuego: e.target.value.replace(/[^0-9]/g, "") }))} className="font-extrabold" placeholder="N° de fuego" />
         </Field>
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Marca"><MarcaSelect value={form.marca} onChange={v => setForm(f => ({ ...f, marca: v }))} /></Field>
-          <Field label="Medida"><TextInput placeholder="295/80R22.5" value={form.medida} onChange={e => setForm(f => ({ ...f, medida: e.target.value }))} /></Field>
+          <MarcaModeloAuditoriaField clienteId={clienteId} marca={form.marca} modelo={form.modelo}
+            onChange={(marca, modelo, noRegistrado) => setForm(f => ({ ...f, marca, modelo, marca_modelo_no_registrado: noRegistrado }))} />
         </div>
+        <Field label="Medida"><TextInput placeholder="295/80R22.5" value={form.medida} onChange={e => setForm(f => ({ ...f, medida: e.target.value }))} /></Field>
         <Field label="PSI" required>
           <TextInput type="number" inputMode="numeric" value={form.psi} alert={psiAlert} warn={psiWarn}
             onChange={e => setForm(f => ({ ...f, psi: e.target.value }))} placeholder={`Objetivo ${ev.psiObjetivo}`} />
@@ -779,7 +942,20 @@ function PosicionModal({ pos, equipo, cfg, clienteId, axleCfg, existing, onClose
         </div>
         {(mmAlert || psiAlert) && <p className="text-[12.5px] font-bold text-[#B91C1C]">⚠ Valor por debajo del mínimo permitido</p>}
         {!mmAlert && !psiAlert && (mmWarn || psiWarn) && <p className="text-[12.5px] font-bold text-[#92400E]">⚠ Cerca del límite recomendado</p>}
-        <Button className="w-full" disabled={!form.numero_fuego || form.psi === "" || form.mm_borde_izq === "" || form.mm_centro === "" || form.mm_borde_der === ""}
+        <Field label="Tipo de desgaste" required>
+          <div className="flex gap-3">
+            {[["normal", "Normal"], ["irregular", "Irregular"]].map(([v, l]) => (
+              <button key={v} type="button" onClick={() => setForm(f => ({ ...f, tipo_desgaste: v }))}
+                className={cx("flex-1 rounded-2xl border px-4 py-3 flex items-center gap-2", form.tipo_desgaste === v ? "border-ink bg-[#F3F4F6]" : "border-bd bg-white")}>
+                <span className={cx("w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0", form.tipo_desgaste === v ? "border-ink" : "border-[#D1D5DB]")}>
+                  {form.tipo_desgaste === v && <span className="w-2.5 h-2.5 rounded-full bg-ink" />}
+                </span>
+                <span className="text-[14px] font-semibold">{l}</span>
+              </button>
+            ))}
+          </div>
+        </Field>
+        <Button className="w-full" disabled={form.psi === "" || form.mm_borde_izq === "" || form.mm_centro === "" || form.mm_borde_der === "" || !form.tipo_desgaste}
           onClick={() => onSave(form)}>Guardar posición</Button>
       </div>
     </Modal>
@@ -828,6 +1004,7 @@ function Instructivo({ equipo, axleCfg, posData, recsInfo, checklist, setCheckli
               {c.done && <Icon.check width="14" height="14" className="text-white" />}
             </span>
             <span className={cx("text-[14px] font-semibold flex-1", c.done && "strike")}>{c.texto}</span>
+            {c.origen && <Badge color="amber">De auditoría {formatDateLong(c.origen)}</Badge>}
             {c.extra && <Icon.pencil width="15" height="15" className="text-muted shrink-0" />}
           </button>
         ))}
@@ -910,7 +1087,7 @@ function InstructivoPendienteModal({ pendiente, onUsar, onLimpia }) {
 }
 
 function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, checklistInicial, kmInicial, recetaIdInicial, pendiente, onFinish, onCancel }) {
-  const [km, setKm] = useState(kmInicial || equipo.kilometros || "");
+  const [km, setKm] = useState(kmInicial || "");
   const [kmSet, setKmSet] = useState(!!kmInicial);
   const [posData, setPosData] = useState(() => ({ ...posDataInicial }));
   const [checklist, setChecklist] = useState(checklistInicial);
@@ -1111,7 +1288,7 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
           const extras = Array.isArray(pa.tareas_extra) ? pa.tareas_extra : (Array.isArray(pendienteDlg.tareas_extra) ? pendienteDlg.tareas_extra : []);
           const cl = [
             ...recs.map(r => ({ id: r.id || uuid(), texto: r.texto, done: !!r.done, extra: false })),
-            ...extras.map(t => ({ id: uuid(), texto: t.texto, done: !!t.done, extra: true }))
+            ...extras.map(t => ({ id: uuid(), texto: t.texto, done: !!t.done, extra: true, origen: t.origen || null }))
           ];
           setChecklist(cl);
           recetaId.current = pendienteDlg.id;
@@ -1127,7 +1304,7 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
   }
 
   if (!kmSet) {
-    return <KmModal kmActual={equipo.kilometros} km={km} setKm={setKm} onContinue={() => {
+    return <KmModal equipo={equipo} clienteId={clienteId} mecanicoId={user.id} km={km} setKm={setKm} onContinue={() => {
       // Entrada directa (sin venir de auditoria): persistir los km en el equipo.
       // Encolado (no llamada directa a sb) para no perder el dato si esta offline.
       pushQueue({ id: uuid(), tipo: "update_equipo_km", clienteId, ts: Date.now(), data: { equipo_id: equipo.id_equipo, kilometros: parseInt(km, 10) } });
@@ -1161,6 +1338,7 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
               {c.done && <Icon.check width="14" height="14" className="text-white" />}
             </span>
             <span className={cx("text-[14px] font-semibold flex-1", c.done && "strike")}>{c.texto}</span>
+            {c.origen && <Badge color="amber">De auditoría {formatDateLong(c.origen)}</Badge>}
             {c.extra && <Icon.pencil width="15" height="15" className="text-muted shrink-0" />}
           </button>
         ))}
@@ -1600,14 +1778,34 @@ function MecanicoApp({ user }) {
   } else if (flow && flow.stage === "accion") {
     body = (
       <>
-        <SeleccionEquipo clienteId={clienteId} onPick={(eq) => setFlow({ stage: "accion", equipo: eq })} />
-        <AccionEquipo equipo={flow.equipo} onClose={() => setFlow(null)}
+        <SeleccionEquipo clienteId={clienteId} cfg={cfg} onPick={async (eq) => {
+          let vencida = false, enProcesoHoy = false;
+          try {
+            const info = await db.fetchEstadoAuditoriaEquipo(eq.id_equipo);
+            const estado = equipoAuditEstado(info, cfg.meses_vencimiento_auditoria);
+            vencida = estado === "vencida" || estado === "sin_auditoria";
+          } catch (e) { console.error(e); }
+          try {
+            const receta = await db.fetchRecetaEnProcesoHoy(eq.id_equipo);
+            enProcesoHoy = !!receta;
+          } catch (e) { console.error(e); }
+          setFlow({ stage: "accion", equipo: eq, estadoInfo: { vencida, enProcesoHoy } });
+        }} />
+        <AccionEquipo equipo={flow.equipo} estadoInfo={flow.estadoInfo} onClose={() => setFlow(null)}
           onAuditoria={() => setFlow({ stage: "auditoria", equipo: flow.equipo })}
-          onCambio={async () => {
+          onContinuarCambio={async () => {
             const pd = await construirPosDataDesdeEquipo(flow.equipo.id_equipo);
-            let pend = null;
-            try { pend = await buscarInstructivoPendiente(flow.equipo.id_equipo); } catch (e) { console.error("No se pudo buscar instructivo pendiente", e); }
-            setFlow({ stage: "cambio", equipo: flow.equipo, axleCfg: axleConfigFor(flow.equipo), posData: pd, checklist: [], pendiente: pend });
+            let recetaEnProceso = null;
+            try { recetaEnProceso = await db.fetchRecetaEnProcesoHoy(flow.equipo.id_equipo); } catch (e) { console.error("No se pudo buscar el instructivo en curso", e); }
+            if (!recetaEnProceso) { setFlow(null); return; }
+            const pa = recetaEnProceso.posiciones_alerta || {};
+            const recs = Array.isArray(pa.recomendaciones) ? pa.recomendaciones : [];
+            const extras = Array.isArray(pa.tareas_extra) ? pa.tareas_extra : [];
+            const cl = [
+              ...recs.map(r => ({ id: r.id || uuid(), texto: r.texto, done: !!r.done, extra: false })),
+              ...extras.map(t => ({ id: uuid(), texto: t.texto, done: !!t.done, extra: true, origen: t.origen || null }))
+            ];
+            setFlow({ stage: "cambio", equipo: flow.equipo, axleCfg: axleConfigFor(flow.equipo), posData: pd, checklist: cl, recetaIdInicial: recetaEnProceso.id, pendiente: null });
           }} />
       </>
     );
@@ -1615,9 +1813,12 @@ function MecanicoApp({ user }) {
     body = (
       <AuditoriaForm user={user} clienteId={clienteId} equipo={flow.equipo} cfg={cfg}
         onCancel={() => setFlow(null)}
-        onGenerarInstructivo={async (posData, axleCfg, km, startedAt) => {
+        onGenerarInstructivo={async (posData, axleCfg, km, startedAt, tareasExtra) => {
           const recsInfo = generarRecomendaciones(posData, axleCfg, flow.equipo.tipo, cfg);
-          const checklist = recsInfo.recs.map(r => ({ id: r.id, texto: r.texto, done: false, extra: false }));
+          const checklist = [
+            ...recsInfo.recs.map(r => ({ id: r.id, texto: r.texto, done: false, extra: false })),
+            ...(tareasExtra || []).map(t => ({ id: uuid(), texto: t.texto, done: false, extra: true, origen: t.origen || null }))
+          ];
           let discrepanciasNeumaticos = [];
           try { discrepanciasNeumaticos = await compararNeumaticosAuditoria(clienteId, flow.equipo.id_equipo, posData); }
           catch (e) { console.error("No se pudo comparar neumáticos contra el sistema", e); }
@@ -1658,7 +1859,19 @@ function MecanicoApp({ user }) {
   } else if (tab === "perfil") {
     body = <PerfilScreen user={user} />;
   } else {
-    body = <SeleccionEquipo clienteId={clienteId} onPick={(eq) => setFlow({ stage: "accion", equipo: eq })} />;
+    body = <SeleccionEquipo clienteId={clienteId} cfg={cfg} onPick={async (eq) => {
+      let vencida = false, enProcesoHoy = false;
+      try {
+        const info = await db.fetchEstadoAuditoriaEquipo(eq.id_equipo);
+        const estado = equipoAuditEstado(info, cfg.meses_vencimiento_auditoria);
+        vencida = estado === "vencida" || estado === "sin_auditoria";
+      } catch (e) { console.error(e); }
+      try {
+        const receta = await db.fetchRecetaEnProcesoHoy(eq.id_equipo);
+        enProcesoHoy = !!receta;
+      } catch (e) { console.error(e); }
+      setFlow({ stage: "accion", equipo: eq, estadoInfo: { vencida, enProcesoHoy } });
+    }} />;
   }
 
   const showBottomNav = !flow || flow.stage === "accion";
