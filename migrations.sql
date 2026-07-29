@@ -369,6 +369,27 @@ CREATE UNIQUE INDEX IF NOT EXISTS cierre_dia_mecanico_fecha_turno_key ON cierre_
 ALTER TABLE discrepancias_inventario DROP CONSTRAINT IF EXISTS discrepancias_inventario_tipo_discrepancia_check;
 
 -- =====================================================================
+-- 24) Renombrado "baja" -> "retiro" y reestructuracion del flujo de salida.
+-- neumaticos.bodega ya no tiene CHECK (se saco en el bloque 20a via SQL
+-- corrido manualmente por el usuario, confirmado por curl: acepta
+-- retiro_desgaste/retiro_daño_otro/para_recauchar/nfu/en_equipo sin problema).
+-- Pero estado_actual y cambio_detalle.motivo_salida SI siguen bloqueando esos
+-- valores nuevos (confirmado por curl con 23514). Mismo criterio que los
+-- bloques 15/20b/21/23: se elimina el CHECK en vez de ampliarlo a mano cada
+-- vez que se agregue un estado/motivo nuevo.
+-- =====================================================================
+ALTER TABLE neumaticos DROP CONSTRAINT IF EXISTS neumaticos_estado_actual_check;
+ALTER TABLE cambio_detalle DROP CONSTRAINT IF EXISTS cambio_detalle_motivo_salida_check;
+
+-- =====================================================================
+-- 25) neumaticos.milimetros: al terminar una auditoria ("Generar
+-- Instructivo") el sistema ahora actualiza cada neumatico auditado con el
+-- psi/mm medidos (item 9 del flujo de montaje). psi ya tenia columna
+-- (psi_actual); milimetros no existia (confirmado por curl, PGRST204).
+-- =====================================================================
+ALTER TABLE neumaticos ADD COLUMN IF NOT EXISTS milimetros NUMERIC;
+
+-- =====================================================================
 -- 24) Admin > Maestros (equipos/mecanicos/proveedores/inventario/
 -- herramientas): permisos + RLS para herramientas_inventario y
 -- lotes_inventario, que existen en el proyecto pero todavia bloqueaban

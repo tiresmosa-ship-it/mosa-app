@@ -492,6 +492,23 @@ async function enviarAuditoria(data) {
   for (const p of posiciones) {
     if (p.numero_fuego) await asegurarNeumatico(cliente_id, p.numero_fuego, cab.equipo_id, p.posicion, p);
   }
+  // Item 9: al generar el instructivo, el neumatico auditado en cada posicion
+  // se actualiza con los datos medidos (psi/mm, y marca/modelo/medida si el
+  // mecanico los cambio) — con o sin discrepancia (caso B tambien actualiza;
+  // la aprobacion del Admin es sobre el CAMBIO de neumatico/posicion, no
+  // sobre estos valores medidos). No toca equipo_actual/posicion_actual: eso
+  // sigue resolviendose via resolverDiscrepanciaAuditoria cuando corresponde.
+  for (const p of posiciones) {
+    if (!p.numero_fuego) continue;
+    const upd = {};
+    if (p.psi != null) upd.psi_actual = p.psi;
+    if (p.milimetros != null) upd.milimetros = p.milimetros;
+    if (p.marca) upd.marca = p.marca;
+    if (p.modelo) upd.modelo = p.modelo;
+    if (Object.keys(upd).length) {
+      await sb.from("neumaticos").update(upd).eq("cliente_id", cliente_id).eq("numero_fuego", p.numero_fuego);
+    }
+  }
   const rows = posiciones.map(p => ({
     id: p.id, posicion: p.posicion, numero_fuego: p.numero_fuego || null,
     milimetros: p.milimetros, psi: p.psi, mm_borde_izq: p.mm_borde_izq, mm_centro: p.mm_centro, mm_borde_der: p.mm_borde_der,
@@ -586,11 +603,12 @@ async function insertAlerta(a) {
   if (error) console.error("No se pudo registrar alerta", error);
 }
 async function actualizarNeumaticoSale(clienteId, s) {
-  // destino = motivo de salida: transito | reparacion | baja.
-  // bodega = destino (baja/transito/reparacion), estado_actual valido del CHECK.
+  // destino = motivo de salida: transito | reparacion | retiro_desgaste | retiro_daño_otro.
+  // bodega y estado_actual quedan iguales al destino en los 4 casos (spec del
+  // flujo de salida/retiro reestructurado).
   const destino = s.motivo;
-  const bodega = destino === "baja" ? "baja" : destino; // 'baja' | 'transito' | 'reparacion'
-  const estado = destino === "baja" ? "baja" : "transito";
+  const bodega = destino;
+  const estado = destino;
   const { data: existente } = await sb.from("neumaticos").select("*").eq("cliente_id", clienteId).eq("numero_fuego", s.numero_fuego).maybeSingle();
   if (existente) {
     const { error } = await sb.from("neumaticos").update({ estado_actual: estado, bodega, equipo_actual: null, posicion_actual: null }).eq("id_neumatico", existente.id_neumatico);
@@ -740,7 +758,7 @@ function generarRecomendaciones(posData, axleCfg, equipoTipo, cfg) {
 }
 
 /* =====================================================================
-   HOJA DE CAMBIO — bodega, storage, motivos de baja
+   HOJA DE CAMBIO — bodega, storage, motivos de retiro
 ===================================================================== */
 async function fetchNeumaticosBodega(clienteId, bodega) {
   const { data, error } = await sb.from("neumaticos").select("*").eq("cliente_id", clienteId).eq("bodega", bodega).eq("activo", true).limit(200);
@@ -756,11 +774,9 @@ async function subirFotoCheckpoint(clienteId, pos, file) {
   return data.publicUrl;
 }
 
-const BAJA_MOTIVOS = [
+const RETIRO_MOTIVOS = [
   { slug: "desgaste_normal", label: "Desgaste normal" },
-  { slug: "pinchadura", label: "Pinchadura" },
-  { slug: "corte", label: "Corte" },
-  { slug: "dano_prematuro", label: "Daño prematuro" },
+  { slug: "dano", label: "Daño" },
   { slug: "otro", label: "Otro" }
 ];
 
@@ -924,13 +940,23 @@ async function buscarInstructivoPendiente(equipoId) {
   return data[0];
 }
 
-async function construirPosDataDesdeEquipo(equipoId) {
-  const { data, error } = await sb.from("neumaticos").select("*").eq("equipo_actual", equipoId).eq("activo", true);
+// Reconstruye el posData de la hoja de cambio a partir de la ULTIMA
+// AUDITORIA del equipo (item 8: "Continuar hoja de cambio" no debe arrancar
+// con el mapa vacio). cfg/axleCfg/equipo son opcionales: si se pasan, se
+// recalcula el color (status) de cada posicion con evaluarPosicion en vez de
+// dejarlo fijo en "ok" (gris) sin importar si el ultimo valor conocido esta
+// realmente fuera de rango.
+async function construirPosDataDesdeEquipo(equipoId, cfg, axleCfg, equipo) {
+  // bodega debe ser NULL para un neumatico realmente montado (asi lo dejan
+  // montarNeumatico/actualizarNeumaticoEntra). Filtrar por esto evita que una
+  // fila vieja con equipo_actual sin limpiar (dato sucio, bodega='transito'
+  // pero todavia apuntando a este equipo) le gane a la fila real en el mapa.
+  const { data, error } = await sb.from("neumaticos").select("*").eq("equipo_actual", equipoId).eq("activo", true).is("bodega", null);
   if (error || !data) return {};
   const map = {};
   data.forEach(n => {
     if (!n.posicion_actual) return;
-    map[n.posicion_actual] = { posicion: n.posicion_actual, numero_fuego: n.numero_fuego, marca: n.marca, medida: n.medida, psi: n.psi_actual != null ? n.psi_actual : null, status: "ok", minMM: null };
+    map[n.posicion_actual] = { posicion: n.posicion_actual, numero_fuego: n.numero_fuego, marca: n.marca, modelo: n.modelo, medida: n.medida, psi: n.psi_actual != null ? n.psi_actual : null, status: "ok", minMM: null, tipo_desgaste: null };
   });
   // Completar PSI/MM con los últimos valores conocidos de la auditoría más reciente
   // (neumaticos no guarda milimetros; psi_actual solo se setea al regular PSI).
@@ -939,7 +965,7 @@ async function construirPosDataDesdeEquipo(equipoId) {
       .eq("equipo_id", equipoId).order("fecha", { ascending: false }).order("creado_en", { ascending: false }).limit(1);
     if (ultimaAud && ultimaAud.length) {
       const numerosFuego = data.map(n => n.numero_fuego).filter(Boolean);
-      const { data: posAud } = await sb.from("auditoria_posiciones").select("numero_fuego,milimetros,psi")
+      const { data: posAud } = await sb.from("auditoria_posiciones").select("numero_fuego,milimetros,psi,tipo_desgaste")
         .eq("auditoria_id", ultimaAud[0].id_auditoria).in("numero_fuego", numerosFuego);
       if (posAud) {
         const porFuego = {};
@@ -949,10 +975,17 @@ async function construirPosDataDesdeEquipo(equipoId) {
           if (!ult) return;
           if (d.psi == null && ult.psi != null) d.psi = ult.psi;
           if (ult.milimetros != null) d.minMM = ult.milimetros;
+          if (ult.tipo_desgaste) d.tipo_desgaste = ult.tipo_desgaste;
         });
       }
     }
   } catch (e) { console.error("No se pudieron cargar los últimos valores de auditoría", e); }
+  if (cfg && axleCfg && equipo) {
+    Object.entries(map).forEach(([pos, d]) => {
+      const ev = evaluarPosicion(axleCfg, cfg, parseInt(pos, 10), equipo.tipo, { psi: d.psi, mm_borde_izq: d.minMM, mm_centro: d.minMM, mm_borde_der: d.minMM });
+      d.status = ev.status;
+    });
+  }
   return map;
 }
 
@@ -1024,7 +1057,7 @@ async function construirResumenJornada(mecanicoId, clienteId, fecha) {
   const reparaciones = intervs.filter(i => i.tipo === "reparacion").length;
 
   // Rotaciones: cambio_detalle tipo='sale' sin motivo_salida (las salidas por
-  // transito/reparacion/baja siempre tienen motivo_salida; solo las rotaciones no).
+  // transito/reparacion/retiro siempre tienen motivo_salida; solo las rotaciones no).
   let rotaciones = 0;
   const cambioIds = cams.map(c => c.id_cambio);
   if (cambioIds.length) {
@@ -1278,11 +1311,14 @@ const adminDb = {
     }).sort((x, y) => (x.fecha || "").localeCompare(y.fecha || ""));
   },
   async fetchStockRapido(clienteId) {
-    let q = sb.from("neumaticos").select("bodega").eq("activo", true);
+    let q = sb.from("neumaticos").select("bodega,equipo_actual").eq("activo", true);
     q = filtroCliente(q, clienteId);
     const { data } = await q;
-    const conteos = { nuevo: 0, transito: 0, recauchado: 0, reparacion: 0 };
-    (data || []).forEach(n => { if (conteos[n.bodega] !== undefined) conteos[n.bodega]++; });
+    const conteos = { nuevo: 0, transito: 0, reparacion: 0, retiro_desgaste: 0, para_recauchar: 0, recauchado: 0, en_equipo: 0, "retiro_daño_otro": 0, nfu: 0 };
+    (data || []).forEach(n => {
+      if (n.equipo_actual) conteos.en_equipo++;
+      else if (n.bodega && conteos[n.bodega] !== undefined) conteos[n.bodega]++;
+    });
     return conteos;
   },
   async fetchMecanicosEnJornada(clienteId) {

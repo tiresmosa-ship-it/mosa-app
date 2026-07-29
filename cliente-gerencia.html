@@ -343,7 +343,7 @@ const costosDb = {
     }).sort((a, b) => (a.nombre || "").localeCompare(b.nombre || ""));
   },
   async fetchConsumoPeriodo(clienteId, desde, hasta) {
-    let q = sb.from("movimientos_bodega").select("cliente_id,fecha,origen,numero_fuego").eq("categoria", "neumatico").eq("tipo", "salida").gte("fecha", desde).lte("fecha", hasta).like("origen", "baja_%");
+    let q = sb.from("movimientos_bodega").select("cliente_id,fecha,origen,numero_fuego").eq("categoria", "neumatico").eq("tipo", "salida").gte("fecha", desde).lte("fecha", hasta).in("origen", ["retiro_desgaste", "retiro_daño_otro"]);
     q = filtroCliente(q, clienteId);
     const { data } = await q;
     const bajas = data || [];
@@ -355,7 +355,7 @@ const costosDb = {
       if (!porCliente[b.cliente_id]) porCliente[b.cliente_id] = { id: b.cliente_id, bajas: 0, montoFilas: [], desgaste: 0, dano: 0 };
       const c = porCliente[b.cliente_id];
       c.bajas++;
-      if (b.origen === "baja_desgaste_normal") c.desgaste++; else c.dano++;
+      if (b.origen === "retiro_desgaste") c.desgaste++; else c.dano++;
       const entry = b.numero_fuego ? precioPorFuego[b.cliente_id + "|" + b.numero_fuego] : null;
       if (entry != null) { c.montoFilas.push(entry); montoFilasGlobal.push(entry); }
     });
@@ -409,7 +409,7 @@ const costosDb = {
   async fetchBajasPorMes(clienteId, meses) {
     const hoy = new Date();
     const desdeISO = new Date(hoy.getFullYear(), hoy.getMonth() - (meses - 1), 1).toISOString().slice(0, 10);
-    let q = sb.from("movimientos_bodega").select("cliente_id,fecha,origen,numero_fuego").eq("categoria", "neumatico").eq("tipo", "salida").gte("fecha", desdeISO).like("origen", "baja_%");
+    let q = sb.from("movimientos_bodega").select("cliente_id,fecha,origen,numero_fuego").eq("categoria", "neumatico").eq("tipo", "salida").gte("fecha", desdeISO).in("origen", ["retiro_desgaste", "retiro_daño_otro"]);
     q = filtroCliente(q, clienteId);
     const { data } = await q;
     const bajas = data || [];
@@ -422,7 +422,7 @@ const costosDb = {
     bajas.forEach(b => {
       const key = (b.fecha || "").slice(0, 7);
       if (!porMes[key]) return;
-      if (b.origen === "baja_desgaste_normal") porMes[key].desgaste++; else porMes[key].dano++;
+      if (b.origen === "retiro_desgaste") porMes[key].desgaste++; else porMes[key].dano++;
       const entry = b.numero_fuego ? precioPorFuego[b.cliente_id + "|" + b.numero_fuego] : null;
       if (entry != null) porMes[key].perdidaFilas.push(entry);
     });
@@ -454,9 +454,9 @@ const costosDb = {
     q = filtroCliente(q, clienteId);
     const { data } = await q;
     const precios = await fetchPrecioPorMarca(clienteId);
-    const labels = { nuevo: "Nuevo", transito: "Tránsito", recauchado: "Recauchado", reparacion: "En reparación", en_equipos: "En equipos", baja: "En baja", salidas: "Salida definitiva", otro: "Otro / sin bodega" };
-    const filas = { nuevo: [], transito: [], recauchado: [], reparacion: [], en_equipos: [], baja: [], salidas: [], otro: [] };
-    const cantidad = { nuevo: 0, transito: 0, recauchado: 0, reparacion: 0, en_equipos: 0, baja: 0, salidas: 0, otro: 0 };
+    const labels = { nuevo: "Nuevo", transito: "Tránsito", reparacion: "En reparación", retiro_desgaste: "Retiro Desgaste", para_recauchar: "Para Recauchar", recauchado: "Recauchado", en_equipos: "En equipos", "retiro_daño_otro": "Retiro Daño/Otro", nfu: "NFU", otro: "Otro / sin bodega" };
+    const filas = { nuevo: [], transito: [], reparacion: [], retiro_desgaste: [], para_recauchar: [], recauchado: [], en_equipos: [], "retiro_daño_otro": [], nfu: [], otro: [] };
+    const cantidad = { nuevo: 0, transito: 0, reparacion: 0, retiro_desgaste: 0, para_recauchar: 0, recauchado: 0, en_equipos: 0, "retiro_daño_otro": 0, nfu: 0, otro: 0 };
     (data || []).forEach(n => {
       const key = n.equipo_actual ? "en_equipos" : (filas[n.bodega] !== undefined ? n.bodega : "otro");
       const p = precioDeMarca(precios, n.marca);
@@ -548,7 +548,7 @@ function ResumenView({ clienteId, empresaNombre }) {
       <h1 className="text-[26px] font-extrabold mb-4">Resumen</h1>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
         <KpiCard label="Inventario total valorizado" value={<MoneyGroupedStack grupos={totalInventarioGrupos} />} />
-        <KpiCard label={`Consumo (${PERIODOS_CONSUMO.find(p => p.id === periodo).label.toLowerCase()})`} value={consumo ? `${consumo.totalBajas} baja${consumo.totalBajas !== 1 ? "s" : ""}` : "—"} />
+        <KpiCard label={`Consumo (${PERIODOS_CONSUMO.find(p => p.id === periodo).label.toLowerCase()})`} value={consumo ? `${consumo.totalBajas} retiro${consumo.totalBajas !== 1 ? "s" : ""}` : "—"} />
         <KpiCard label="CPK promedio" value={cpkProm && cpkProm.length ? cpkProm.map(g => `${formatMoneyDecimal(g.cpk, g.moneda)}/km`).join(" · ") : "Sin km registrados"} />
         <KpiCard label="% instructivo seguido prom." value={pctProm != null ? pctProm + "%" : "—"} />
       </div>
@@ -592,7 +592,7 @@ function ResumenView({ clienteId, empresaNombre }) {
             <thead>
               <tr className="text-left text-muted text-[11.5px] font-semibold border-b border-bd">
                 <th className="px-4 py-3">Empresa</th>
-                <th className="px-4 py-3">Bajas</th>
+                <th className="px-4 py-3">Retiros</th>
                 <th className="px-4 py-3">Desgaste normal</th>
                 <th className="px-4 py-3">Daño / pinchadura / corte / otro</th>
                 <th className="px-4 py-3">$ consumido</th>
@@ -608,17 +608,17 @@ function ResumenView({ clienteId, empresaNombre }) {
                   <td className="px-4 py-3">{formatMoneyGrouped(f.montoGrupos)}</td>
                 </tr>
               ))}
-              {(!consumo || !consumo.filas.length) && <tr><td colSpan="5" className="px-4 py-6 text-center text-muted">Sin bajas registradas en este período.</td></tr>}
+              {(!consumo || !consumo.filas.length) && <tr><td colSpan="5" className="px-4 py-6 text-center text-muted">Sin retiros registrados en este período.</td></tr>}
             </tbody>
           </table>
         )}
       </div>
-      <p className="text-[12px] text-muted mb-8">El monto en $ solo se calcula cuando se puede reconstruir el precio de compra del neumático dado de baja (por N° de fuego); las bajas sin esa trazabilidad se cuentan pero no aportan $.</p>
+      <p className="text-[12px] text-muted mb-8">El monto en $ solo se calcula cuando se puede reconstruir el precio de compra del neumático retirado (por N° de fuego); los retiros sin esa trazabilidad se cuentan pero no aportan $.</p>
 
       <p className="font-bold text-[16px] mb-3">Ahorro potencial estimado</p>
       <Card className="mb-4">
         <p className="text-[22px] font-extrabold">{ahorroPotencial != null ? formatMoney(ahorroPotencial, ahorroPotencialMoneda) : "—"}</p>
-        <p className="text-[12.5px] text-muted mt-2">Estimación: bajas por daño del período ({bajasDano}) × % de instructivo no seguido en promedio ({pctProm != null ? (100 - pctProm) + "%" : "sin datos"}) × monto promedio por baja del período. Es una aproximación orientativa, no un cálculo contable.</p>
+        <p className="text-[12.5px] text-muted mt-2">Estimación: retiros por daño del período ({bajasDano}) × % de instructivo no seguido en promedio ({pctProm != null ? (100 - pctProm) + "%" : "sin datos"}) × monto promedio por retiro del período. Es una aproximación orientativa, no un cálculo contable.</p>
       </Card>
     </div>
   );
@@ -710,7 +710,7 @@ function CostosView({ clienteId }) {
       </div>
       <p className="text-[12px] text-muted -mt-6 mb-8">Inversión estimada con el precio de referencia por marca (promedio de entradas valorizadas); el CPK usa el km total del equipo donde cada neumático está montado hoy como proxy.</p>
 
-      <p className="font-bold text-[16px] mb-3">Bajas por período (últimos {MESES_GRAFICO} meses)</p>
+      <p className="font-bold text-[16px] mb-3">Retiros por período (últimos {MESES_GRAFICO} meses)</p>
       <Card className="mb-4">
         <BajasPorMesChart datos={bajasPorMes} />
       </Card>
@@ -718,7 +718,7 @@ function CostosView({ clienteId }) {
         <table className="w-full text-[13.5px]">
           <thead>
             <tr className="text-left text-muted text-[11.5px] font-semibold border-b border-bd">
-              <th className="px-4 py-3">Mes</th><th className="px-4 py-3">Bajas</th>
+              <th className="px-4 py-3">Mes</th><th className="px-4 py-3">Retiros</th>
               <th className="px-4 py-3">Desgaste</th><th className="px-4 py-3">Daño</th><th className="px-4 py-3">Pérdida estimada</th>
             </tr>
           </thead>

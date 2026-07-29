@@ -553,11 +553,16 @@ function DashboardView({ empresaCtl, onAbrirMecanico }) {
       </div>
 
       <p className="font-bold text-[16px] mb-3">Stock rápido</p>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 mb-8">
         <KpiCard label="Nuevos" value={stock ? stock.nuevo : null} />
         <KpiCard label="Tránsito" value={stock ? stock.transito : null} />
-        <KpiCard label="Recauchados" value={stock ? stock.recauchado : null} />
         <KpiCard label="En reparar" value={stock ? stock.reparacion : null} />
+        <KpiCard label="Retiro Desgaste" value={stock ? stock.retiro_desgaste : null} />
+        <KpiCard label="Para Recauchar" value={stock ? stock.para_recauchar : null} />
+        <KpiCard label="Recauchados" value={stock ? stock.recauchado : null} />
+        <KpiCard label="En equipo" value={stock ? stock.en_equipo : null} />
+        <KpiCard label="Retiro Daño/Otro" value={stock ? stock["retiro_daño_otro"] : null} />
+        <KpiCard label="NFU" value={stock ? stock.nfu : null} />
       </div>
 
       <p className="font-bold text-[16px] mb-3">Mecánicos en jornada</p>
@@ -2228,15 +2233,17 @@ function ProveedoresMaestroView({ empresaCtl, onBack }) {
 ===================================================================== */
 const BODEGA_BUCKETS = [
   { id: "nuevo", label: "Nuevos" }, { id: "transito", label: "Tránsito" },
-  { id: "recauchado", label: "Recauchado" }, { id: "en_equipo", label: "En equipo" },
-  { id: "reparacion", label: "En reparar" }, { id: "baja", label: "Bajas" }
+  { id: "reparacion", label: "Reparación" }, { id: "retiro_desgaste", label: "Retiro Desgaste" },
+  { id: "para_recauchar", label: "Para Recauchar" }, { id: "recauchado", label: "Recauchados" },
+  { id: "en_equipo", label: "En equipo" }, { id: "retiro_daño_otro", label: "Retiro Daño/Otro" },
+  { id: "nfu", label: "NFU" }
 ];
 async function fetchBodegaCounts(clienteId) {
   let q = sb.from("neumaticos").select("bodega,equipo_actual").eq("activo", true);
   q = filtroCliente(q, clienteId);
   const { data, error } = await q;
   if (error) throw error;
-  const counts = { nuevo: 0, transito: 0, recauchado: 0, en_equipo: 0, reparacion: 0, baja: 0 };
+  const counts = { nuevo: 0, transito: 0, reparacion: 0, retiro_desgaste: 0, para_recauchar: 0, recauchado: 0, en_equipo: 0, "retiro_daño_otro": 0, nfu: 0 };
   (data || []).forEach(n => {
     if (n.equipo_actual) counts.en_equipo++;
     else if (n.bodega && counts[n.bodega] != null) counts[n.bodega]++;
@@ -2492,37 +2499,56 @@ function EntradaNeumaticosModal({ filtro, proveedores, onClose, onSaved, pushToa
     </Modal>
   );
 }
-function PaseBajasSalidasSeccion({ filtro, pushToast, onCambio }) {
+// Trae, para una lista de numero_fuego, el ultimo valor relevante de una
+// tabla relacionada (cambio_detalle.milimetros o alertas.descripcion) —
+// se usa para mostrar "MM retiro"/"Motivo" en los checklists de abajo, dato
+// que no vive en la propia fila de neumaticos. order+reduce en JS porque
+// PostgREST no tiene "distinct on" via REST.
+async function fetchUltimoPorFuego(tabla, campo, filtroExtra, numerosFuego) {
+  if (!numerosFuego.length) return {};
+  let q = sb.from(tabla).select(`numero_fuego,${campo},creado_en`).in("numero_fuego", numerosFuego).order("creado_en", { ascending: false });
+  Object.entries(filtroExtra).forEach(([k, v]) => { q = q.eq(k, v); });
+  const { data } = await q;
+  const map = {};
+  (data || []).forEach(d => { if (map[d.numero_fuego] === undefined) map[d.numero_fuego] = d[campo]; });
+  return map;
+}
+function diasDesde(fechaISO) {
+  if (!fechaISO) return null;
+  const ms = Date.now() - new Date(fechaISO + "T00:00:00").getTime();
+  return Math.floor(ms / 86400000);
+}
+function ChecklistBodegaSeccion({ filtro, pushToast, onCambio, bodegaOrigen, columnas, sinDatosLabel, botonLabel, tituloConfirm, descConfirm, toastLabel, requiereJustificacion, aplicar }) {
   const [lista, setLista] = useState([]);
+  const [extra, setExtra] = useState({});
   const [sel, setSel] = useState({});
   const [loading, setLoading] = useState(true);
   const [confirmando, setConfirmando] = useState(false);
   const [justificacion, setJustificacion] = useState("");
   const [saving, setSaving] = useState(false);
 
-  function cargar() {
+  async function cargar() {
     setLoading(true);
-    let q = sb.from("neumaticos").select("*").eq("bodega", "baja").eq("activo", true);
+    let q = sb.from("neumaticos").select("*").eq("bodega", bodegaOrigen).eq("activo", true);
     q = filtroCliente(q, filtro);
-    q.then(({ data }) => { setLista(data || []); setSel({}); setLoading(false); });
+    const { data } = await q;
+    const rows = data || [];
+    const ex = await columnas.fetchExtra(rows.map(n => n.numero_fuego).filter(Boolean));
+    setExtra(ex); setLista(rows); setSel({}); setLoading(false);
   }
-  useEffect(() => { cargar(); }, [filtro]);
+  useEffect(() => { cargar(); }, [filtro, bodegaOrigen]);
 
   const seleccionados = Object.keys(sel).filter(k => sel[k]);
 
   async function confirmar() {
-    if (!justificacion.trim()) return;
+    if (requiereJustificacion && !justificacion.trim()) return;
     setSaving(true);
     try {
-      await sb.from("neumaticos").update({ bodega: "salidas" }).in("id_neumatico", seleccionados);
-      await sb.from("movimientos_bodega").insert(seleccionados.map(id => {
-        const n = lista.find(x => x.id_neumatico === id);
-        return { id: uuid(), cliente_id: filtro, fecha: todayISO(), categoria: "neumatico", tipo: "salida", origen: "salida_definitiva", numero_fuego: n ? n.numero_fuego : null, motivo: justificacion.trim() };
-      }));
-      pushToast(`✓ ${seleccionados.length} neumáticos pasados a salidas`);
+      await aplicar(seleccionados, lista, justificacion.trim());
+      pushToast(`✓ ${toastLabel(seleccionados.length)}`);
       setConfirmando(false); setJustificacion("");
       cargar(); onCambio && onCambio();
-    } catch (e) { console.error("No se pudo confirmar la salida definitiva", e); }
+    } catch (e) { console.error("No se pudo confirmar el pase", e); }
     setSaving(false);
   }
 
@@ -2532,112 +2558,143 @@ function PaseBajasSalidasSeccion({ filtro, pushToast, onCambio }) {
       <div className="bg-white rounded-2xl border border-bd shadow-card overflow-x-auto mb-4">
         <table className="w-full text-[13.5px] min-w-[560px]">
           <thead><tr className="text-left text-muted border-b border-bd">
-            <th className="py-3 px-4"></th><th className="font-semibold py-3 px-4">N° fuego</th><th className="font-semibold py-3 px-4">Marca</th>
-            <th className="font-semibold py-3 px-4">Modelo</th><th className="font-semibold py-3 px-4">Motivo baja</th><th className="font-semibold py-3 px-4">Fecha baja</th>
+            <th className="py-3 px-4"></th>
+            {columnas.headers.map(h => <th key={h} className="font-semibold py-3 px-4">{h}</th>)}
           </tr></thead>
           <tbody>
             {lista.map(n => (
               <tr key={n.id_neumatico} className="border-b border-bd last:border-0">
                 <td className="py-2.5 px-4"><input type="checkbox" checked={!!sel[n.id_neumatico]} onChange={e => setSel(s => ({ ...s, [n.id_neumatico]: e.target.checked }))} /></td>
-                <td className="py-2.5 px-4 font-bold">{n.numero_fuego || "-"}</td><td className="py-2.5 px-4">{n.marca || "-"}</td>
-                <td className="py-2.5 px-4">{n.modelo || "-"}</td><td className="py-2.5 px-4">-</td><td className="py-2.5 px-4">{n.fecha_ingreso || "-"}</td>
+                {columnas.renderRow(n, extra)}
               </tr>
             ))}
-            {!lista.length && <tr><td colSpan="6" className="text-center text-muted py-8">No hay neumáticos en baja.</td></tr>}
+            {!lista.length && <tr><td colSpan={columnas.headers.length + 1} className="text-center text-muted py-8">{sinDatosLabel}</td></tr>}
           </tbody>
         </table>
       </div>
-      <Button disabled={!seleccionados.length} onClick={() => setConfirmando(true)}>Confirmar salida definitiva ({seleccionados.length})</Button>
+      <Button disabled={!seleccionados.length} onClick={() => setConfirmando(true)}>{botonLabel} ({seleccionados.length})</Button>
       {confirmando && (
-        <Modal title="Salida definitiva" onClose={() => setConfirmando(false)}>
-          <p className="text-[14px] text-[#374151] mb-4">Vas a dar salida definitiva a {seleccionados.length} neumáticos. ¿Confirmar?</p>
-          <Field label="Justificación" required><TextArea value={justificacion} onChange={e => setJustificacion(e.target.value)} /></Field>
-          <Button className="w-full mt-4" variant="danger" disabled={saving || !justificacion.trim()} onClick={confirmar}>{saving ? <span className="spinner" /> : "Confirmar"}</Button>
+        <Modal title={tituloConfirm} onClose={() => setConfirmando(false)}>
+          <p className="text-[14px] text-[#374151] mb-4">{descConfirm(seleccionados.length)}</p>
+          {requiereJustificacion && (
+            <Field label="Justificación" required><TextArea value={justificacion} onChange={e => setJustificacion(e.target.value)} /></Field>
+          )}
+          <Button className="w-full mt-4" variant={requiereJustificacion ? "danger" : "primary"} disabled={saving || (requiereJustificacion && !justificacion.trim())} onClick={confirmar}>
+            {saving ? <span className="spinner" /> : "Confirmar"}
+          </Button>
         </Modal>
       )}
     </div>
   );
 }
-function PaseRepararRecauchadoSeccion({ filtro, pushToast, onCambio }) {
-  const [lista, setLista] = useState([]);
-  const [diasAlerta, setDiasAlerta] = useState(30);
-  const [sel, setSel] = useState({});
-  const [loading, setLoading] = useState(true);
-  const [confirmando, setConfirmando] = useState(false);
-  const [saving, setSaving] = useState(false);
-
-  async function cargar() {
-    setLoading(true);
-    let q = sb.from("neumaticos").select("*").eq("bodega", "reparacion").eq("activo", true);
-    q = filtroCliente(q, filtro);
-    const { data } = await q;
-    let dias = 30;
-    if (filtro && filtro !== "todas") {
-      const { data: cfg } = await sb.from("config_cliente").select("valor").eq("cliente_id", filtro).eq("clave", "dias_alerta_recauchado").maybeSingle();
-      if (cfg && cfg.valor) dias = parseInt(cfg.valor, 10) || 30;
-    }
-    setDiasAlerta(dias);
-    setLista(data || []); setSel({}); setLoading(false);
+function ReparacionTransitoSeccion({ filtro, pushToast, onCambio }) {
+  const columnas = {
+    headers: ["N° fuego", "Marca", "Modelo", "Días en reparación"],
+    fetchExtra: async () => ({}),
+    renderRow: (n) => (
+      <>
+        <td className="py-2.5 px-4 font-bold">{n.numero_fuego || "-"}</td><td className="py-2.5 px-4">{n.marca || "-"}</td>
+        <td className="py-2.5 px-4">{n.modelo || "-"}</td><td className="py-2.5 px-4">{diasDesde(n.fecha_ingreso) != null ? `${diasDesde(n.fecha_ingreso)} días` : "-"}</td>
+      </>
+    )
+  };
+  async function aplicar(seleccionados, lista) {
+    await sb.from("neumaticos").update({ bodega: "transito", estado_actual: "transito" }).in("id_neumatico", seleccionados);
+    await sb.from("movimientos_bodega").insert(seleccionados.map(id => {
+      const n = lista.find(x => x.id_neumatico === id);
+      return { id: uuid(), cliente_id: n ? n.cliente_id : filtro, fecha: todayISO(), categoria: "neumatico", tipo: "salida", origen: "pase_reparacion_transito", numero_fuego: n ? n.numero_fuego : null };
+    }));
   }
-  useEffect(() => { cargar(); }, [filtro]);
-
-  function diasEnReparar(n) {
-    if (!n.fecha_ingreso) return null;
-    const ms = Date.now() - new Date(n.fecha_ingreso + "T00:00:00").getTime();
-    return Math.floor(ms / 86400000);
-  }
-  const seleccionados = Object.keys(sel).filter(k => sel[k]);
-
-  async function confirmar() {
-    setSaving(true);
-    try {
-      await sb.from("neumaticos").update({ bodega: "recauchado", estado_actual: "recauchado" }).in("id_neumatico", seleccionados);
-      await sb.from("movimientos_bodega").insert(seleccionados.map(id => {
-        const n = lista.find(x => x.id_neumatico === id);
-        return { id: uuid(), cliente_id: filtro, fecha: todayISO(), categoria: "neumatico", tipo: "salida", origen: "pase_recauchado", numero_fuego: n ? n.numero_fuego : null };
-      }));
-      pushToast(`✓ ${seleccionados.length} neumáticos pasados a recauchado`);
-      setConfirmando(false);
-      cargar(); onCambio && onCambio();
-    } catch (e) { console.error("No se pudo confirmar el pase a recauchado", e); }
-    setSaving(false);
-  }
-
-  if (loading) return <div className="flex justify-center py-10"><span className="spinner" /></div>;
   return (
-    <div>
-      <div className="bg-white rounded-2xl border border-bd shadow-card overflow-x-auto mb-4">
-        <table className="w-full text-[13.5px] min-w-[480px]">
-          <thead><tr className="text-left text-muted border-b border-bd">
-            <th className="py-3 px-4"></th><th className="font-semibold py-3 px-4">N° fuego</th><th className="font-semibold py-3 px-4">Marca</th><th className="font-semibold py-3 px-4">Días en reparar</th>
-          </tr></thead>
-          <tbody>
-            {lista.map(n => {
-              const dias = diasEnReparar(n);
-              const destacado = dias != null && dias > diasAlerta;
-              return (
-                <tr key={n.id_neumatico} className={cx("border-b border-bd last:border-0", destacado && "bg-[#FFFBEB]")}>
-                  <td className="py-2.5 px-4"><input type="checkbox" checked={!!sel[n.id_neumatico]} onChange={e => setSel(s => ({ ...s, [n.id_neumatico]: e.target.checked }))} /></td>
-                  <td className="py-2.5 px-4 font-bold">{n.numero_fuego || "-"}</td><td className="py-2.5 px-4">{n.marca || "-"}</td>
-                  <td className="py-2.5 px-4">{dias != null ? `${dias} días${destacado ? " ⚠" : ""}` : "-"}</td>
-                </tr>
-              );
-            })}
-            {!lista.length && <tr><td colSpan="4" className="text-center text-muted py-8">No hay neumáticos en reparación.</td></tr>}
-          </tbody>
-        </table>
-      </div>
-      <Button disabled={!seleccionados.length} onClick={() => setConfirmando(true)}>Confirmar pase a recauchado ({seleccionados.length})</Button>
-      {confirmando && (
-        <Confirm title="Pase a recauchado" desc={`Vas a pasar ${seleccionados.length} neumáticos de reparación a recauchado. ¿Confirmar?`}
-          onCancel={() => setConfirmando(false)} onConfirm={confirmar} />
-      )}
-    </div>
+    <ChecklistBodegaSeccion filtro={filtro} pushToast={pushToast} onCambio={onCambio} bodegaOrigen="reparacion" columnas={columnas}
+      sinDatosLabel="No hay neumáticos en reparación." botonLabel="Pasar a Tránsito"
+      tituloConfirm="Pase a Tránsito" descConfirm={(n) => `Vas a pasar ${n} neumáticos de reparación a tránsito. ¿Confirmar?`}
+      toastLabel={(n) => `${n} neumáticos pasados a Tránsito`} requiereJustificacion={false} aplicar={aplicar} />
+  );
+}
+function RetiroDesgastePararRecaucharSeccion({ filtro, pushToast, onCambio }) {
+  const columnas = {
+    headers: ["N° fuego", "Marca", "Modelo", "MM retiro", "Fecha"],
+    fetchExtra: (fuegos) => fetchUltimoPorFuego("cambio_detalle", "milimetros", { tipo: "sale", motivo_salida: "retiro_desgaste" }, fuegos),
+    renderRow: (n, extra) => (
+      <>
+        <td className="py-2.5 px-4 font-bold">{n.numero_fuego || "-"}</td><td className="py-2.5 px-4">{n.marca || "-"}</td>
+        <td className="py-2.5 px-4">{n.modelo || "-"}</td><td className="py-2.5 px-4">{extra[n.numero_fuego] != null ? extra[n.numero_fuego] : "-"}</td>
+        <td className="py-2.5 px-4">{n.fecha_ingreso || "-"}</td>
+      </>
+    )
+  };
+  async function aplicar(seleccionados, lista) {
+    await sb.from("neumaticos").update({ bodega: "para_recauchar", estado_actual: "para_recauchar" }).in("id_neumatico", seleccionados);
+    await sb.from("movimientos_bodega").insert(seleccionados.map(id => {
+      const n = lista.find(x => x.id_neumatico === id);
+      return { id: uuid(), cliente_id: n ? n.cliente_id : filtro, fecha: todayISO(), categoria: "neumatico", tipo: "salida", origen: "pase_para_recauchar", numero_fuego: n ? n.numero_fuego : null };
+    }));
+  }
+  return (
+    <ChecklistBodegaSeccion filtro={filtro} pushToast={pushToast} onCambio={onCambio} bodegaOrigen="retiro_desgaste" columnas={columnas}
+      sinDatosLabel="No hay neumáticos en retiro por desgaste." botonLabel="Pasar a Para Recauchar"
+      tituloConfirm="Pase a Para Recauchar" descConfirm={(n) => `Vas a enviar ${n} neumáticos de retiro por desgaste a Para Recauchar. ¿Confirmar?`}
+      toastLabel={(n) => `${n} neumáticos enviados a Para Recauchar`} requiereJustificacion={false} aplicar={aplicar} />
+  );
+}
+function ParaRecaucharRecauchadoSeccion({ filtro, pushToast, onCambio }) {
+  const columnas = {
+    headers: ["N° fuego", "Marca", "Modelo", "Días en espera"],
+    fetchExtra: async () => ({}),
+    renderRow: (n) => (
+      <>
+        <td className="py-2.5 px-4 font-bold">{n.numero_fuego || "-"}</td><td className="py-2.5 px-4">{n.marca || "-"}</td>
+        <td className="py-2.5 px-4">{n.modelo || "-"}</td><td className="py-2.5 px-4">{diasDesde(n.fecha_ingreso) != null ? `${diasDesde(n.fecha_ingreso)} días` : "-"}</td>
+      </>
+    )
+  };
+  async function aplicar(seleccionados, lista) {
+    await sb.from("neumaticos").update({ bodega: "recauchado", estado_actual: "recauchado" }).in("id_neumatico", seleccionados);
+    await sb.from("movimientos_bodega").insert(seleccionados.map(id => {
+      const n = lista.find(x => x.id_neumatico === id);
+      return { id: uuid(), cliente_id: n ? n.cliente_id : filtro, fecha: todayISO(), categoria: "neumatico", tipo: "salida", origen: "pase_recauchado", numero_fuego: n ? n.numero_fuego : null };
+    }));
+  }
+  return (
+    <ChecklistBodegaSeccion filtro={filtro} pushToast={pushToast} onCambio={onCambio} bodegaOrigen="para_recauchar" columnas={columnas}
+      sinDatosLabel="No hay neumáticos esperando recauchado." botonLabel="Confirmar pase a Recauchado"
+      tituloConfirm="Pase a Recauchado" descConfirm={(n) => `Vas a pasar ${n} neumáticos de Para Recauchar a Recauchado. ¿Confirmar?`}
+      toastLabel={(n) => `${n} neumáticos pasados a Recauchado`} requiereJustificacion={false} aplicar={aplicar} />
+  );
+}
+function RetiroDanoOtroNfuSeccion({ filtro, pushToast, onCambio }) {
+  const columnas = {
+    headers: ["N° fuego", "Marca", "Modelo", "Motivo", "Fecha"],
+    fetchExtra: (fuegos) => fetchUltimoPorFuego("alertas", "descripcion", { tipo: "baja_prematura" }, fuegos),
+    renderRow: (n, extra) => (
+      <>
+        <td className="py-2.5 px-4 font-bold">{n.numero_fuego || "-"}</td><td className="py-2.5 px-4">{n.marca || "-"}</td>
+        <td className="py-2.5 px-4">{n.modelo || "-"}</td><td className="py-2.5 px-4">{extra[n.numero_fuego] || "-"}</td>
+        <td className="py-2.5 px-4">{n.fecha_ingreso || "-"}</td>
+      </>
+    )
+  };
+  async function aplicar(seleccionados, lista, justificacion) {
+    await sb.from("neumaticos").update({ bodega: "nfu", estado_actual: "nfu" }).in("id_neumatico", seleccionados);
+    await sb.from("movimientos_bodega").insert(seleccionados.map(id => {
+      const n = lista.find(x => x.id_neumatico === id);
+      return { id: uuid(), cliente_id: n ? n.cliente_id : filtro, fecha: todayISO(), categoria: "neumatico", tipo: "salida", origen: "pase_nfu", numero_fuego: n ? n.numero_fuego : null, motivo: justificacion };
+    }));
+  }
+  return (
+    <ChecklistBodegaSeccion filtro={filtro} pushToast={pushToast} onCambio={onCambio} bodegaOrigen="retiro_daño_otro" columnas={columnas}
+      sinDatosLabel="No hay neumáticos en retiro por daño/otro." botonLabel="Pasar a NFU"
+      tituloConfirm="Pase a NFU" descConfirm={(n) => `Vas a pasar ${n} neumáticos a NFU (estado final, sin más movimientos). ¿Confirmar?`}
+      toastLabel={(n) => `${n} neumáticos pasados a NFU`} requiereJustificacion={true} aplicar={aplicar} />
   );
 }
 const INVENTARIO_TABS = [
   { id: "resumen", label: "Resumen" }, { id: "insumos", label: "Insumos" },
-  { id: "bajas", label: "Bajas → Salidas" }, { id: "reparar", label: "Reparar → Recauchado" }
+  { id: "reparacion_transito", label: "Reparación → Tránsito" },
+  { id: "retiro_desgaste_recauchar", label: "Retiro Desgaste → Para Recauchar" },
+  { id: "para_recauchar_recauchado", label: "Para Recauchar → Recauchado" },
+  { id: "retiro_dano_nfu", label: "Retiro Daño/Otro → NFU" }
 ];
 function InventarioMaestroView({ empresaCtl, onBack }) {
   const { filtro } = empresaCtl;
@@ -2706,8 +2763,10 @@ function InventarioMaestroView({ empresaCtl, onBack }) {
               </div>
             </div>
           )}
-          {tab === "bajas" && <PaseBajasSalidasSeccion filtro={filtro} pushToast={pushToast} onCambio={cargar} />}
-          {tab === "reparar" && <PaseRepararRecauchadoSeccion filtro={filtro} pushToast={pushToast} onCambio={cargar} />}
+          {tab === "reparacion_transito" && <ReparacionTransitoSeccion filtro={filtro} pushToast={pushToast} onCambio={cargar} />}
+          {tab === "retiro_desgaste_recauchar" && <RetiroDesgastePararRecaucharSeccion filtro={filtro} pushToast={pushToast} onCambio={cargar} />}
+          {tab === "para_recauchar_recauchado" && <ParaRecaucharRecauchadoSeccion filtro={filtro} pushToast={pushToast} onCambio={cargar} />}
+          {tab === "retiro_dano_nfu" && <RetiroDanoOtroNfuSeccion filtro={filtro} pushToast={pushToast} onCambio={cargar} />}
         </>
       )}
       {modalEntrada && (
@@ -3366,7 +3425,7 @@ function MaestrosView({ empresaCtl }) {
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
         <button onClick={() => setSub("mecanicos")} className="text-left"><Card><p className="text-[24px] mb-2">👷</p><p className="font-bold text-[15px]">Mecánicos</p><p className="text-[12.5px] text-muted mt-1">Alta, edición y estado</p></Card></button>
         <button onClick={() => setSub("proveedores")} className="text-left"><Card><p className="text-[24px] mb-2">🏭</p><p className="font-bold text-[15px]">Proveedores</p><p className="text-[12.5px] text-muted mt-1">Alta, edición y estado</p></Card></button>
-        <button onClick={() => setSub("inventario")} className="text-left"><Card><p className="text-[24px] mb-2">📦</p><p className="font-bold text-[15px]">Inventario</p><p className="text-[12.5px] text-muted mt-1">Insumos, bajas y recauchado</p></Card></button>
+        <button onClick={() => setSub("inventario")} className="text-left"><Card><p className="text-[24px] mb-2">📦</p><p className="font-bold text-[15px]">Inventario</p><p className="text-[12.5px] text-muted mt-1">Insumos, retiros y recauchado</p></Card></button>
         <button onClick={() => setSub("herramientas")} className="text-left"><Card><p className="text-[24px] mb-2">🛠</p><p className="font-bold text-[15px]">Herramientas</p><p className="text-[12.5px] text-muted mt-1">Alta, edición y baja</p></Card></button>
       </div>
     </div>

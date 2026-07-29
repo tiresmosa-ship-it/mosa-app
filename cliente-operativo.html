@@ -412,7 +412,7 @@ function AuditoriaDetalleModal({ auditoria, onClose }) {
     </Modal>
   );
 }
-const MOTIVO_SALIDA_LABELS = { transito: "Tránsito", reparacion: "Reparación", baja: "Baja", rotacion: "Rotación" };
+const MOTIVO_SALIDA_LABELS = { transito: "Tránsito", reparacion: "Reparación", retiro_desgaste: "Retiro (desgaste)", "retiro_daño_otro": "Retiro (daño/otro)", rotacion: "Rotación" };
 const INTERVENCION_LABELS = { regulacion_psi: "Regulación PSI", retorqueo: "Retorqueo", reparacion: "Reparación", giro_neumatico: "Giro de neumático", checkpoint: "Checkpoint" };
 function CambioDetalleModal({ cambio, onClose }) {
   const [detalle, setDetalle] = useState(null);
