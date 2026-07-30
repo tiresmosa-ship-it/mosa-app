@@ -1755,14 +1755,10 @@ function EquipoDetalleView({ equipo, onBack }) {
    JORNADA · INICIO DEL DIA (check diario por mecanico + discrepancias)
 ===================================================================== */
 const CONTEO_ROWS = [
-  { label: "Direccional · Nuevos", campo: "neu_dir_nuevo", bodega: "nuevo" },
-  { label: "Direccional · Tránsito", campo: "neu_dir_transito", bodega: "transito" },
-  { label: "Direccional · Por reparar", campo: "neu_dir_reparar", bodega: "reparacion" },
-  { label: "Direccional · Recauchados", campo: "neu_dir_recauchado", bodega: "recauchado" },
-  { label: "Traccional · Nuevos", campo: "neu_trac_nuevo", bodega: "nuevo" },
-  { label: "Traccional · Tránsito", campo: "neu_trac_transito", bodega: "transito" },
-  { label: "Traccional · Por reparar", campo: "neu_trac_reparar", bodega: "reparacion" },
-  { label: "Traccional · Recauchados", campo: "neu_trac_recauchado", bodega: "recauchado" }
+  { label: "Nuevos", campo: "nuevos", bodega: "nuevo" },
+  { label: "Tránsito", campo: "transito", bodega: "transito" },
+  { label: "Recauchados", campo: "recauchados", bodega: "recauchado" },
+  { label: "En reparación", campo: "reparar", bodega: "reparacion" }
 ];
 const LLANTAS_ROWS = [
   { label: "Llanta americana aluminio", campo: "llantas_am_aluminio" },

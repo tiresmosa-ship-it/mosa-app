@@ -454,6 +454,10 @@ async function enviarDiscrepancia(data) {
     const { error: e2 } = await sb.from("alertas").insert(data.alerta);
     if (e2) throw e2;
   }
+  if (data.alertas && data.alertas.length) {
+    const { error: e3 } = await sb.from("alertas").insert(data.alertas);
+    if (e3) throw e3;
+  }
 }
 async function enviarUpdateEquipoKm(data) {
   const { error } = await sb.from("equipos").update({ kilometros: data.kilometros }).eq("id_equipo", data.equipo_id);
@@ -656,34 +660,67 @@ if (navigator.serviceWorker) {
 /* =====================================================================
    CHECK DIARIO — campos de conteo y comparación de inventario
 ===================================================================== */
-const DIRECCIONAL_FIELDS = [
-  { key: "nuevos", label: "Nuevos" }, { key: "transito", label: "Tránsito" },
-  { key: "reparar", label: "Por reparar" }, { key: "recauchados", label: "Recauchados" }
-];
-const TRACCIONAL_FIELDS = [
-  { key: "tra_nuevos", label: "Nuevos" }, { key: "tra_transito", label: "Tránsito" },
-  { key: "tra_reparar", label: "Por reparar" }, { key: "tra_recauchados", label: "Recauchados" }
-];
-const LIBRE_FIELDS = [
-  { key: "libre_nuevos", label: "Nuevos" }, { key: "libre_transito", label: "Tránsito" },
-  { key: "libre_reparar", label: "Por reparar" }, { key: "libre_recauchados", label: "Recauchados" }
+const NEUMATICO_FIELDS = [
+  { key: "nuevos", label: "Nuevos", bodega: "nuevo" }, { key: "transito", label: "Tránsito", bodega: "transito" },
+  { key: "recauchados", label: "Recauchados", bodega: "recauchado" }, { key: "reparar", label: "En reparación", bodega: "reparacion" }
 ];
 const PATIO_FIELDS = [
   { key: "llantas_am_aluminio", label: "Americana aluminio" }, { key: "llantas_am_fierro", label: "Americana fierro" },
   { key: "llantas_eu_aluminio", label: "Europea aluminio" }, { key: "llantas_eu_fierro", label: "Europea fierro" }
 ];
-const ALL_STOCK_FIELDS = [...DIRECCIONAL_FIELDS, ...TRACCIONAL_FIELDS, ...LIBRE_FIELDS, ...PATIO_FIELDS];
+const ALL_STOCK_FIELDS = [...NEUMATICO_FIELDS, ...PATIO_FIELDS];
 
+// Compara el conteo fisico del mecanico contra las 4 bodegas que se cuentan
+// a mano en el check diario (nuevo/transito/recauchado/reparacion). Las demas
+// bodegas (retiro_desgaste, retiro_daño_otro, para_recauchar, nfu) son estados
+// intermedios que administra el Admin y no se cuentan aca.
 async function compararInventarioNeumaticos(clienteId, checkTotales) {
   const { data: neus } = await sb.from("neumaticos").select("bodega").eq("cliente_id", clienteId).eq("activo", true);
-  const sistema = { nuevo: 0, transito: 0, recauchado: 0 };
+  const sistema = { nuevo: 0, transito: 0, recauchado: 0, reparacion: 0 };
   (neus || []).forEach(n => { if (sistema[n.bodega] !== undefined) sistema[n.bodega]++; });
-  const labels = { nuevo: "Neumáticos nuevos", transito: "Neumáticos en tránsito", recauchado: "Neumáticos recauchados" };
+  const labels = { nuevo: "Neumáticos nuevos", transito: "Neumáticos en tránsito", recauchado: "Neumáticos recauchados", reparacion: "Neumáticos en reparación" };
   const diffs = [];
-  for (const bucket of ["nuevo", "transito", "recauchado"]) {
+  for (const bucket of ["nuevo", "transito", "recauchado", "reparacion"]) {
     if (checkTotales[bucket] !== sistema[bucket]) diffs.push({ bucket, label: labels[bucket], sistema: sistema[bucket], fisico: checkTotales[bucket] });
   }
   return diffs;
+}
+
+// Compara el conteo fisico de herramientas contra herramientas_inventario. Si
+// el cliente no tiene ninguna herramienta cargada en esa tabla todavia, no hay
+// nada contra que comparar: se devuelve [] sin generar discrepancias ni error.
+async function compararHerramientasInventario(clienteId, toolsCounted) {
+  const { data: herr, error } = await sb.from("herramientas_inventario").select("nombre,cantidad").eq("cliente_id", clienteId).eq("activo", true);
+  if (error) throw error;
+  if (!herr || !herr.length) return [];
+  const sistemaPorNombre = {};
+  herr.forEach(h => { sistemaPorNombre[h.nombre] = h.cantidad; });
+  const diffs = [];
+  for (const nombre of Object.keys(sistemaPorNombre)) {
+    const fisico = toolsCounted[nombre] != null ? toolsCounted[nombre] : 0;
+    const sistema = sistemaPorNombre[nombre];
+    if (fisico !== sistema) diffs.push({ nombre, sistema, fisico });
+  }
+  return diffs;
+}
+async function registrarDiscrepanciasHerramientas(clienteId, mecanicoId, fecha, diffs) {
+  const rows = diffs.map(d => ({
+    id: uuid(), origen: "check_diario", tipo_item: "herramienta", item_detalle: d.nombre,
+    valor_sistema: d.sistema, valor_fisico: d.fisico, diferencia: d.fisico - d.sistema,
+    tipo_discrepancia: d.fisico > d.sistema ? "positiva" : "negativa",
+    cliente_id: clienteId, mecanico_id: mecanicoId, fecha
+  }));
+  const alertas = diffs.map(d => ({
+    id: uuid(), cliente_id: clienteId, equipo_id: null, mecanico_id: mecanicoId,
+    tipo: "discrepancia_inventario", severidad: "rojo", titulo: `Discrepancia herramienta — ${d.nombre}`,
+    descripcion: `${d.nombre}: sistema ${d.sistema} · contado ${d.fisico}`,
+    leida_mecanico: true, leida_admin: false, leida_superadmin: false
+  }));
+  // Encolado igual que registrarDiscrepancias (neumaticos): si el mecanico esta
+  // offline al cerrar el check diario, estas filas no deben perderse.
+  pushQueue({ id: uuid(), tipo: "discrepancia", clienteId, ts: Date.now(), data: { rows, alertas } });
+  syncQueue();
+  return rows.map(r => r.id);
 }
 async function registrarDiscrepancias(clienteId, mecanicoId, fecha, diffs) {
   const rows = diffs.map(d => ({
@@ -1474,9 +1511,12 @@ async function resolverDiscrepancia(discrepancia, aprobar, justificacion, adminU
   if (error) throw error;
   // El inventario de neumaticos se recalcula solo (se lee en vivo desde
   // neumaticos, no hay tabla de stock separada) - nada que actualizar acá.
-  // Insumos/herramientas: el check diario actual no genera discrepancias de
-  // ese tipo (compararInventarioNeumaticos solo compara neumaticos), asi que
-  // no hay un campo de "cantidad" que ajustar todavia.
+  // Herramientas si tienen un campo "cantidad" real en herramientas_inventario:
+  // al aprobar, se ajusta al valor fisico contado por el mecanico.
+  if (aprobar && discrepancia.tipo_item === "herramienta") {
+    await sb.from("herramientas_inventario").update({ cantidad: discrepancia.valor_fisico })
+      .eq("cliente_id", discrepancia.cliente_id).eq("nombre", discrepancia.item_detalle);
+  }
   await insertAlerta({
     id: uuid(), cliente_id: discrepancia.cliente_id, equipo_id: discrepancia.equipo_id || null, mecanico_id: discrepancia.mecanico_id,
     tipo: "discrepancia_resuelta", severidad: "info",
