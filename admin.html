@@ -3811,6 +3811,9 @@ const CONFIG_STOCK_FIELDS = [
 const CONFIG_ALERTA_FIELDS = [
   { clave: "dias_alerta_recauchado", label: "Días en reparar → alerta" }
 ];
+const CONFIG_JORNADA_FIELDS = [
+  { clave: "horas_jornada_normal", label: "Horas jornada normal" }
+];
 const CONFIG_DEFAULTS_COMPLETO = {
   ...DEFAULT_CFG,
   stock_minimo_nuevo: 10, stock_minimo_transito: 5, stock_minimo_recauchado: 10,
@@ -4120,6 +4123,11 @@ function ConfiguracionEmpresaView({ filtro, pushToast }) {
       <p className="font-bold text-[15px] mb-2">Alertas automáticas</p>
       <div className="bg-white rounded-2xl border border-bd shadow-card overflow-hidden mb-6">
         {CONFIG_ALERTA_FIELDS.map(f => <ConfigRow key={f.clave} clave={f.clave} label={f.label} valor={config[f.clave] != null ? config[f.clave] : 0} onGuardar={guardarValor} />)}
+      </div>
+
+      <p className="font-bold text-[15px] mb-2">Jornada laboral</p>
+      <div className="bg-white rounded-2xl border border-bd shadow-card overflow-hidden mb-6">
+        {CONFIG_JORNADA_FIELDS.map(f => <ConfigRow key={f.clave} clave={f.clave} label={f.label} valor={config[f.clave] != null ? config[f.clave] : 9} onGuardar={guardarValor} />)}
       </div>
 
       <p className="font-bold text-[15px] mb-2">Moneda</p>

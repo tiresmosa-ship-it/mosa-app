@@ -30,7 +30,8 @@ const DEFAULT_CFG = {
   numero_auditoria_inicio: 1, numero_cambio_inicio: 1,
   formula_marca_fuego: "interno+semana+anio+posicion",
   moneda: "CLP",
-  meses_vencimiento_auditoria: 6
+  meses_vencimiento_auditoria: 6,
+  horas_jornada_normal: 9
 };
 
 const TOOLS_CHECKLIST = [
@@ -754,6 +755,106 @@ async function marcarInicioJornada(clienteId, mecanicoId, fecha, horaInicio) {
       auditorias_realizadas: 0, cambios_realizados: 0, regulaciones_psi: 0, retorqueos: 0, rotaciones: 0, reparaciones: 0, cerrado: false
     });
   }
+}
+
+/* =====================================================================
+   RECONTEO DE STOCK AL CIERRE — reusa NEUMATICO_FIELDS del check diario;
+   las llantas se comparan contra insumos (tipo='llanta') en vez de
+   neumaticos por bodega.
+===================================================================== */
+const LLANTA_CIERRE_FIELDS = [
+  { key: "americana_aluminio", label: "Americana aluminio" }, { key: "americana_fierro", label: "Americana fierro" },
+  { key: "europea_aluminio", label: "Europea aluminio" }, { key: "europea_fierro", label: "Europea fierro" }
+];
+
+async function compararStockCierre(clienteId, totalesNeumaticos, totalesLlantas) {
+  const neuDiffs = await compararInventarioNeumaticos(clienteId, totalesNeumaticos);
+  // insumos tiene filas duplicadas preexistentes (mismo cliente_id+tipo+subtipo,
+  // distinto id) - se toma la mas antigua por subtipo (mismo criterio que el
+  // resto del proyecto: nunca maybeSingle() para "la fila con esta clave").
+  const { data: ins, error } = await sb.from("insumos").select("subtipo,cantidad,creado_en")
+    .eq("cliente_id", clienteId).eq("tipo", "llanta").eq("activo", true).order("creado_en", { ascending: true });
+  if (error) throw error;
+  const sistemaPorSubtipo = {};
+  (ins || []).forEach(i => { if (sistemaPorSubtipo[i.subtipo] === undefined) sistemaPorSubtipo[i.subtipo] = i.cantidad; });
+  const llantaDiffs = [];
+  for (const f of LLANTA_CIERRE_FIELDS) {
+    const sistema = sistemaPorSubtipo[f.key] != null ? sistemaPorSubtipo[f.key] : 0;
+    const fisico = totalesLlantas[f.key] || 0;
+    if (fisico !== sistema) llantaDiffs.push({ subtipo: f.key, label: f.label, sistema, fisico });
+  }
+  return { neuDiffs, llantaDiffs };
+}
+
+async function registrarDiscrepanciasCierre(clienteId, mecanico, fecha, neuDiffs, llantaDiffs) {
+  const rows = [];
+  const alertas = [];
+  if (neuDiffs.length) {
+    neuDiffs.forEach(d => rows.push({
+      id: uuid(), origen: "check_diario", tipo_item: "neumatico", item_detalle: d.bucket,
+      valor_sistema: d.sistema, valor_fisico: d.fisico, diferencia: d.fisico - d.sistema,
+      tipo_discrepancia: d.fisico > d.sistema ? "positiva" : "negativa",
+      cliente_id: clienteId, mecanico_id: mecanico.id, fecha
+    }));
+    alertas.push({
+      id: uuid(), cliente_id: clienteId, equipo_id: null, mecanico_id: mecanico.id,
+      tipo: "discrepancia_inventario", severidad: "rojo", titulo: `Discrepancia stock al cierre — ${mecanico.nombre}`,
+      descripcion: neuDiffs.map(d => `${d.label}: sistema ${d.sistema} · contado ${d.fisico}`).join(" · "),
+      leida_mecanico: true, leida_admin: false, leida_superadmin: false
+    });
+  }
+  if (llantaDiffs.length) {
+    llantaDiffs.forEach(d => rows.push({
+      id: uuid(), origen: "check_diario", tipo_item: "llanta", item_detalle: d.subtipo,
+      valor_sistema: d.sistema, valor_fisico: d.fisico, diferencia: d.fisico - d.sistema,
+      tipo_discrepancia: d.fisico > d.sistema ? "positiva" : "negativa",
+      cliente_id: clienteId, mecanico_id: mecanico.id, fecha
+    }));
+    alertas.push({
+      id: uuid(), cliente_id: clienteId, equipo_id: null, mecanico_id: mecanico.id,
+      tipo: "discrepancia_inventario", severidad: "rojo", titulo: `Discrepancia llanta al cierre — ${mecanico.nombre}`,
+      descripcion: llantaDiffs.map(d => `${d.label}: sistema ${d.sistema} · contado ${d.fisico}`).join(" · "),
+      leida_mecanico: true, leida_admin: false, leida_superadmin: false
+    });
+  }
+  if (rows.length) {
+    pushQueue({ id: uuid(), tipo: "discrepancia", clienteId, ts: Date.now(), data: { rows, alertas } });
+    syncQueue();
+  }
+  return rows.length;
+}
+
+/* =====================================================================
+   ALERTA DE HORAS EXTRAS — se dispara una sola vez por dia (localStorage
+   alerta_horas_extras_enviada_hoy), comparando NOW() contra
+   check_diario.hora_inicio del turno de hoy vs config_cliente.horas_jornada_normal.
+===================================================================== */
+async function verificarHorasExtras(clienteId, user, cfg) {
+  const horasNormal = cfg.horas_jornada_normal != null ? parseFloat(cfg.horas_jornada_normal) : 9;
+  const { data, error } = await sb.from("check_diario").select("hora_inicio")
+    .eq("bultero_id", user.id).eq("fecha", todayISO()).order("creado_en", { ascending: false }).limit(1);
+  if (error) throw error;
+  const horaInicio = data && data[0] ? data[0].hora_inicio : null;
+  if (!horaInicio) return null;
+  const [hh, mm] = horaInicio.split(":").map(Number);
+  const inicio = new Date();
+  inicio.setHours(hh, mm, 0, 0);
+  const diffMs = Date.now() - inicio.getTime();
+  if (diffMs < 0) return null;
+  const diffHoras = diffMs / 3600000;
+  if (diffHoras <= horasNormal) return null;
+  const horasEnteras = Math.floor(diffHoras);
+  const minutos = Math.round((diffHoras - horasEnteras) * 60);
+  pushQueue({
+    id: uuid(), tipo: "alerta", clienteId, ts: Date.now(), data: {
+      id: uuid(), cliente_id: clienteId, equipo_id: null, mecanico_id: user.id,
+      tipo: "horas_extras", severidad: "amarillo", titulo: `Horas extras — ${user.nombre}`,
+      descripcion: `El mecánico lleva ${horasEnteras}hs ${minutos}min trabajando. Hora inicio: ${horaInicio}`,
+      leida_mecanico: false, leida_admin: false, leida_superadmin: false
+    }
+  });
+  syncQueue();
+  return { horasNormal, horasEnteras, minutos, horaInicio };
 }
 
 /* =====================================================================

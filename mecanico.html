@@ -1837,21 +1837,97 @@ function MontajeModal({ tipo, pos, equipo, clienteId, cfg, axleCfg, user, onClos
 }
 
 /* =====================================================================
-   PANTALLA 8 - CIERRE DEL DIA
+   PANTALLA 8 - RECONTEO DE STOCK AL CIERRE
+   Paso obligatorio antes de cerrar: mismo formato checkbox+stepper del
+   check diario (reusa NEUMATICO_FIELDS/LLANTA_CIERRE_FIELDS/Stepper), pero
+   arranca siempre en 0 sin precargar nada, para no inducir al mecanico.
+===================================================================== */
+function ReconteoCierre({ onConfirmar, verificando }) {
+  const RECONTEO_FIELDS = [...NEUMATICO_FIELDS, ...LLANTA_CIERRE_FIELDS];
+  const [stock, setStock] = useState(() => Object.fromEntries(RECONTEO_FIELDS.map(f => [f.key, { value: 0, checked: false }])));
+
+  const filled = RECONTEO_FIELDS.filter(f => stock[f.key].checked).length;
+  const complete = filled === RECONTEO_FIELDS.length;
+
+  function setVal(key, v) { setStock(s => ({ ...s, [key]: { value: v, checked: true } })); }
+  function toggle(key) { setStock(s => ({ ...s, [key]: { ...s[key], checked: !s[key].checked } })); }
+
+  function renderSeccion(titulo, fields) {
+    return (
+      <>
+        <p className="font-bold text-[15px] mb-2">{titulo}</p>
+        <div className="space-y-2 mb-4">
+          {fields.map(f => (
+            <div key={f.key} className={cx("bg-white rounded-2xl border shadow-card px-4 py-3 flex items-center gap-3", stock[f.key].checked ? "border-bd" : "border-[#F59E0B]")}>
+              <button type="button" onClick={() => toggle(f.key)} className={cx("w-7 h-7 rounded-lg flex items-center justify-center shrink-0 border", stock[f.key].checked ? "bg-ink border-ink" : "bg-white border-[#D1D5DB]")}>
+                {stock[f.key].checked && <Icon.check width="15" height="15" className="text-white" />}
+              </button>
+              <span className="text-[14px] font-semibold text-[#1F2937] flex-1">{f.label}</span>
+              <Stepper value={stock[f.key].value} onChange={v => setVal(f.key, v)} />
+            </div>
+          ))}
+        </div>
+      </>
+    );
+  }
+
+  function confirmar() {
+    const totalesNeumaticos = { nuevo: stock.nuevos.value, transito: stock.transito.value, recauchado: stock.recauchados.value, reparacion: stock.reparar.value };
+    const totalesLlantas = Object.fromEntries(LLANTA_CIERRE_FIELDS.map(f => [f.key, stock[f.key].value]));
+    onConfirmar(totalesNeumaticos, totalesLlantas);
+  }
+
+  return (
+    <div className="min-h-screen pb-28 px-5 pt-14 safe-top">
+      <h1 className="text-[26px] font-extrabold mb-1">Antes de cerrar, confirmá el stock actual</h1>
+      <div className="bg-[#F9FAFB] rounded-[20px] p-5 my-4">
+        <div className="flex items-center justify-between mb-2">
+          <span className="font-bold text-[16px]">Ítems confirmados</span>
+          <span className="text-[13px] font-bold">{filled}/{RECONTEO_FIELDS.length}</span>
+        </div>
+        <div className="h-2 rounded-full bg-[#E5E7EB] overflow-hidden">
+          <div className="h-full bg-ink transition-all" style={{ width: (RECONTEO_FIELDS.length ? Math.round((filled / RECONTEO_FIELDS.length) * 100) : 0) + "%" }} />
+        </div>
+      </div>
+      {renderSeccion("Neumáticos", NEUMATICO_FIELDS)}
+      {renderSeccion("Llantas", LLANTA_CIERRE_FIELDS)}
+      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-bd p-4 safe-bottom">
+        <Button className="w-full" disabled={!complete || verificando} onClick={confirmar}>
+          {verificando ? <span className="spinner" /> : "Confirmar y cerrar jornada"}
+        </Button>
+        {!complete && <p className="text-center text-[12px] text-muted mt-2">Marcá el checkbox de los {RECONTEO_FIELDS.length} ítems para continuar</p>}
+      </div>
+    </div>
+  );
+}
+
+/* =====================================================================
+   PANTALLA 8b - CIERRE DEL DIA
 ===================================================================== */
 function CierreDelDia({ user, clienteId, onCerrado }) {
   const [resumen, setResumen] = useState(null);
+  const [reconteando, setReconteando] = useState(false);
   const [cerrando, setCerrando] = useState(false);
-  const [confirmando, setConfirmando] = useState(false);
   const [cerrado, setCerrado] = useState(false);
+  const [pushToast, toastNode] = useToasts();
 
   useEffect(() => {
     construirResumenJornada(user.id, clienteId, todayISO()).then(({ conteos }) => setResumen(conteos)).catch(() => setResumen(null));
   }, [clienteId]);
 
-  async function confirmarCierre() {
-    setConfirmando(false);
+  async function confirmarReconteo(totalesNeumaticos, totalesLlantas) {
     setCerrando(true);
+    try {
+      const { neuDiffs, llantaDiffs } = await compararStockCierre(clienteId, totalesNeumaticos, totalesLlantas);
+      if (neuDiffs.length || llantaDiffs.length) {
+        await registrarDiscrepanciasCierre(clienteId, user, todayISO(), neuDiffs, llantaDiffs);
+        pushToast("⚠ Se detectaron diferencias de stock — se avisó a tu supervisor", "amber");
+      } else {
+        pushToast("✓ Stock verificado");
+      }
+    } catch (e) {
+      console.error("No se pudo comparar el stock al cierre", e);
+    }
     try {
       await cerrarJornadaConResumen({ user, clienteId, fecha: todayISO(), horaCierre: nowHM(), motivoSinCierre: null });
       localStorage.setItem("jornada_cerrada_hoy", "true");
@@ -1861,6 +1937,7 @@ function CierreDelDia({ user, clienteId, onCerrado }) {
       console.error("No se pudo cerrar la jornada", e);
     } finally {
       setCerrando(false);
+      setReconteando(false);
     }
   }
 
@@ -1874,8 +1951,13 @@ function CierreDelDia({ user, clienteId, onCerrado }) {
     );
   }
 
+  if (reconteando) {
+    return <>{toastNode}<ReconteoCierre verificando={cerrando} onConfirmar={confirmarReconteo} /></>;
+  }
+
   return (
     <div className="min-h-screen pb-24 px-5 pt-14 safe-top">
+      {toastNode}
       <h1 className="text-[30px] font-extrabold mb-6">Cierre del día</h1>
       {!resumen ? <div className="flex justify-center py-10"><span className="spinner" /></div> : (
         <>
@@ -1893,12 +1975,8 @@ function CierreDelDia({ user, clienteId, onCerrado }) {
               <p className="text-[26px] font-extrabold">{resumen.pct_receta_promedio}%</p>
             </Card>
           )}
-          <Button className="w-full" disabled={cerrando} onClick={() => setConfirmando(true)}>{cerrando ? <span className="spinner" /> : "Cerrar jornada"}</Button>
+          <Button className="w-full" onClick={() => setReconteando(true)}>Cerrar jornada</Button>
         </>
-      )}
-      {confirmando && (
-        <Confirm title="Cerrar jornada" desc="¿Estás seguro que querés cerrar la jornada de hoy?"
-          onConfirm={confirmarCierre} onCancel={() => setConfirmando(false)} />
       )}
     </div>
   );
@@ -2000,6 +2078,26 @@ function MecanicoApp({ user }) {
     const t = getTurno();
     return localStorage.getItem("jornada_cerrada_hoy") === "true" && !!t && t.fecha === todayISO();
   });
+  const [horasExtrasInfo, setHorasExtrasInfo] = useState(null);
+
+  // MEJ cierre-2: alerta de horas extras. Se dispara una sola vez (localStorage
+  // alerta_horas_extras_enviada_hoy) mientras el mecanico tiene la app abierta,
+  // sin bloquear el flujo — solo informa y crea la alerta para el Admin.
+  useEffect(() => {
+    if (!clienteId || !checkDone) return;
+    let cancel = false;
+    function chequear() {
+      if (localStorage.getItem("alerta_horas_extras_enviada_hoy") === "true") return;
+      verificarHorasExtras(clienteId, user, cfg).then(info => {
+        if (cancel || !info) return;
+        setHorasExtrasInfo(info);
+        localStorage.setItem("alerta_horas_extras_enviada_hoy", "true");
+      }).catch(e => console.error("No se pudo chequear horas extras", e));
+    }
+    chequear();
+    const t = setInterval(chequear, 5 * 60 * 1000);
+    return () => { cancel = true; clearInterval(t); };
+  }, [clienteId, checkDone, cfg]);
 
   useEffect(() => {
     const turno = getTurno();
@@ -2146,6 +2244,14 @@ function MecanicoApp({ user }) {
       {toastNode}
       {body}
       {showBottomNav && <BottomNav view={tab} setView={(t) => { setTab(t); setFlow(null); }} disabledExcept={jornadaCerrada ? ["alertas", "perfil"] : null} alertasNoLeidas={alertasNoLeidas} />}
+      {horasExtrasInfo && (
+        <Modal title="⏰ Horas extras" onClose={() => setHorasExtrasInfo(null)}>
+          <p className="text-[14px] text-[#374151] mb-5">
+            Superaste las {horasExtrasInfo.horasNormal} horas de jornada. A partir de este momento corren horas extras.
+          </p>
+          <Button className="w-full" onClick={() => setHorasExtrasInfo(null)}>Entendido, continuar</Button>
+        </Modal>
+      )}
     </div>
   );
 }

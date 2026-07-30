@@ -498,3 +498,16 @@ BEGIN
     ON CONFLICT DO NOTHING;
   END IF;
 END $$;
+
+-- =====================================================================
+-- 29) Horas de jornada normal (Admin > Configuracion > Jornada laboral),
+-- usado por la alerta de horas extras del mecanico (mecanico.html compara
+-- NOW() contra check_diario.hora_inicio de hoy). No es estrictamente
+-- necesario correr esto: db.fetchConfig ya cae al default 9 via DEFAULT_CFG
+-- si la clave no existe en config_cliente para el cliente. Solo hace falta
+-- si se quiere que el valor aparezca explicito en la tabla desde el inicio.
+-- =====================================================================
+INSERT INTO config_cliente (cliente_id, clave, valor) VALUES
+  ('la_portada', 'horas_jornada_normal', '9'),
+  ('bys', 'horas_jornada_normal', '9')
+ON CONFLICT (cliente_id, clave) DO NOTHING;
