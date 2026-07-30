@@ -205,7 +205,9 @@ function Modal({ title, onClose, children, wide, footer }) {
 }
 function Toast({ msg, onDone, color = "green" }) {
   useEffect(() => { const t = setTimeout(onDone, 2000); return () => clearTimeout(t); }, []);
-  const styles = color === "amber" ? { background: "#FEF3C7", color: "#92400E" } : { background: "#DCFCE7", color: "#15803D" };
+  const styles = color === "amber" ? { background: "#FEF3C7", color: "#92400E" }
+    : color === "red" ? { background: "#FEE2E2", color: "#B91C1C" }
+    : { background: "#DCFCE7", color: "#15803D" };
   return (
     <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[80] px-4 py-3 rounded-2xl shadow-lg text-sm font-semibold flex items-center gap-3" style={styles}>
       <span>{msg}</span>
@@ -349,7 +351,7 @@ function Stepper({ value, onChange }) {
   }
   return (
     <div className="flex items-center gap-2">
-      <button type="button" onClick={() => onChange(Math.max(0, value - 1))} className="w-9 h-9 rounded-lg bg-[#F3F4F6] font-bold text-lg">−</button>
+      <button type="button" disabled={value <= 0} onClick={() => onChange(Math.max(0, value - 1))} className="w-9 h-9 rounded-lg bg-[#F3F4F6] font-bold text-lg disabled:opacity-40">−</button>
       <button type="button" onClick={() => { setTmp(String(value)); setEditing(true); }} className="w-10 text-center font-bold">{value}</button>
       <button type="button" onClick={() => onChange(value + 1)} className="w-9 h-9 rounded-lg bg-[#F3F4F6] font-bold text-lg">+</button>
     </div>
@@ -357,7 +359,7 @@ function Stepper({ value, onChange }) {
 }
 
 function CheckDiario({ user, clienteId, onDone }) {
-  const [stock, setStock] = useState(() => Object.fromEntries(ALL_STOCK_FIELDS.map(f => [f.key, { value: 0, touched: false }])));
+  const [stock, setStock] = useState(() => Object.fromEntries(ALL_STOCK_FIELDS.map(f => [f.key, { value: 0, checked: false }])));
   const [tools, setTools] = useState(() => Object.fromEntries(TOOLS_CHECKLIST.map(t => [t, { checked: false, cantidad: 0 }])));
   const [saving, setSaving] = useState(false);
   const [discrepancias, setDiscrepancias] = useState(null); // null = no evaluado, [] = sin diferencias, [...] = con diferencias
@@ -365,12 +367,13 @@ function CheckDiario({ user, clienteId, onDone }) {
   const [pushToast, toastNode] = useToasts();
 
   const toolsFilled = TOOLS_CHECKLIST.filter(t => tools[t].checked).length;
-  const stockFilled = ALL_STOCK_FIELDS.filter(f => stock[f.key].touched).length;
+  const stockFilled = ALL_STOCK_FIELDS.filter(f => stock[f.key].checked).length;
   const totalItems = TOOLS_CHECKLIST.length + ALL_STOCK_FIELDS.length;
   const progress = Math.round(((toolsFilled + stockFilled) / totalItems) * 100);
   const complete = toolsFilled === TOOLS_CHECKLIST.length && stockFilled === ALL_STOCK_FIELDS.length;
 
-  function setStockVal(key, v) { setStock(s => ({ ...s, [key]: { value: v, touched: true } })); }
+  function setStockVal(key, v) { setStock(s => ({ ...s, [key]: { value: v, checked: true } })); }
+  function toggleStock(key) { setStock(s => ({ ...s, [key]: { ...s[key], checked: !s[key].checked } })); }
   function setToolQty(t, v) { setTools(s => ({ ...s, [t]: { checked: true, cantidad: v } })); }
   function toggleTool(t) { setTools(s => ({ ...s, [t]: { ...s[t], checked: !s[t].checked } })); }
 
@@ -378,14 +381,17 @@ function CheckDiario({ user, clienteId, onDone }) {
     return (
       <>
         <p className="font-bold text-[15px] mb-2">{titulo}</p>
-        <Card className="mb-4 space-y-3">
+        <div className="space-y-2 mb-4">
           {fields.map(f => (
-            <div key={f.key} className="flex items-center justify-between">
-              <span className={cx("text-[14px] font-semibold", stock[f.key].touched ? "text-[#1F2937]" : "text-[#92400E]")}>{f.label}</span>
+            <div key={f.key} className={cx("bg-white rounded-2xl border shadow-card px-4 py-3 flex items-center gap-3", stock[f.key].checked ? "border-bd" : "border-[#F59E0B]")}>
+              <button type="button" onClick={() => toggleStock(f.key)} className={cx("w-7 h-7 rounded-lg flex items-center justify-center shrink-0 border", stock[f.key].checked ? "bg-ink border-ink" : "bg-white border-[#D1D5DB]")}>
+                {stock[f.key].checked && <Icon.check width="15" height="15" className="text-white" />}
+              </button>
+              <span className="text-[14px] font-semibold text-[#1F2937] flex-1">{f.label}</span>
               <Stepper value={stock[f.key].value} onChange={v => setStockVal(f.key, v)} />
             </div>
           ))}
-        </Card>
+        </div>
       </>
     );
   }
@@ -394,21 +400,14 @@ function CheckDiario({ user, clienteId, onDone }) {
     setSaving(true);
     const id = uuid();
     const horaInicio = nowHM();
-    const totales = {
-      nuevo: stock.nuevos.value + stock.tra_nuevos.value + stock.libre_nuevos.value,
-      transito: stock.transito.value + stock.tra_transito.value + stock.libre_transito.value,
-      recauchado: stock.recauchados.value + stock.tra_recauchados.value + stock.libre_recauchados.value
-    };
+    const totales = { nuevo: stock.nuevos.value, transito: stock.transito.value, recauchado: stock.recauchados.value, reparacion: stock.reparar.value };
+    const toolsCounted = Object.fromEntries(TOOLS_CHECKLIST.map(t => [t, tools[t].cantidad]));
     const data = {
       id, cliente_id: clienteId, empresa_id: clienteId, bultero_id: user.id, fecha: todayISO(), hora_inicio: horaInicio,
       numero_hoja: uuid().slice(0, 8), completado: true,
       nuevos: stock.nuevos.value, transito: stock.transito.value, reparar: stock.reparar.value, recauchados: stock.recauchados.value,
-      tra_nuevos: stock.tra_nuevos.value, tra_transito: stock.tra_transito.value, tra_reparar: stock.tra_reparar.value, tra_recauchados: stock.tra_recauchados.value,
       llantas_am_aluminio: stock.llantas_am_aluminio.value, llantas_am_fierro: stock.llantas_am_fierro.value,
       llantas_eu_aluminio: stock.llantas_eu_aluminio.value, llantas_eu_fierro: stock.llantas_eu_fierro.value,
-      neu_dir_nuevo: stock.nuevos.value, neu_dir_transito: stock.transito.value, neu_dir_reparar: stock.reparar.value, neu_dir_recauchado: stock.recauchados.value,
-      neu_trac_nuevo: stock.tra_nuevos.value, neu_trac_transito: stock.tra_transito.value, neu_trac_reparar: stock.tra_reparar.value, neu_trac_recauchado: stock.tra_recauchados.value,
-      neu_libre_nuevo: stock.libre_nuevos.value, neu_libre_transito: stock.libre_transito.value, neu_libre_reparar: stock.libre_reparar.value, neu_libre_recauchado: stock.libre_recauchados.value,
       checklist: TOOLS_CHECKLIST.map(t => ({ herramienta: t, cantidad: tools[t].cantidad }))
     };
     pushQueue({ id: uuid(), tipo: "novedad", clienteId, ts: Date.now(), data });
@@ -418,10 +417,17 @@ function CheckDiario({ user, clienteId, onDone }) {
 
     try {
       await marcarInicioJornada(clienteId, user.id, todayISO(), horaInicio);
-      const diffs = await compararInventarioNeumaticos(clienteId, totales);
-      if (diffs.length) {
-        const ids = await registrarDiscrepancias(clienteId, user.id, todayISO(), diffs);
-        setDiscrepancias({ diffs, ids });
+      const [neuDiffs, herrDiffs] = await Promise.all([
+        compararInventarioNeumaticos(clienteId, totales),
+        compararHerramientasInventario(clienteId, toolsCounted).catch(e => { console.error("No se pudo comparar herramientas", e); return []; })
+      ]);
+      const neuIds = neuDiffs.length ? await registrarDiscrepancias(clienteId, user.id, todayISO(), neuDiffs) : [];
+      if (herrDiffs.length) await registrarDiscrepanciasHerramientas(clienteId, user.id, todayISO(), herrDiffs);
+      if (neuDiffs.length || herrDiffs.length) {
+        setDiscrepancias({
+          diffs: [...neuDiffs, ...herrDiffs.map(d => ({ bucket: d.nombre, label: d.nombre, sistema: d.sistema, fisico: d.fisico }))],
+          ids: neuIds
+        });
         setSaving(false);
         return;
       }
@@ -476,9 +482,8 @@ function CheckDiario({ user, clienteId, onDone }) {
 
       <div className="px-0 pt-4">
         <p className="font-extrabold text-[17px] mb-3">Conteo de neumáticos</p>
-        {renderSeccion("Direccionales", DIRECCIONAL_FIELDS)}
-        {renderSeccion("Traccionales", TRACCIONAL_FIELDS)}
-        {renderSeccion("Ejes libres", LIBRE_FIELDS)}
+        <p className="text-[12.5px] text-muted mb-3">Marcá el check para confirmar que revisaste el ítem, aunque tengas 0.</p>
+        {renderSeccion("Neumáticos", NEUMATICO_FIELDS)}
         {renderSeccion("Llantas en patio", PATIO_FIELDS)}
 
         <p className="font-bold text-[15px] mb-2">Checklist de herramientas</p>
@@ -1118,14 +1123,55 @@ function InstructivoPendienteModal({ pendiente, onUsar, onLimpia }) {
   );
 }
 
+// Validacion de rotaciones (hoja de cambio), autocontenida — no depende de
+// axleCfg.groups/ladoDePosicion de js/supabase.js porque esas dos quedaban
+// mal para este caso: ladoDePosicion partia el array de posiciones de la fila
+// en "primera mitad"/"segunda mitad" en vez del lado real alternado (impar/par),
+// y AXLE_CONFIGS.semi.groups separaba cada eje del semi en su propio grupo
+// cuando el semi debe rotar totalmente libre. configEjes es '4x2'/'6x2'/'6x4'/'semi'.
+function validateRotation(fromPos, toPos, configEjes) {
+  const ladoIzq = { "4x2": [3, 5], "6x2": [3, 5], "6x4": [3, 5, 7, 9] };
+  const ladoDer = { "4x2": [4, 6], "6x2": [4, 6], "6x4": [4, 6, 8, 10] };
+  const direccionales = [1, 2];
+  const ejeLibre = [7, 8, 9, 10]; // solo 6x2
+
+  if (configEjes === "semi") return { valid: true };
+
+  const ambosDir = direccionales.includes(fromPos) && direccionales.includes(toPos);
+  if (ambosDir) return { valid: true };
+
+  const unoDir = direccionales.includes(fromPos) || direccionales.includes(toPos);
+  if (unoDir) return { valid: false, msg: "No podés rotar un direccional con un traccional" };
+
+  if (configEjes === "6x2") {
+    const ambosEL = ejeLibre.includes(fromPos) && ejeLibre.includes(toPos);
+    if (ambosEL) return { valid: true };
+    const unoEL = ejeLibre.includes(fromPos) || ejeLibre.includes(toPos);
+    if (unoEL) return { valid: false, msg: "El eje libre solo rota entre sus propias posiciones" };
+  }
+
+  const izq = ladoIzq[configEjes] || [];
+  const der = ladoDer[configEjes] || [];
+  const fromIzq = izq.includes(fromPos), toIzq = izq.includes(toPos);
+  const fromDer = der.includes(fromPos), toDer = der.includes(toPos);
+  if ((fromIzq && toIzq) || (fromDer && toDer)) return { valid: true };
+
+  return { valid: false, msg: "No podés rotar neumáticos de lados opuestos" };
+}
+
 function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, checklistInicial, kmInicial, recetaIdInicial, pendiente, discrepanciasNeumaticosInicial, onFinish, onCancel }) {
   const [km, setKm] = useState(kmInicial || "");
   const [kmSet, setKmSet] = useState(!!kmInicial);
   const [posData, setPosData] = useState(() => ({ ...posDataInicial }));
   // Item 9: posiciones con discrepancia de neumatico sin aprobar por el Admin
   // (numero_fuego/marca/medida no coincidian al auditar) - muestran banner +
-  // candado en el mapa, pero no bloquean el resto del trabajo.
+  // candado en el mapa, pero no bloquean el resto del trabajo. El candado
+  // sigue al NEUMATICO (numero_fuego), no a la posicion fija de la auditoria,
+  // para que se mueva correctamente si el mecanico lo rota.
   const discrepanciasPendientes = (discrepanciasNeumaticosInicial || []).filter(d => !d.aprobada);
+  const fuegosPendientesRef = useRef(
+    discrepanciasPendientes.map(d => d.campo === "numero_fuego" ? d.valor_mecanico : (posDataInicial[d.posicion] && posDataInicial[d.posicion].numero_fuego)).filter(Boolean)
+  );
   const [checklist, setChecklist] = useState(checklistInicial);
   const [nuevaTarea, setNuevaTarea] = useState("");
   const [infoPos, setInfoPos] = useState(null);
@@ -1217,18 +1263,11 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
   }
 
   function confirmarRotacion(origen, destino) {
-    const grupo = axleCfg.groups.find(g => g.includes(origen));
-    if (!grupo || !grupo.includes(destino)) {
-      if (navigator.vibrate) navigator.vibrate(150);
-      pushToast("✕ Movimiento no permitido entre esos ejes");
-      return;
-    }
-    // Ejes traccionales (M, banda caluga) tienen sentido de giro obligatorio:
-    // solo pueden rotar dentro de su mismo lado (izq/der), nunca cruzando.
-    // Direccionales (D) y libres/flotantes (T) no tienen esta restriccion.
-    if (ejeTipoDePosicion(axleCfg, origen) === "M" && ladoDePosicion(axleCfg, origen) !== ladoDePosicion(axleCfg, destino)) {
-      if (navigator.vibrate) navigator.vibrate(150);
-      pushToast("✕ No se puede cruzar de lado: se pierde el sentido de giro");
+    const configEjes = equipo.tipo === "SEMI" ? "semi" : equipo.configuracion_ejes;
+    const check = validateRotation(origen, destino, configEjes);
+    if (!check.valid) {
+      if (navigator.vibrate) navigator.vibrate(200);
+      pushToast(`✕ ${check.msg}`, "red");
       return;
     }
     const destFuego = posData[destino] ? posData[destino].numero_fuego : null;
@@ -1390,7 +1429,7 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
       </div>
 
       <div className="px-5">
-      {discrepanciasPendientes.filter(d => posData[d.posicion]).map(d => (
+      {Object.values(posData).filter(d => d.numero_fuego && fuegosPendientesRef.current.includes(d.numero_fuego)).map(d => (
         <div key={d.posicion} className="bg-[#FEF3C7] rounded-2xl px-4 py-3 mb-3">
           <p className="font-bold text-[13.5px] text-[#92400E]">⚠ Posición {d.posicion} — Pendiente de aprobación</p>
           <p className="text-[12.5px] text-[#92400E] mt-1">El supervisor debe aprobar el cambio de neumático detectado en esta posición</p>
@@ -1398,7 +1437,7 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
       ))}
       <Card className="mb-4">
         <AxleMap cfg={axleCfg} posData={posData} selectedPos={null} onTap={() => {}}
-          pendientesPos={new Set(discrepanciasPendientes.filter(d => posData[d.posicion]).map(d => d.posicion))}
+          pendientesPos={new Set(Object.values(posData).filter(d => d.numero_fuego && fuegosPendientesRef.current.includes(d.numero_fuego)).map(d => d.posicion))}
           getDragHandlers={(p) => posData[p] ? { onPointerDown: (e) => onPointerDownTire(p, e), onPointerMove: onDragMove, onPointerUp: onDragEnd, onPointerCancel: onDragEnd } : undefined} />
       </Card>
 

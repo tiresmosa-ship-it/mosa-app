@@ -52,6 +52,12 @@ DELETE FROM usuarios WHERE usuario IN ('debugtest999', 'debugtest998', 'nuevotes
 DELETE FROM herramientas_inventario WHERE id = '66666666-0002-0000-0000-000000000002'
   OR nombre = 'Taladro Real Test';
 
+-- Herramienta "Gata" (id 11111111-1111-1111-1111-111111111111) creada para
+-- probar la comparacion de check diario vs herramientas_inventario (mejora
+-- del check diario: discrepancias de herramientas). Su cantidad quedo en 5
+-- tras probar el flujo de aprobacion (empezo en 3).
+DELETE FROM herramientas_inventario WHERE id = '11111111-1111-1111-1111-111111111111';
+
 -- Carga valorizada de neumaticos de prueba (lotes_inventario + neumaticos +
 -- movimientos_bodega) usada para verificar el flujo completo end-to-end.
 DELETE FROM lotes_inventario WHERE numero_documento LIKE 'DOC-NEU-TEST%' OR numero_documento LIKE 'DEBUGDOC%';
