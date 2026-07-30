@@ -3638,6 +3638,7 @@ function DiscrepanciaNeumaticoDetalleModal({ alerta, adminUser, onClose, onResue
 
   async function resolver(d, aprobar, justificacion) {
     await resolverDiscrepanciaAuditoria(d, aprobar, justificacion, adminUser);
+    await marcarAlertaResuelta(alerta.id, adminUser.id, justificacion);
     pushToast(aprobar ? "✓ Discrepancia aprobada — neumaticos actualizado" : "✓ Discrepancia rechazada");
     onResuelto();
   }
@@ -3665,7 +3666,9 @@ function DiscrepanciaInventarioDetalleModal({ alerta, adminUser, onClose, onResu
   async function resolver(d, aprobar, justificacion) {
     await resolverDiscrepancia(d, aprobar, justificacion, adminUser.id);
     pushToast(aprobar ? "✓ Ajuste aprobado" : "✓ Discrepancia rechazada");
-    setLista(ls => ls.filter(x => x.id !== d.id));
+    const restantes = lista.filter(x => x.id !== d.id);
+    setLista(restantes);
+    if (!restantes.length) await marcarAlertaResuelta(alerta.id, adminUser.id, justificacion);
     onResuelto();
   }
 
@@ -3698,13 +3701,15 @@ function ReporteCierreDetalleModal({ alerta, empresas, onClose }) {
 }
 
 const ALERTA_ICONO = { rojo: "🔴", amarillo: "🟡", info: "ℹ️" };
-function AlertaCard({ a, empresaLabel, onVer, onMarcarLeida, onIgnorar, onAbrirMecanico }) {
+function AlertaCard({ a, empresaLabel, onVer, onMarcarLeida, onIgnorar, onAbrirMecanico, onMarcarResuelta }) {
   const equipoLabel = a.equipo ? `${a.equipo.patente}${a.equipo.numero_interno ? ` (${a.equipo.numero_interno})` : ""}` : null;
   const mecanicoLabel = a.mecanico ? `${a.mecanico.nombre} ${a.mecanico.apellido || ""}`.trim() : null;
   const esDesbloqueo = a.tipo === "solicitud_desbloqueo";
   const esDiscNeu = a.tipo === "neumatico_no_registrado";
   const esDiscInv = a.tipo === "discrepancia_inventario";
   const esCierre = a.tipo === "cierre_dia";
+  const esInfo = a.tipo === "cierre_dia" || a.tipo === "desbloqueo_aprobado";
+  const tieneResolucionDedicada = esDesbloqueo || esDiscNeu || esDiscInv;
   const icono = esDesbloqueo ? "🔒" : (ALERTA_ICONO[a.severidad] || "ℹ️");
 
   return (
@@ -3734,6 +3739,9 @@ function AlertaCard({ a, empresaLabel, onVer, onMarcarLeida, onIgnorar, onAbrirM
             <button onClick={() => onVer(a)} className="text-[12px] font-bold text-ink px-3 py-1.5 rounded-full bg-[#F3F4F6]">{esCierre ? "Ver reporte" : "Ver detalle"}</button>
           )}
           {!esDesbloqueo && !a.leida_admin && <button onClick={() => onMarcarLeida(a)} className="text-[12px] font-bold text-ink px-3 py-1.5 rounded-full bg-[#F3F4F6]">Marcar leída</button>}
+          {!tieneResolucionDedicada && !esInfo && a.estado !== "resuelta" && (
+            <button onClick={() => onMarcarResuelta(a)} className="text-[12px] font-bold text-white px-3 py-1.5 rounded-full bg-ink">✓ Marcar resuelta</button>
+          )}
         </div>
       </div>
     </div>
@@ -3788,6 +3796,9 @@ function AlertasAdminView({ empresaCtl, adminUser }) {
     let q = sb.from("alertas").update({ leida_admin: true }).eq("leida_admin", false);
     q = filtroCliente(q, filtro);
     await q;
+    let q2 = sb.from("alertas").update({ visto_en: new Date().toISOString(), en_proceso_en: new Date().toISOString(), estado: "en_proceso" }).eq("estado", "pendiente");
+    q2 = filtroCliente(q2, filtro);
+    await q2;
     pushToast("✓ Todas las alertas marcadas como leídas");
     cargar();
   }
@@ -3806,8 +3817,15 @@ function AlertasAdminView({ empresaCtl, adminUser }) {
   }
   async function ignorarDesbloqueo(a) {
     await adminDb.marcarAlertaLeida(a.id);
+    await marcarAlertaResuelta(a.id, adminUser.id, null);
     setAlertas(as => as.map(x => x.id === a.id ? { ...x, leida_admin: true } : x));
     pushToast("✓ Solicitud ignorada — el mecánico sigue bloqueado");
+  }
+  async function marcarResueltaManual(a) {
+    await marcarAlertaResuelta(a.id, adminUser.id, null);
+    if (!a.leida_admin) await adminDb.marcarAlertaLeida(a.id);
+    setAlertas(as => as.map(x => x.id === a.id ? { ...x, leida_admin: true, estado: "resuelta" } : x));
+    pushToast("✓ Alerta marcada como resuelta");
   }
   function handleMecanicoDone() {
     setMecanicoAccion(null);
@@ -3844,7 +3862,7 @@ function AlertasAdminView({ empresaCtl, adminUser }) {
         <div className="space-y-2 mb-6">
           {filtradas.map(a => (
             <AlertaCard key={a.id} a={a} empresaLabel={empresaLabel(a)} onVer={verDetalleAlerta}
-              onMarcarLeida={marcarLeida} onIgnorar={ignorarDesbloqueo} onAbrirMecanico={abrirMecanico} />
+              onMarcarLeida={marcarLeida} onIgnorar={ignorarDesbloqueo} onAbrirMecanico={abrirMecanico} onMarcarResuelta={marcarResueltaManual} />
           ))}
           {!filtradas.length && <p className="text-center text-muted py-10 text-sm">Sin alertas que coincidan.</p>}
         </div>
@@ -4757,14 +4775,17 @@ async function fetchProductividadData(filtro, desde, hasta) {
   const mecs = mecanicos || [];
   const clientesMap = {}; (clientes || []).forEach(c => clientesMap[c.id_cliente] = c.nombre);
   const mecIds = mecs.map(m => m.id);
-  if (!mecIds.length) return { mecanicos: [], clientesMap, auditorias: [], cambios: [], cierres: [], intervenciones: [], discrepancias: [], recetaPorAuditoria: {} };
+  if (!mecIds.length) return { mecanicos: [], clientesMap, auditorias: [], cambios: [], cierres: [], cierresHoy: [], intervenciones: [], discrepancias: [], recetaPorAuditoria: {}, horasNormalPorCliente: {} };
 
-  const [{ data: auditorias }, { data: cambios }, { data: cierres }, { data: intervenciones }, { data: discrepancias }] = await Promise.all([
+  const hoy = todayISO();
+  const [{ data: auditorias }, { data: cambios }, { data: cierres }, { data: cierresHoy }, { data: intervenciones }, { data: discrepancias }, { data: cfgRows }] = await Promise.all([
     sb.from("auditorias").select("id_auditoria,equipo_id,bultero_id,fecha,numero_auditoria").in("bultero_id", mecIds).gte("fecha", desde).lte("fecha", hasta),
     sb.from("cambios_neumaticos").select("id_cambio,equipo_id,bultero_id,fecha,numero_cambio").in("bultero_id", mecIds).gte("fecha", desde).lte("fecha", hasta),
     sb.from("cierre_dia").select("*").in("mecanico_id", mecIds).gte("fecha", desde).lte("fecha", hasta),
+    sb.from("cierre_dia").select("*").in("mecanico_id", mecIds).eq("fecha", hoy),
     sb.from("intervenciones").select("id,mecanico_id,tipo,fecha,equipo_id").in("mecanico_id", mecIds).gte("fecha", desde).lte("fecha", hasta),
-    sb.from("discrepancias_inventario").select("id,mecanico_id,fecha,origen,resuelta").in("mecanico_id", mecIds).gte("fecha", desde).lte("fecha", hasta)
+    sb.from("discrepancias_inventario").select("id,mecanico_id,fecha,origen,resuelta").in("mecanico_id", mecIds).gte("fecha", desde).lte("fecha", hasta),
+    sb.from("config_cliente").select("cliente_id,valor").eq("clave", "horas_jornada_normal")
   ]);
 
   const auditoriaIds = (auditorias || []).map(a => a.id_auditoria);
@@ -4775,16 +4796,46 @@ async function fetchProductividadData(filtro, desde, hasta) {
   }
   const recetaPorAuditoria = {};
   recetas.forEach(r => { recetaPorAuditoria[r.auditoria_id] = r; });
+  const horasNormalPorCliente = {};
+  (cfgRows || []).forEach(r => { horasNormalPorCliente[r.cliente_id] = parseFloat(r.valor) || 9; });
 
-  return { mecanicos: mecs, clientesMap, auditorias: auditorias || [], cambios: cambios || [], cierres: cierres || [], intervenciones: intervenciones || [], discrepancias: discrepancias || [], recetaPorAuditoria };
+  return {
+    mecanicos: mecs, clientesMap, auditorias: auditorias || [], cambios: cambios || [], cierres: cierres || [],
+    cierresHoy: cierresHoy || [], intervenciones: intervenciones || [], discrepancias: discrepancias || [], recetaPorAuditoria, horasNormalPorCliente
+  };
+}
+function prodHorasExtrasHoy(cierreHoy, horasNormal) {
+  if (!cierreHoy || !cierreHoy.hora_inicio) return 0;
+  const [h1, m1] = cierreHoy.hora_inicio.split(":").map(Number);
+  const inicio = new Date(); inicio.setHours(h1, m1, 0, 0);
+  let fin = new Date();
+  if (cierreHoy.hora_cierre) {
+    const [h2, m2] = cierreHoy.hora_cierre.split(":").map(Number);
+    const finCierre = new Date(); finCierre.setHours(h2, m2, 0, 0);
+    if (finCierre > fin) fin = finCierre;
+  }
+  let diffH = (fin - inicio) / 3600000;
+  if (diffH < 0) diffH += 24;
+  const extra = diffH - horasNormal;
+  return extra > 0 ? extra : 0;
 }
 
-function computeMecanicoStats(mecId, data) {
+function computeMecanicoStats(mecId, data, clienteId) {
   const auds = data.auditorias.filter(a => a.bultero_id === mecId);
   const cambios = data.cambios.filter(c => c.bultero_id === mecId);
   const cierres = data.cierres.filter(c => c.mecanico_id === mecId);
   const intervs = data.intervenciones.filter(i => i.mecanico_id === mecId);
   const discs = data.discrepancias.filter(d => d.mecanico_id === mecId);
+  const horasNormal = (data.horasNormalPorCliente && data.horasNormalPorCliente[clienteId]) || 9;
+  const cierreHoy = (data.cierresHoy || []).find(c => c.mecanico_id === mecId) || null;
+  const horasExtrasHoy = prodHorasExtrasHoy(cierreHoy, horasNormal);
+  let diasConHorasExtras = 0, horasExtrasAcumuladas = 0;
+  cierres.forEach(c => {
+    const dur = prodHorasEntre(c.hora_inicio, c.hora_cierre);
+    if (dur == null) return;
+    const extra = dur - horasNormal;
+    if (extra > 0) { diasConHorasExtras++; horasExtrasAcumuladas += extra; }
+  });
 
   const recetasM = auds.map(a => data.recetaPorAuditoria[a.id_auditoria]).filter(Boolean);
   const pctProm = recetasM.length ? recetasM.reduce((s, r) => s + (r.pct_receta_seguida || 0), 0) / recetasM.length : null;
@@ -4815,7 +4866,7 @@ function computeMecanicoStats(mecId, data) {
     auditorias: auds.length, cambios: cambios.length, pctProm, cierresOk, cierresOlvidados, hsProm,
     horaInicioProm, horaCierreProm, regulaciones, retorqueos, reparaciones,
     completados, parciales, sinHoja, discTotal: discs.length, discResueltas, discPendientes, discCheckDiario, discAuditoria,
-    diasTrabajados: cierres.length,
+    diasTrabajados: cierres.length, horasExtrasHoy, diasConHorasExtras, horasExtrasAcumuladas,
     auds, cambiosList: cambios, cierres, intervs, discs, recetasM
   };
 }
@@ -4949,9 +5000,227 @@ function MecanicoDetalleModal({ mecanico, stats, clientesMap, mostrarEmpresa, de
   );
 }
 
+/* =====================================================================
+   DESEMPEÑO DEL ADMIN (solo SuperAdmin) — Productividad > tab Admin.
+   alertas.estado/visto_en/en_proceso_en/resuelto_en/resuelto_por/
+   escalada_superadmin son columnas nuevas (migracion 30); filas viejas
+   quedan en estado='pendiente' con el resto NULL, se muestran como "sin
+   datos" y no rompen los calculos (se filtran con != null donde aplica).
+===================================================================== */
+async function fetchDesempenoAdminData(clienteId, desde, hasta) {
+  let qa = sb.from("alertas").select("id,tipo,severidad,cliente_id,creado_en,visto_en,en_proceso_en,resuelto_en,resuelto_por,estado,escalada_superadmin,justificacion_admin,titulo,descripcion,mecanico_id")
+    .in("severidad", ["rojo", "amarillo"]).gte("creado_en", desde + "T00:00:00").lte("creado_en", hasta + "T23:59:59.999");
+  qa = filtroCliente(qa, clienteId);
+  const [{ data: alertas, error }, { data: admins }, { data: cfgRows }] = await Promise.all([
+    qa, sb.from("usuarios").select("id,nombre,apellido").eq("rol", "admin").eq("activo", true),
+    sb.from("config_cliente").select("cliente_id,valor").eq("clave", "horas_escalada_alerta")
+  ]);
+  if (error) throw error;
+  const horasEscaladaPorCliente = {};
+  (cfgRows || []).forEach(r => { horasEscaladaPorCliente[r.cliente_id] = parseFloat(r.valor) || 4; });
+  return { alertas: alertas || [], admins: admins || [], horasEscaladaPorCliente };
+}
+function alertaHorasEscalada(a, horasEscaladaPorCliente) { return horasEscaladaPorCliente[a.cliente_id] || 4; }
+function alertaEstaEscalada(a, horasEscaladaPorCliente) {
+  const limite = alertaHorasEscalada(a, horasEscaladaPorCliente);
+  const fin = a.resuelto_en ? new Date(a.resuelto_en) : new Date();
+  const horas = (fin - new Date(a.creado_en)) / 3600000;
+  return a.escalada_superadmin === true || horas > limite;
+}
+function DesempenoAdminView({ empresaCtl }) {
+  const { filtro } = empresaCtl;
+  const [periodoTipo, setPeriodoTipo] = useState("semana");
+  const [personalizado, setPersonalizado] = useState({ desde: "", hasta: "" });
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [verAlerta, setVerAlerta] = useState(null);
+  const { desde, hasta } = prodGetRango(periodoTipo, personalizado);
+
+  useEffect(() => {
+    if (periodoTipo === "personalizado" && (!personalizado.desde || !personalizado.hasta)) return;
+    let cancel = false;
+    setLoading(true);
+    fetchDesempenoAdminData(filtro, desde, hasta).then(d => { if (!cancel) { setData(d); setLoading(false); } })
+      .catch(e => { console.error("No se pudo cargar el desempeño del Admin", e); if (!cancel) setLoading(false); });
+    return () => { cancel = true; };
+  }, [filtro, periodoTipo, personalizado.desde, personalizado.hasta]);
+
+  const porTipo = React.useMemo(() => {
+    if (!data) return [];
+    const grupos = {};
+    data.alertas.forEach(a => {
+      if (!grupos[a.tipo]) grupos[a.tipo] = [];
+      grupos[a.tipo].push(a);
+    });
+    return Object.entries(grupos).map(([tipo, as]) => {
+      const resueltas = as.filter(a => a.estado === "resuelta" && a.resuelto_en);
+      const enPlazo = resueltas.filter(a => (new Date(a.resuelto_en) - new Date(a.creado_en)) / 3600000 <= alertaHorasEscalada(a, data.horasEscaladaPorCliente));
+      const escaladas = as.filter(a => alertaEstaEscalada(a, data.horasEscaladaPorCliente));
+      const horasProm = resueltas.length ? resueltas.reduce((s, a) => s + (new Date(a.resuelto_en) - new Date(a.creado_en)) / 3600000, 0) / resueltas.length : null;
+      return {
+        tipo, totalRecibidas: as.length, resueltas: resueltas.length, enPlazo: enPlazo.length,
+        pctEnPlazo: resueltas.length ? Math.round((enPlazo.length / resueltas.length) * 100) : null,
+        escaladas: escaladas.length, horasProm
+      };
+    }).sort((a, b) => b.totalRecibidas - a.totalRecibidas);
+  }, [data]);
+
+  const kpis = React.useMemo(() => {
+    if (!data) return null;
+    const resueltas = data.alertas.filter(a => a.estado === "resuelta" && a.resuelto_en);
+    const enPlazo = resueltas.filter(a => (new Date(a.resuelto_en) - new Date(a.creado_en)) / 3600000 <= alertaHorasEscalada(a, data.horasEscaladaPorCliente));
+    const horasProm = resueltas.length ? resueltas.reduce((s, a) => s + (new Date(a.resuelto_en) - new Date(a.creado_en)) / 3600000, 0) / resueltas.length : null;
+    return { recibidas: data.alertas.length, enPlazo: enPlazo.length, horasProm };
+  }, [data]);
+
+  const timelineHoy = React.useMemo(() => {
+    if (!data) return [];
+    const hoy = todayISO();
+    return data.alertas.filter(a => (a.creado_en || "").slice(0, 10) === hoy)
+      .sort((a, b) => (a.creado_en || "").localeCompare(b.creado_en || ""));
+  }, [data]);
+
+  const rankingAdmins = React.useMemo(() => {
+    if (!data || data.admins.length < 2) return [];
+    return data.admins.map(ad => {
+      const resueltasAd = data.alertas.filter(a => a.resuelto_por === ad.id && a.estado === "resuelta" && a.resuelto_en);
+      const enPlazoAd = resueltasAd.filter(a => (new Date(a.resuelto_en) - new Date(a.creado_en)) / 3600000 <= alertaHorasEscalada(a, data.horasEscaladaPorCliente));
+      const pct = resueltasAd.length ? Math.round((enPlazoAd.length / resueltasAd.length) * 100) : null;
+      return { admin: ad, resueltas: resueltasAd.length, pct };
+    }).filter(r => r.resueltas > 0).sort((a, b) => (b.pct || 0) - (a.pct || 0));
+  }, [data]);
+
+  function badgePctPlazo(pct) {
+    if (pct == null) return <Badge color="gray">Sin datos</Badge>;
+    if (pct >= 90) return <Badge color="green">{pct}%</Badge>;
+    if (pct >= 70) return <Badge color="amber">{pct}%</Badge>;
+    return <Badge color="red">{pct}%</Badge>;
+  }
+
+  return (
+    <div>
+      <div className="flex flex-wrap items-center gap-2 mb-5">
+        {PRODUCTIVIDAD_PERIODOS.map(p => (
+          <button key={p.id} onClick={() => setPeriodoTipo(p.id)}
+            className={cx("px-4 py-2 rounded-full text-[13px] font-bold whitespace-nowrap", periodoTipo === p.id ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{p.label}</button>
+        ))}
+        {periodoTipo === "personalizado" && (
+          <div className="flex items-center gap-2">
+            <TextInput type="date" value={personalizado.desde} onChange={e => setPersonalizado(p => ({ ...p, desde: e.target.value }))} className="h-10 w-auto" />
+            <span className="text-muted text-[12px]">a</span>
+            <TextInput type="date" value={personalizado.hasta} onChange={e => setPersonalizado(p => ({ ...p, hasta: e.target.value }))} className="h-10 w-auto" />
+          </div>
+        )}
+      </div>
+
+      {loading || !data ? <div className="flex justify-center py-16"><span className="spinner" /></div> : !data.alertas.length ? (
+        <p className="text-center text-muted py-16 text-sm">Sin alertas registradas en este período.</p>
+      ) : (
+        <>
+          <div className="grid grid-cols-3 gap-3 mb-8">
+            <KpiCard label="Alertas recibidas" value={kpis.recibidas} />
+            <KpiCard label="Resueltas en plazo" value={kpis.enPlazo} />
+            <KpiCard label="Tiempo prom. resolución" value={kpis.horasProm != null ? `${kpis.horasProm.toFixed(1)}h` : "—"} />
+          </div>
+
+          <p className="font-bold text-[16px] mb-3">Alertas por tipo y resolución</p>
+          <div className="bg-white rounded-2xl border border-bd shadow-card overflow-x-auto mb-8">
+            <table className="w-full text-[13px]">
+              <thead>
+                <tr className="text-left text-muted text-[11px] font-semibold border-b border-bd">
+                  <th className="px-3 py-3">Tipo alerta</th>
+                  <th className="px-3 py-3">Recibidas</th>
+                  <th className="px-3 py-3">Resueltas</th>
+                  <th className="px-3 py-3">En plazo</th>
+                  <th className="px-3 py-3">Escaladas</th>
+                  <th className="px-3 py-3">Tiempo prom.</th>
+                </tr>
+              </thead>
+              <tbody>
+                {porTipo.map((r, i) => (
+                  <tr key={r.tipo} className={cx(i > 0 && "border-t border-bd")}>
+                    <td className="px-3 py-3 font-bold">{ALERTA_TIPO_LABELS[r.tipo] || r.tipo}</td>
+                    <td className="px-3 py-3">{r.totalRecibidas}</td>
+                    <td className="px-3 py-3">{r.resueltas}</td>
+                    <td className="px-3 py-3">{badgePctPlazo(r.pctEnPlazo)}</td>
+                    <td className="px-3 py-3">{r.escaladas > 0 ? <Badge color="red">{r.escaladas}</Badge> : <Badge color="gray">0</Badge>}</td>
+                    <td className="px-3 py-3">{r.horasProm != null ? `${r.horasProm.toFixed(1)}h` : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {rankingAdmins.length > 0 && (
+            <>
+              <p className="font-bold text-[16px] mb-3">Ranking — % de alertas resueltas en plazo</p>
+              <div className="grid sm:grid-cols-3 gap-3 mb-8">
+                {rankingAdmins.map((r, i) => (
+                  <Card key={r.admin.id}>
+                    <p className="text-[24px] mb-1">{["🥇", "🥈", "🥉"][i] || "🏅"}</p>
+                    <p className="font-bold text-[15px]">{r.admin.nombre} {r.admin.apellido || ""}</p>
+                    <p className="text-[13px] text-muted mt-1">{r.pct != null ? `${r.pct}% en plazo` : "Sin datos"} · {r.resueltas} resueltas</p>
+                  </Card>
+                ))}
+              </div>
+            </>
+          )}
+
+          <p className="font-bold text-[16px] mb-3">Timeline de alertas de hoy</p>
+          <div className="bg-white rounded-2xl border border-bd shadow-card overflow-x-auto mb-8">
+            <table className="w-full text-[13px]">
+              <thead>
+                <tr className="text-left text-muted text-[11px] font-semibold border-b border-bd">
+                  <th className="px-3 py-3">Hora</th>
+                  <th className="px-3 py-3">Tipo</th>
+                  <th className="px-3 py-3">Severidad</th>
+                  <th className="px-3 py-3">Estado</th>
+                  <th className="px-3 py-3">Tiempo hasta resolución</th>
+                  <th className="px-3 py-3">¿Escalada?</th>
+                </tr>
+              </thead>
+              <tbody>
+                {timelineHoy.map((a, i) => {
+                  const dur = a.resuelto_en ? (new Date(a.resuelto_en) - new Date(a.creado_en)) / 3600000 : null;
+                  return (
+                    <tr key={a.id} className={cx(i > 0 && "border-t border-bd", "cursor-pointer hover:bg-[#F9FAFB]")} onClick={() => setVerAlerta(a)}>
+                      <td className="px-3 py-3">{(a.creado_en || "").slice(11, 16)}</td>
+                      <td className="px-3 py-3 font-bold">{ALERTA_TIPO_LABELS[a.tipo] || a.tipo}</td>
+                      <td className="px-3 py-3">{a.severidad === "rojo" ? <Badge color="red">Crítica</Badge> : <Badge color="amber">Atención</Badge>}</td>
+                      <td className="px-3 py-3">{a.estado === "resuelta" ? <Badge color="green">Resuelta</Badge> : a.estado === "en_proceso" ? <Badge color="amber">En proceso</Badge> : <Badge color="gray">Pendiente</Badge>}</td>
+                      <td className="px-3 py-3">{dur != null ? `${dur.toFixed(1)}h` : "—"}</td>
+                      <td className="px-3 py-3">{alertaEstaEscalada(a, data.horasEscaladaPorCliente) ? <Badge color="red">Sí</Badge> : <Badge color="gray">No</Badge>}</td>
+                    </tr>
+                  );
+                })}
+                {!timelineHoy.length && <tr><td colSpan={6} className="px-4 py-6 text-center text-muted">Sin alertas hoy.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      {verAlerta && (
+        <Modal title={ALERTA_TIPO_LABELS[verAlerta.tipo] || verAlerta.tipo} onClose={() => setVerAlerta(null)}>
+          <div className="space-y-2 text-[13.5px]">
+            <p><span className="font-semibold">Título:</span> {verAlerta.titulo}</p>
+            {verAlerta.descripcion && <p><span className="font-semibold">Descripción:</span> {verAlerta.descripcion}</p>}
+            <p><span className="font-semibold">Llegó:</span> {verAlerta.creado_en ? new Date(verAlerta.creado_en).toLocaleString() : "—"}</p>
+            <p><span className="font-semibold">Vista por el Admin:</span> {verAlerta.visto_en ? new Date(verAlerta.visto_en).toLocaleString() : "Aún no vista"}</p>
+            <p><span className="font-semibold">Marcada en proceso:</span> {verAlerta.en_proceso_en ? new Date(verAlerta.en_proceso_en).toLocaleString() : "—"}</p>
+            <p><span className="font-semibold">Resuelta:</span> {verAlerta.resuelto_en ? new Date(verAlerta.resuelto_en).toLocaleString() : "Pendiente"}</p>
+            {verAlerta.justificacion_admin && <p><span className="font-semibold">Justificación del Admin:</span> {verAlerta.justificacion_admin}</p>}
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 function ProductividadView({ empresaCtl, esSuperAdmin }) {
   const { filtro, empresas } = empresaCtl;
   const mostrarEmpresa = filtro === "todas" && !!esSuperAdmin;
+  const [subTab, setSubTab] = useState("mecanicos");
   const [periodoTipo, setPeriodoTipo] = useState("semana");
   const [personalizado, setPersonalizado] = useState({ desde: "", hasta: "" });
   const [loading, setLoading] = useState(true);
@@ -4971,7 +5240,7 @@ function ProductividadView({ empresaCtl, esSuperAdmin }) {
 
   const filas = React.useMemo(() => {
     if (!data) return [];
-    return data.mecanicos.map(m => ({ mecanico: m, stats: computeMecanicoStats(m.id, data) }));
+    return data.mecanicos.map(m => ({ mecanico: m, stats: computeMecanicoStats(m.id, data, m.cliente_id) }));
   }, [data]);
 
   const kpis = React.useMemo(() => {
@@ -5018,6 +5287,11 @@ function ProductividadView({ empresaCtl, esSuperAdmin }) {
     if (n > 2) return <Badge color="red">{n}</Badge>;
     return <Badge color="amber">{n}</Badge>;
   }
+  function badgeHorasExtras(hs) {
+    if (!hs || hs <= 0) return <Badge color="gray">0</Badge>;
+    if (hs <= 2) return <Badge color="amber">{hs.toFixed(1)}</Badge>;
+    return <Badge color="red">{hs.toFixed(1)}</Badge>;
+  }
 
   function exportarTabla() {
     const filasExport = filas.map(f => {
@@ -5030,6 +5304,9 @@ function ProductividadView({ empresaCtl, esSuperAdmin }) {
         "Cierres ok": f.stats.cierresOk,
         Olvidados: f.stats.cierresOlvidados,
         "Hs jornada prom.": f.stats.hsProm != null ? Number(f.stats.hsProm.toFixed(1)) : "",
+        "Hs extras hoy": Number(f.stats.horasExtrasHoy.toFixed(1)),
+        "Días con hs extras": f.stats.diasConHorasExtras,
+        "Hs extras acum.": Number(f.stats.horasExtrasAcumuladas.toFixed(1)),
         Regulaciones: f.stats.regulaciones,
         Retorqueos: f.stats.retorqueos,
         Reparaciones: f.stats.reparaciones
@@ -5051,6 +5328,18 @@ function ProductividadView({ empresaCtl, esSuperAdmin }) {
     <div>
       <h1 className="text-[26px] font-extrabold mb-5">📈 Productividad</h1>
 
+      {esSuperAdmin && (
+        <div className="flex gap-2 mb-5">
+          {[["mecanicos", "Mecánicos"], ["admin", "Admin"]].map(([k, l]) => (
+            <button key={k} onClick={() => setSubTab(k)} className={cx("px-4 py-2 rounded-full text-[13px] font-bold", subTab === k ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{l}</button>
+          ))}
+        </div>
+      )}
+
+      {subTab === "admin" && esSuperAdmin ? (
+        <DesempenoAdminView empresaCtl={empresaCtl} />
+      ) : (
+      <>
       <div className="flex flex-wrap items-center gap-2 mb-5">
         {PRODUCTIVIDAD_PERIODOS.map(p => (
           <button key={p.id} onClick={() => setPeriodoTipo(p.id)}
@@ -5107,6 +5396,9 @@ function ProductividadView({ empresaCtl, esSuperAdmin }) {
                   <th className="px-3 py-3">Cierres ok</th>
                   <th className="px-3 py-3">Olvidados</th>
                   <th className="px-3 py-3">Hs jornada</th>
+                  <th className="px-3 py-3">Hs extras hoy</th>
+                  <th className="px-3 py-3">Días extras</th>
+                  <th className="px-3 py-3">Hs extras acum.</th>
                   <th className="px-3 py-3">Regulaciones</th>
                   <th className="px-3 py-3">Retorqueos</th>
                   <th className="px-3 py-3">Reparaciones</th>
@@ -5123,12 +5415,15 @@ function ProductividadView({ empresaCtl, esSuperAdmin }) {
                     <td className="px-3 py-3">{f.stats.cierresOk}</td>
                     <td className="px-3 py-3">{badgeOlvidados(f.stats.cierresOlvidados)}</td>
                     <td className="px-3 py-3">{f.stats.hsProm != null ? f.stats.hsProm.toFixed(1) : "—"}</td>
+                    <td className="px-3 py-3">{badgeHorasExtras(f.stats.horasExtrasHoy)}</td>
+                    <td className="px-3 py-3">{f.stats.diasConHorasExtras}</td>
+                    <td className="px-3 py-3">{f.stats.horasExtrasAcumuladas.toFixed(1)}</td>
                     <td className="px-3 py-3">{f.stats.regulaciones}</td>
                     <td className="px-3 py-3">{f.stats.retorqueos}</td>
                     <td className="px-3 py-3">{f.stats.reparaciones}</td>
                   </tr>
                 ))}
-                {!filas.length && <tr><td colSpan={mostrarEmpresa ? 11 : 10} className="px-4 py-6 text-center text-muted">No hay mecánicos para este filtro.</td></tr>}
+                {!filas.length && <tr><td colSpan={mostrarEmpresa ? 14 : 13} className="px-4 py-6 text-center text-muted">No hay mecánicos para este filtro.</td></tr>}
               </tbody>
             </table>
           </div>
@@ -5138,6 +5433,8 @@ function ProductividadView({ empresaCtl, esSuperAdmin }) {
             <ProductividadTendenciaChart semanas={semanas} />
           </Card>
         </>
+      )}
+      </>
       )}
 
       {detalleMec && (

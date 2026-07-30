@@ -3015,14 +3015,17 @@ async function fetchProductividadData(filtro, desde, hasta) {
   const mecs = mecanicos || [];
   const clientesMap = {}; (clientes || []).forEach(c => clientesMap[c.id_cliente] = c.nombre);
   const mecIds = mecs.map(m => m.id);
-  if (!mecIds.length) return { mecanicos: [], clientesMap, auditorias: [], cambios: [], cierres: [], intervenciones: [], discrepancias: [], recetaPorAuditoria: {} };
+  if (!mecIds.length) return { mecanicos: [], clientesMap, auditorias: [], cambios: [], cierres: [], cierresHoy: [], intervenciones: [], discrepancias: [], recetaPorAuditoria: {}, horasNormalPorCliente: {} };
 
-  const [{ data: auditorias }, { data: cambios }, { data: cierres }, { data: intervenciones }, { data: discrepancias }] = await Promise.all([
+  const hoy = todayISO();
+  const [{ data: auditorias }, { data: cambios }, { data: cierres }, { data: cierresHoy }, { data: intervenciones }, { data: discrepancias }, { data: cfgRows }] = await Promise.all([
     sb.from("auditorias").select("id_auditoria,equipo_id,bultero_id,fecha,numero_auditoria").in("bultero_id", mecIds).gte("fecha", desde).lte("fecha", hasta),
     sb.from("cambios_neumaticos").select("id_cambio,equipo_id,bultero_id,fecha,numero_cambio").in("bultero_id", mecIds).gte("fecha", desde).lte("fecha", hasta),
     sb.from("cierre_dia").select("*").in("mecanico_id", mecIds).gte("fecha", desde).lte("fecha", hasta),
+    sb.from("cierre_dia").select("*").in("mecanico_id", mecIds).eq("fecha", hoy),
     sb.from("intervenciones").select("id,mecanico_id,tipo,fecha,equipo_id").in("mecanico_id", mecIds).gte("fecha", desde).lte("fecha", hasta),
-    sb.from("discrepancias_inventario").select("id,mecanico_id,fecha,origen,resuelta").in("mecanico_id", mecIds).gte("fecha", desde).lte("fecha", hasta)
+    sb.from("discrepancias_inventario").select("id,mecanico_id,fecha,origen,resuelta").in("mecanico_id", mecIds).gte("fecha", desde).lte("fecha", hasta),
+    sb.from("config_cliente").select("cliente_id,valor").eq("clave", "horas_jornada_normal")
   ]);
 
   const auditoriaIds = (auditorias || []).map(a => a.id_auditoria);
@@ -3033,16 +3036,47 @@ async function fetchProductividadData(filtro, desde, hasta) {
   }
   const recetaPorAuditoria = {};
   recetas.forEach(r => { recetaPorAuditoria[r.auditoria_id] = r; });
+  const horasNormalPorCliente = {};
+  (cfgRows || []).forEach(r => { horasNormalPorCliente[r.cliente_id] = parseFloat(r.valor) || 9; });
 
-  return { mecanicos: mecs, clientesMap, auditorias: auditorias || [], cambios: cambios || [], cierres: cierres || [], intervenciones: intervenciones || [], discrepancias: discrepancias || [], recetaPorAuditoria };
+  return {
+    mecanicos: mecs, clientesMap, auditorias: auditorias || [], cambios: cambios || [], cierres: cierres || [],
+    cierresHoy: cierresHoy || [], intervenciones: intervenciones || [], discrepancias: discrepancias || [], recetaPorAuditoria, horasNormalPorCliente
+  };
+}
+// MAX(hora_cierre, NOW()) - hora_inicio - horas_jornada_normal, sin negativos.
+function prodHorasExtrasHoy(cierreHoy, horasNormal) {
+  if (!cierreHoy || !cierreHoy.hora_inicio) return 0;
+  const [h1, m1] = cierreHoy.hora_inicio.split(":").map(Number);
+  const inicio = new Date(); inicio.setHours(h1, m1, 0, 0);
+  let fin = new Date();
+  if (cierreHoy.hora_cierre) {
+    const [h2, m2] = cierreHoy.hora_cierre.split(":").map(Number);
+    const finCierre = new Date(); finCierre.setHours(h2, m2, 0, 0);
+    if (finCierre > fin) fin = finCierre; // MAX(hora_cierre, NOW())
+  }
+  let diffH = (fin - inicio) / 3600000;
+  if (diffH < 0) diffH += 24;
+  const extra = diffH - horasNormal;
+  return extra > 0 ? extra : 0;
 }
 
-function computeMecanicoStats(mecId, data) {
+function computeMecanicoStats(mecId, data, clienteId) {
   const auds = data.auditorias.filter(a => a.bultero_id === mecId);
   const cambios = data.cambios.filter(c => c.bultero_id === mecId);
   const cierres = data.cierres.filter(c => c.mecanico_id === mecId);
   const intervs = data.intervenciones.filter(i => i.mecanico_id === mecId);
   const discs = data.discrepancias.filter(d => d.mecanico_id === mecId);
+  const horasNormal = (data.horasNormalPorCliente && data.horasNormalPorCliente[clienteId]) || 9;
+  const cierreHoy = (data.cierresHoy || []).find(c => c.mecanico_id === mecId) || null;
+  const horasExtrasHoy = prodHorasExtrasHoy(cierreHoy, horasNormal);
+  let diasConHorasExtras = 0, horasExtrasAcumuladas = 0;
+  cierres.forEach(c => {
+    const dur = prodHorasEntre(c.hora_inicio, c.hora_cierre);
+    if (dur == null) return;
+    const extra = dur - horasNormal;
+    if (extra > 0) { diasConHorasExtras++; horasExtrasAcumuladas += extra; }
+  });
 
   const recetasM = auds.map(a => data.recetaPorAuditoria[a.id_auditoria]).filter(Boolean);
   const pctProm = recetasM.length ? recetasM.reduce((s, r) => s + (r.pct_receta_seguida || 0), 0) / recetasM.length : null;
@@ -3073,7 +3107,7 @@ function computeMecanicoStats(mecId, data) {
     auditorias: auds.length, cambios: cambios.length, pctProm, cierresOk, cierresOlvidados, hsProm,
     horaInicioProm, horaCierreProm, regulaciones, retorqueos, reparaciones,
     completados, parciales, sinHoja, discTotal: discs.length, discResueltas, discPendientes, discCheckDiario, discAuditoria,
-    diasTrabajados: cierres.length,
+    diasTrabajados: cierres.length, horasExtrasHoy, diasConHorasExtras, horasExtrasAcumuladas,
     auds, cambiosList: cambios, cierres, intervs, discs, recetasM
   };
 }
@@ -3229,7 +3263,7 @@ function ProductividadView({ empresaCtl, esSuperAdmin }) {
 
   const filas = React.useMemo(() => {
     if (!data) return [];
-    return data.mecanicos.map(m => ({ mecanico: m, stats: computeMecanicoStats(m.id, data) }));
+    return data.mecanicos.map(m => ({ mecanico: m, stats: computeMecanicoStats(m.id, data, m.cliente_id) }));
   }, [data]);
 
   const kpis = React.useMemo(() => {
@@ -3276,6 +3310,12 @@ function ProductividadView({ empresaCtl, esSuperAdmin }) {
     if (n > 2) return <Badge color="red">{n}</Badge>;
     return <Badge color="amber">{n}</Badge>;
   }
+  // 0 horas extras -> gris; 1-2hs en el dia -> amarillo; mas de 2hs -> rojo.
+  function badgeHorasExtras(hs) {
+    if (!hs || hs <= 0) return <Badge color="gray">0</Badge>;
+    if (hs <= 2) return <Badge color="amber">{hs.toFixed(1)}</Badge>;
+    return <Badge color="red">{hs.toFixed(1)}</Badge>;
+  }
 
   function exportarTabla() {
     const filasExport = filas.map(f => {
@@ -3288,6 +3328,9 @@ function ProductividadView({ empresaCtl, esSuperAdmin }) {
         "Cierres ok": f.stats.cierresOk,
         Olvidados: f.stats.cierresOlvidados,
         "Hs jornada prom.": f.stats.hsProm != null ? Number(f.stats.hsProm.toFixed(1)) : "",
+        "Hs extras hoy": Number(f.stats.horasExtrasHoy.toFixed(1)),
+        "Días con hs extras": f.stats.diasConHorasExtras,
+        "Hs extras acum.": Number(f.stats.horasExtrasAcumuladas.toFixed(1)),
         Regulaciones: f.stats.regulaciones,
         Retorqueos: f.stats.retorqueos,
         Reparaciones: f.stats.reparaciones
@@ -3365,6 +3408,9 @@ function ProductividadView({ empresaCtl, esSuperAdmin }) {
                   <th className="px-3 py-3">Cierres ok</th>
                   <th className="px-3 py-3">Olvidados</th>
                   <th className="px-3 py-3">Hs jornada</th>
+                  <th className="px-3 py-3">Hs extras hoy</th>
+                  <th className="px-3 py-3">Días extras</th>
+                  <th className="px-3 py-3">Hs extras acum.</th>
                   <th className="px-3 py-3">Regulaciones</th>
                   <th className="px-3 py-3">Retorqueos</th>
                   <th className="px-3 py-3">Reparaciones</th>
@@ -3381,12 +3427,15 @@ function ProductividadView({ empresaCtl, esSuperAdmin }) {
                     <td className="px-3 py-3">{f.stats.cierresOk}</td>
                     <td className="px-3 py-3">{badgeOlvidados(f.stats.cierresOlvidados)}</td>
                     <td className="px-3 py-3">{f.stats.hsProm != null ? f.stats.hsProm.toFixed(1) : "—"}</td>
+                    <td className="px-3 py-3">{badgeHorasExtras(f.stats.horasExtrasHoy)}</td>
+                    <td className="px-3 py-3">{f.stats.diasConHorasExtras}</td>
+                    <td className="px-3 py-3">{f.stats.horasExtrasAcumuladas.toFixed(1)}</td>
                     <td className="px-3 py-3">{f.stats.regulaciones}</td>
                     <td className="px-3 py-3">{f.stats.retorqueos}</td>
                     <td className="px-3 py-3">{f.stats.reparaciones}</td>
                   </tr>
                 ))}
-                {!filas.length && <tr><td colSpan={mostrarEmpresa ? 11 : 10} className="px-4 py-6 text-center text-muted">No hay mecánicos para este filtro.</td></tr>}
+                {!filas.length && <tr><td colSpan={mostrarEmpresa ? 14 : 13} className="px-4 py-6 text-center text-muted">No hay mecánicos para este filtro.</td></tr>}
               </tbody>
             </table>
           </div>
@@ -3510,6 +3559,7 @@ function DiscrepanciaNeumaticoDetalleModal({ alerta, adminUser, onClose, onResue
 
   async function resolver(d, aprobar, justificacion) {
     await resolverDiscrepanciaAuditoria(d, aprobar, justificacion, adminUser);
+    await marcarAlertaResuelta(alerta.id, adminUser.id, justificacion);
     pushToast(aprobar ? "✓ Discrepancia aprobada — neumaticos actualizado" : "✓ Discrepancia rechazada");
     onResuelto();
   }
@@ -3537,7 +3587,9 @@ function DiscrepanciaInventarioDetalleModal({ alerta, adminUser, onClose, onResu
   async function resolver(d, aprobar, justificacion) {
     await resolverDiscrepancia(d, aprobar, justificacion, adminUser.id);
     pushToast(aprobar ? "✓ Ajuste aprobado" : "✓ Discrepancia rechazada");
-    setLista(ls => ls.filter(x => x.id !== d.id));
+    const restantes = lista.filter(x => x.id !== d.id);
+    setLista(restantes);
+    if (!restantes.length) await marcarAlertaResuelta(alerta.id, adminUser.id, justificacion);
     onResuelto();
   }
 
@@ -3570,13 +3622,15 @@ function ReporteCierreDetalleModal({ alerta, empresas, onClose }) {
 }
 
 const ALERTA_ICONO = { rojo: "🔴", amarillo: "🟡", info: "ℹ️" };
-function AlertaCard({ a, empresaLabel, onVer, onMarcarLeida, onIgnorar, onAbrirMecanico }) {
+function AlertaCard({ a, empresaLabel, onVer, onMarcarLeida, onIgnorar, onAbrirMecanico, onMarcarResuelta }) {
   const equipoLabel = a.equipo ? `${a.equipo.patente}${a.equipo.numero_interno ? ` (${a.equipo.numero_interno})` : ""}` : null;
   const mecanicoLabel = a.mecanico ? `${a.mecanico.nombre} ${a.mecanico.apellido || ""}`.trim() : null;
   const esDesbloqueo = a.tipo === "solicitud_desbloqueo";
   const esDiscNeu = a.tipo === "neumatico_no_registrado";
   const esDiscInv = a.tipo === "discrepancia_inventario";
   const esCierre = a.tipo === "cierre_dia";
+  const esInfo = a.tipo === "cierre_dia" || a.tipo === "desbloqueo_aprobado";
+  const tieneResolucionDedicada = esDesbloqueo || esDiscNeu || esDiscInv;
   const icono = esDesbloqueo ? "🔒" : (ALERTA_ICONO[a.severidad] || "ℹ️");
 
   return (
@@ -3606,6 +3660,9 @@ function AlertaCard({ a, empresaLabel, onVer, onMarcarLeida, onIgnorar, onAbrirM
             <button onClick={() => onVer(a)} className="text-[12px] font-bold text-ink px-3 py-1.5 rounded-full bg-[#F3F4F6]">{esCierre ? "Ver reporte" : "Ver detalle"}</button>
           )}
           {!esDesbloqueo && !a.leida_admin && <button onClick={() => onMarcarLeida(a)} className="text-[12px] font-bold text-ink px-3 py-1.5 rounded-full bg-[#F3F4F6]">Marcar leída</button>}
+          {!tieneResolucionDedicada && !esInfo && a.estado !== "resuelta" && (
+            <button onClick={() => onMarcarResuelta(a)} className="text-[12px] font-bold text-white px-3 py-1.5 rounded-full bg-ink">✓ Marcar resuelta</button>
+          )}
         </div>
       </div>
     </div>
@@ -3660,6 +3717,9 @@ function AlertasAdminView({ empresaCtl, adminUser }) {
     let q = sb.from("alertas").update({ leida_admin: true }).eq("leida_admin", false);
     q = filtroCliente(q, filtro);
     await q;
+    let q2 = sb.from("alertas").update({ visto_en: new Date().toISOString(), en_proceso_en: new Date().toISOString(), estado: "en_proceso" }).eq("estado", "pendiente");
+    q2 = filtroCliente(q2, filtro);
+    await q2;
     pushToast("✓ Todas las alertas marcadas como leídas");
     cargar();
   }
@@ -3678,8 +3738,15 @@ function AlertasAdminView({ empresaCtl, adminUser }) {
   }
   async function ignorarDesbloqueo(a) {
     await adminDb.marcarAlertaLeida(a.id);
+    await marcarAlertaResuelta(a.id, adminUser.id, null);
     setAlertas(as => as.map(x => x.id === a.id ? { ...x, leida_admin: true } : x));
     pushToast("✓ Solicitud ignorada — el mecánico sigue bloqueado");
+  }
+  async function marcarResueltaManual(a) {
+    await marcarAlertaResuelta(a.id, adminUser.id, null);
+    if (!a.leida_admin) await adminDb.marcarAlertaLeida(a.id);
+    setAlertas(as => as.map(x => x.id === a.id ? { ...x, leida_admin: true, estado: "resuelta" } : x));
+    pushToast("✓ Alerta marcada como resuelta");
   }
   function handleMecanicoDone() {
     setMecanicoAccion(null);
@@ -3716,7 +3783,7 @@ function AlertasAdminView({ empresaCtl, adminUser }) {
         <div className="space-y-2 mb-6">
           {filtradas.map(a => (
             <AlertaCard key={a.id} a={a} empresaLabel={empresaLabel(a)} onVer={verDetalleAlerta}
-              onMarcarLeida={marcarLeida} onIgnorar={ignorarDesbloqueo} onAbrirMecanico={abrirMecanico} />
+              onMarcarLeida={marcarLeida} onIgnorar={ignorarDesbloqueo} onAbrirMecanico={abrirMecanico} onMarcarResuelta={marcarResueltaManual} />
           ))}
           {!filtradas.length && <p className="text-center text-muted py-10 text-sm">Sin alertas que coincidan.</p>}
         </div>

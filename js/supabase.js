@@ -31,7 +31,8 @@ const DEFAULT_CFG = {
   formula_marca_fuego: "interno+semana+anio+posicion",
   moneda: "CLP",
   meses_vencimiento_auditoria: 6,
-  horas_jornada_normal: 9
+  horas_jornada_normal: 9,
+  horas_escalada_alerta: 4
 };
 
 const TOOLS_CHECKLIST = [
@@ -1370,6 +1371,24 @@ async function marcarAlertaLeidaMecanico(id) {
 }
 
 /* =====================================================================
+   ESTADO DE RESOLUCION DE ALERTAS (panel de desempeño del Admin)
+   Transiciones: pendiente -> en_proceso (primera vez que el Admin la ve/marca
+   leída) -> resuelta (cuando se resuelve la discrepancia asociada, se ignora
+   un desbloqueo, o el Admin la marca resuelta manualmente). El .eq("estado",
+   "pendiente") evita pisar una fila que ya haya avanzado.
+===================================================================== */
+async function marcarAlertaVista(id) {
+  await sb.from("alertas").update({ visto_en: new Date().toISOString(), en_proceso_en: new Date().toISOString(), estado: "en_proceso" })
+    .eq("id", id).eq("estado", "pendiente");
+}
+async function marcarAlertaResuelta(id, adminUserId, justificacion) {
+  if (!id) return;
+  const update = { estado: "resuelta", resuelto_en: new Date().toISOString(), resuelto_por: adminUserId || null };
+  if (justificacion) update.justificacion_admin = justificacion;
+  await sb.from("alertas").update(update).eq("id", id);
+}
+
+/* =====================================================================
    CAPA DE DATOS DEL ADMIN
    clienteId === null/undefined/"todas" => sin filtro (todas las empresas).
 ===================================================================== */
@@ -1413,6 +1432,7 @@ const adminDb = {
     return data || [];
   },
   async marcarAlertaLeida(id) {
+    await marcarAlertaVista(id);
     await sb.from("alertas").update({ leida_admin: true }).eq("id", id);
   },
   async fetchPctInstructivoHoy(clienteId) {
@@ -1514,7 +1534,10 @@ const adminDb = {
   }
 };
 async function aprobarDesbloqueo(mecanico, alertaId) {
-  if (alertaId) await sb.from("alertas").update({ leida_admin: true }).eq("id", alertaId);
+  if (alertaId) {
+    await sb.from("alertas").update({ leida_admin: true }).eq("id", alertaId);
+    await marcarAlertaResuelta(alertaId, null, null);
+  }
   await insertAlerta({
     id: uuid(), cliente_id: mecanico.cliente_id, equipo_id: null, mecanico_id: mecanico.id,
     tipo: "desbloqueo_aprobado", severidad: "info",

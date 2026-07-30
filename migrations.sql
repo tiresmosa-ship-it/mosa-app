@@ -511,3 +511,28 @@ INSERT INTO config_cliente (cliente_id, clave, valor) VALUES
   ('la_portada', 'horas_jornada_normal', '9'),
   ('bys', 'horas_jornada_normal', '9')
 ON CONFLICT (cliente_id, clave) DO NOTHING;
+
+-- =====================================================================
+-- 30) Panel de desempeno del Admin (SuperAdmin > Productividad > tab Admin).
+-- alertas solo tenia leida_admin (booleano) - sin estado de resolucion real,
+-- sin timestamps de "visto"/"en proceso"/"resuelto" ni quien la resolvio.
+-- Se agrega un state machine minimo (pendiente/en_proceso/resuelta) para
+-- poder medir tiempo de resolucion y % en plazo. Filas viejas quedan en
+-- 'pendiente' con el resto de columnas NULL (el panel las muestra como
+-- "sin datos", no rompe nada). horas_escalada_alerta en config_cliente
+-- define el plazo de resolucion esperado (default 4hs si no esta seteado,
+-- ver DEFAULT_CFG en js/supabase.js).
+-- =====================================================================
+ALTER TABLE alertas ADD COLUMN IF NOT EXISTS estado TEXT NOT NULL DEFAULT 'pendiente'
+  CHECK (estado IN ('pendiente', 'en_proceso', 'resuelta'));
+ALTER TABLE alertas ADD COLUMN IF NOT EXISTS visto_en TIMESTAMPTZ;
+ALTER TABLE alertas ADD COLUMN IF NOT EXISTS en_proceso_en TIMESTAMPTZ;
+ALTER TABLE alertas ADD COLUMN IF NOT EXISTS resuelto_en TIMESTAMPTZ;
+ALTER TABLE alertas ADD COLUMN IF NOT EXISTS resuelto_por UUID REFERENCES usuarios(id);
+ALTER TABLE alertas ADD COLUMN IF NOT EXISTS escalada_superadmin BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE alertas ADD COLUMN IF NOT EXISTS justificacion_admin TEXT;
+
+INSERT INTO config_cliente (cliente_id, clave, valor) VALUES
+  ('la_portada', 'horas_escalada_alerta', '4'),
+  ('bys', 'horas_escalada_alerta', '4')
+ON CONFLICT (cliente_id, clave) DO NOTHING;
