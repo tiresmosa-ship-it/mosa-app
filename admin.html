@@ -367,8 +367,72 @@ const ADMIN_NAV = [
   { id: "configuracion", label: "Configuración", icon: Icon.settings },
   { id: "perfil", label: "Perfil", icon: Icon.user }
 ];
-function AdminShell({ view, setView, empresaCtl, alertasNoLeidas, children }) {
+function AlertasPanelLateral({ onClose, empresaCtl, adminUser, setView }) {
+  const { filtro } = empresaCtl;
+  const [tab, setTab] = useState("rojo");
+  const [porNivel, setPorNivel] = useState({ rojo: null, amarillo: null, info: null });
+
+  async function enriquecer(data) {
+    const eqIds = [...new Set(data.map(a => a.equipo_id))].filter(Boolean);
+    const mecIds = [...new Set(data.map(a => a.mecanico_id))].filter(Boolean);
+    const [{ data: eqs }, { data: mecs }] = await Promise.all([
+      eqIds.length ? sb.from("equipos").select("id_equipo,patente,numero_interno").in("id_equipo", eqIds) : Promise.resolve({ data: [] }),
+      mecIds.length ? sb.from("usuarios").select("id,nombre,apellido").in("id", mecIds) : Promise.resolve({ data: [] })
+    ]);
+    const eqMap = {}; (eqs || []).forEach(e => { eqMap[e.id_equipo] = e; });
+    const mecMap = {}; (mecs || []).forEach(m => { mecMap[m.id] = m; });
+    return data.map(a => ({ ...a, equipo: eqMap[a.equipo_id] || null, mecanico: mecMap[a.mecanico_id] || null }));
+  }
+  function cargar() {
+    Promise.all(["rojo", "amarillo", "info"].map(c => adminDb.fetchAlertasNivel(filtro, c).then(enriquecer)))
+      .then(([r, a, i]) => setPorNivel({ rojo: r, amarillo: a, info: i }))
+      .catch(e => console.error("No se pudo cargar el panel de alertas", e));
+  }
+  useEffect(() => { cargar(); }, [filtro]);
+
+  function navegar(a) { irAResolucion(a, setView); onClose(); }
+  async function marcarLeida(a) { await adminDb.marcarAlertaLeida(a.id); cargar(); }
+  async function marcarEnProc(a) { await marcarAlertaEnProceso(a.id, adminUser.id); cargar(); }
+  async function marcarResuelta(a) { await marcarAlertaResuelta(a.id, adminUser.id, null); cargar(); }
+  async function ignorar(a) { await adminDb.marcarAlertaLeida(a.id); await marcarAlertaResuelta(a.id, adminUser.id, null); cargar(); }
+
+  const tabs = [["rojo", "🔴 Urgentes"], ["amarillo", "🟡 Revisión"], ["info", "ℹ️ Info"]];
+  const lista = porNivel[tab];
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="absolute inset-0 bg-black/30" />
+      <div className="relative w-full sm:w-96 bg-white h-full overflow-y-auto p-4 safe-top">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-extrabold text-[18px]">Alertas</h2>
+          <button onClick={onClose} className="w-9 h-9 rounded-full bg-[#F3F4F6] flex items-center justify-center"><Icon.close width="16" height="16" /></button>
+        </div>
+        <div className="flex gap-2 mb-4">
+          {tabs.map(([k, l]) => (
+            <button key={k} onClick={() => setTab(k)} className={cx("px-3 py-2 rounded-full text-[12px] font-bold whitespace-nowrap", tab === k ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>
+              {l} ({porNivel[k] == null ? "…" : porNivel[k].length})
+            </button>
+          ))}
+        </div>
+        {lista == null ? <div className="flex justify-center py-10"><span className="spinner" /></div> : (
+          <div className="space-y-2">
+            {lista.map(a => (
+              <AlertaCard key={a.id} a={a} onVer={navegar} onMarcarLeida={marcarLeida} onMarcarEnProceso={marcarEnProc}
+                onMarcarResuelta={marcarResuelta} onIgnorar={ignorar} onAbrirMecanico={navegar} onNavegar={navegar} />
+            ))}
+            {!lista.length && <p className="text-center text-muted text-[13px] py-10">Sin alertas en este nivel.</p>}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AdminShell({ view, setView, empresaCtl, alertasNoLeidas, campanita, adminUser, children }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [panelAlertas, setPanelAlertas] = useState(false);
+  const nivel1 = (campanita && campanita.nivel1) || 0;
+  const nivel2SinVer = (campanita && campanita.nivel2SinVer) || 0;
   const NavList = ({ onPick }) => (
     <nav className="space-y-1">
       {ADMIN_NAV.map(it => (
@@ -399,9 +463,10 @@ function AdminShell({ view, setView, empresaCtl, alertasNoLeidas, children }) {
             <EmpresaSelector {...empresaCtl} />
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={() => setView("alertas")} className="relative w-10 h-10 rounded-full bg-[#F3F4F6] flex items-center justify-center">
+            <button onClick={() => setPanelAlertas(true)} className="relative w-10 h-10 rounded-full bg-[#F3F4F6] flex items-center justify-center">
               <Icon.bell width="18" height="18" />
-              {alertasNoLeidas > 0 && <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-[#EF4444] text-white text-[10px] font-bold flex items-center justify-center">{alertasNoLeidas > 99 ? "99+" : alertasNoLeidas}</span>}
+              {nivel1 > 0 && <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-[#EF4444] text-white text-[10px] font-bold flex items-center justify-center">{nivel1 > 99 ? "99+" : nivel1}</span>}
+              {nivel1 === 0 && nivel2SinVer > 0 && <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-[#F59E0B] border-2 border-white" />}
             </button>
             <button onClick={() => setView("perfil")} className="w-10 h-10 rounded-full bg-[#F3F4F6] flex items-center justify-center"><Icon.user width="18" height="18" /></button>
           </div>
@@ -410,6 +475,7 @@ function AdminShell({ view, setView, empresaCtl, alertasNoLeidas, children }) {
         <SyncStatusToast />
         <div className="px-5 py-6 pb-16">{children}</div>
       </div>
+      {panelAlertas && <AlertasPanelLateral onClose={() => setPanelAlertas(false)} empresaCtl={empresaCtl} adminUser={adminUser} setView={setView} />}
       {menuOpen && (
         <div className="fixed inset-0 z-50 md:hidden">
           <div className="absolute inset-0 bg-black/40" onClick={() => setMenuOpen(false)} />
@@ -473,10 +539,11 @@ function AlertaDetalleModal({ alerta, onClose, onMarcarLeida }) {
     </Modal>
   );
 }
-function DashboardView({ empresaCtl, onAbrirMecanico }) {
+function DashboardView({ empresaCtl, onAbrirMecanico, setView }) {
   const { filtro } = empresaCtl;
   const [kpis, setKpis] = useState({ equipos: null, auditorias: null, alertas: null, pct: null });
   const [criticas, setCriticas] = useState([]);
+  const [nivel1, setNivel1] = useState([]);
   const [pendientes, setPendientes] = useState([]);
   const [stock, setStock] = useState(null);
   const [mecanicos, setMecanicos] = useState([]);
@@ -488,18 +555,19 @@ function DashboardView({ empresaCtl, onAbrirMecanico }) {
   async function cargar() {
     setLoading(true);
     try {
-      const [equiposCount, auditoriasCount, criticasList, pct, pend, stk, mecs] = await Promise.all([
+      const [equiposCount, auditoriasCount, criticasList, pct, pend, stk, mecs, nivel1List] = await Promise.all([
         adminDb.countEquiposActivos(filtro), adminDb.countAuditoriasHoy(filtro),
         adminDb.fetchAlertasCriticas(filtro, true), adminDb.fetchPctInstructivoHoy(filtro),
         adminDb.fetchInstructivosPendientes(filtro), adminDb.fetchStockRapido(filtro),
-        adminDb.fetchMecanicosEnJornada(filtro)
+        adminDb.fetchMecanicosEnJornada(filtro), adminDb.fetchAlertasNivel1Pendientes(filtro)
       ]);
       setKpis({ equipos: equiposCount, auditorias: auditoriasCount, alertas: criticasList.length, pct });
       setCriticas(criticasList);
+      setNivel1(nivel1List);
       setPendientes(pend);
       setStock(stk);
       setMecanicos(mecs);
-      const eqIds = [...new Set(criticasList.map(a => a.equipo_id))].filter(Boolean);
+      const eqIds = [...new Set([...criticasList, ...nivel1List].map(a => a.equipo_id))].filter(Boolean);
       if (eqIds.length) {
         const { data: eqs } = await sb.from("equipos").select("id_equipo,patente,numero_interno").in("id_equipo", eqIds);
         const map = {}; (eqs || []).forEach(e => { map[e.id_equipo] = e.numero_interno ? `${e.numero_interno} · ${e.patente}` : e.patente; });
@@ -524,6 +592,20 @@ function DashboardView({ empresaCtl, onAbrirMecanico }) {
     <div>
       {toastNode}
       <h1 className="text-[26px] font-extrabold mb-5">Dashboard</h1>
+
+      {nivel1.length > 0 && (
+        <div className="bg-[#FEE2E2] border border-[#FCA5A5] rounded-2xl p-4 mb-6">
+          <p className="font-extrabold text-[14px] text-[#B91C1C] mb-3">🔴 {nivel1.length} alerta{nivel1.length !== 1 ? "s" : ""} requiere{nivel1.length !== 1 ? "n" : ""} atención inmediata</p>
+          <div className="space-y-2">
+            {nivel1.slice(0, 8).map(a => (
+              <div key={a.id} className="flex items-center justify-between gap-3 bg-white rounded-xl px-3 py-2">
+                <p className="text-[13px] font-semibold truncate">{a.titulo}{equiposMap[a.equipo_id] ? ` — ${equiposMap[a.equipo_id]}` : ""}{a.posicion != null ? ` pos ${a.posicion}` : ""}</p>
+                <button onClick={() => irAResolucion(a, setView)} className="text-[12px] font-bold text-white bg-ink px-3 py-1.5 rounded-full whitespace-nowrap">Resolver →</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
         <KpiCard label="Equipos activos" value={kpis.equipos} />
@@ -1617,7 +1699,7 @@ const MOVIMIENTOS_TABS = [
 ];
 function MovimientosDelDiaView({ empresaCtl, adminUser }) {
   const { filtro } = empresaCtl;
-  const [tab, setTab] = useState("alertas");
+  const [tab, setTab] = useState(() => { try { const o = JSON.parse(sessionStorage.getItem("alerta_origen") || "null"); return (o && o.destinoTab) || "alertas"; } catch (e) { return "alertas"; } });
   const [pushToast, toastNode] = useToasts();
   const [badges, setBadges] = useState({ alertas: null, discrepancias: null, instructivos: null, cambio: null });
   const [sinActividad, setSinActividad] = useState(false);
@@ -1899,7 +1981,7 @@ function ReporteCierreModal({ c, empresas, onClose }) {
 
 function JornadaView({ empresaCtl, adminUser }) {
   const { filtro, empresas } = empresaCtl;
-  const [sub, setSub] = useState(null);
+  const [sub, setSub] = useState(() => { try { const o = JSON.parse(sessionStorage.getItem("alerta_origen") || "null"); return (o && o.destinoSub) || null; } catch (e) { return null; } });
   const [cierres, setCierres] = useState([]);
   const [statsMes, setStatsMes] = useState(null);
   const [verReporte, setVerReporte] = useState(null);
@@ -3519,13 +3601,16 @@ async function fetchAlertasCompletas(clienteId) {
   if (error) throw error;
   const eqIds = [...new Set((data || []).map(a => a.equipo_id))].filter(Boolean);
   const mecIds = [...new Set((data || []).map(a => a.mecanico_id))].filter(Boolean);
-  const [{ data: eqs }, { data: mecs }] = await Promise.all([
+  const adminIds = [...new Set((data || []).map(a => a.en_proceso_por))].filter(Boolean);
+  const [{ data: eqs }, { data: mecs }, { data: admins }] = await Promise.all([
     eqIds.length ? sb.from("equipos").select("id_equipo,patente,numero_interno").in("id_equipo", eqIds) : Promise.resolve({ data: [] }),
-    mecIds.length ? sb.from("usuarios").select("id,nombre,apellido,cliente_id").in("id", mecIds) : Promise.resolve({ data: [] })
+    mecIds.length ? sb.from("usuarios").select("id,nombre,apellido,cliente_id").in("id", mecIds) : Promise.resolve({ data: [] }),
+    adminIds.length ? sb.from("usuarios").select("id,nombre,apellido").in("id", adminIds) : Promise.resolve({ data: [] })
   ]);
   const eqMap = {}; (eqs || []).forEach(e => { eqMap[e.id_equipo] = e; });
   const mecMap = {}; (mecs || []).forEach(m => { mecMap[m.id] = m; });
-  return (data || []).map(a => ({ ...a, equipo: eqMap[a.equipo_id] || null, mecanico: mecMap[a.mecanico_id] || null }));
+  const adminMap = {}; (admins || []).forEach(u => { adminMap[u.id] = u; });
+  return (data || []).map(a => ({ ...a, equipo: eqMap[a.equipo_id] || null, mecanico: mecMap[a.mecanico_id] || null, en_proceso_admin: adminMap[a.en_proceso_por] || null }));
 }
 async function fetchStatsAlertas(clienteId) {
   const hoy = todayISO();
@@ -3621,21 +3706,77 @@ function ReporteCierreDetalleModal({ alerta, empresas, onClose }) {
   return <ReporteCierreModal c={{ ...cierre, mecanico: alerta.mecanico }} empresas={empresas} onClose={onClose} />;
 }
 
+// Navegacion directa: mapea cada tipo de alerta a la pantalla de resolucion
+// pedida por la spec. marca_modelo_no_registrado se manda a Configuracion
+// (no a "Maestros > Configuracion" como decia el pedido original) porque en
+// esta app el Catalogo de neumaticos vive en el nav item Configuracion, no
+// dentro de Maestros - ver ConfiguracionEmpresaView/CatalogoNeumaticosSection.
+const RESOLUCION_DESTINO = {
+  psi_bajo: { view: "jornada", sub: "movimientos", tab: "alertas" },
+  psi_alto: { view: "jornada", sub: "movimientos", tab: "alertas" },
+  mm_critico: { view: "jornada", sub: "movimientos", tab: "alertas" },
+  mm_bajo: { view: "jornada", sub: "movimientos", tab: "alertas" },
+  tipo_neumatico_incorrecto: { view: "jornada", sub: "movimientos", tab: "alertas" },
+  neumatico_no_registrado: { view: "jornada", sub: "movimientos", tab: "discrepancias" },
+  discrepancia_inventario: { view: "jornada", sub: "inicio" },
+  baja_prematura: { view: "maestros", sub: "inventario" },
+  stock_minimo: { view: "maestros", sub: "inventario" },
+  marca_modelo_no_registrado: { view: "configuracion" },
+  km_repetidos: { view: "equipos" },
+  horas_extras: { view: "productividad" },
+  solicitud_desbloqueo: { view: "dashboard" },
+  cierre_dia: { view: "jornada", sub: "cierre" },
+  rotacion_recomendada: { view: "equipos" }
+};
+function irAResolucion(a, setView) {
+  const destino = RESOLUCION_DESTINO[a.tipo];
+  if (!destino) return;
+  sessionStorage.setItem("alerta_origen", JSON.stringify({
+    id: a.id, tipo: a.tipo, equipo_id: a.equipo_id || null, mecanico_id: a.mecanico_id || null, posicion: a.posicion != null ? a.posicion : null,
+    equipoPatente: a.equipo ? a.equipo.patente : null,
+    mecanicoNombre: a.mecanico ? `${a.mecanico.nombre} ${a.mecanico.apellido || ""}`.trim() : null,
+    destinoSub: destino.sub || null, destinoTab: destino.tab || null
+  }));
+  setView(destino.view);
+}
+function BannerVolverAlertas({ setView }) {
+  // Sin estado local: sessionStorage se lee de nuevo en cada render (el
+  // componente no desmonta al navegar entre vistas, asi que un useState con
+  // inicializador perezoso quedaria pegado al valor del primer mount).
+  let origen = null;
+  try { origen = JSON.parse(sessionStorage.getItem("alerta_origen") || "null"); } catch (e) {}
+  if (!origen) return null;
+  return (
+    <button onClick={() => { sessionStorage.removeItem("alerta_origen"); setView("alertas"); }}
+      className="w-full text-left bg-[#111] text-white rounded-2xl px-4 py-3 mb-4 text-[13px] font-bold flex items-center gap-2">
+      <Icon.back width="15" height="15" /> Volvé a Alertas para seguir resolviendo
+      {(origen.equipoPatente || origen.mecanicoNombre) && <span className="font-normal opacity-70">· Buscá: {origen.equipoPatente || origen.mecanicoNombre}</span>}
+    </button>
+  );
+}
+
 const ALERTA_ICONO = { rojo: "🔴", amarillo: "🟡", info: "ℹ️" };
-function AlertaCard({ a, empresaLabel, onVer, onMarcarLeida, onIgnorar, onAbrirMecanico, onMarcarResuelta }) {
+function AlertaCard({ a, empresaLabel, onVer, onMarcarLeida, onMarcarEnProceso, onMarcarResuelta, onIgnorar, onAbrirMecanico, onNavegar }) {
   const equipoLabel = a.equipo ? `${a.equipo.patente}${a.equipo.numero_interno ? ` (${a.equipo.numero_interno})` : ""}` : null;
   const mecanicoLabel = a.mecanico ? `${a.mecanico.nombre} ${a.mecanico.apellido || ""}`.trim() : null;
   const esDesbloqueo = a.tipo === "solicitud_desbloqueo";
   const esDiscNeu = a.tipo === "neumatico_no_registrado";
   const esDiscInv = a.tipo === "discrepancia_inventario";
   const esCierre = a.tipo === "cierre_dia";
-  const esInfo = a.tipo === "cierre_dia" || a.tipo === "desbloqueo_aprobado";
+  const nivel = nivelDeAlerta(a.tipo) || (a.severidad === "rojo" ? "rojo" : a.severidad === "amarillo" ? "amarillo" : "info");
+  const esInfo = nivel === "info";
   const tieneResolucionDedicada = esDesbloqueo || esDiscNeu || esDiscInv;
   const icono = esDesbloqueo ? "🔒" : (ALERTA_ICONO[a.severidad] || "ℹ️");
+  const estado = a.estado || "nueva";
+
+  function resolverClick() {
+    if (tieneResolucionDedicada) onVer(a);
+    else onMarcarResuelta(a);
+  }
 
   return (
-    <div className={cx("bg-white rounded-2xl border border-bd shadow-card p-4", a.leida_admin && "opacity-70")}>
-      <div className="flex items-start justify-between gap-2">
+    <div className={cx("bg-white rounded-2xl border border-bd shadow-card p-4", estado === "resuelta" && "opacity-60")}>
+      <div className="flex items-start justify-between gap-2 cursor-pointer" onClick={() => onNavegar && onNavegar(a)}>
         <div className="flex-1 min-w-0">
           <p className="font-bold text-[14px]">{icono} {a.titulo}{equipoLabel && !(a.titulo || "").includes(equipoLabel) ? ` — ${equipoLabel}` : ""}</p>
           {(mecanicoLabel || a.posicion != null) && (
@@ -3647,9 +3788,14 @@ function AlertaCard({ a, empresaLabel, onVer, onMarcarLeida, onIgnorar, onAbrirM
         <span className="text-[11px] text-muted shrink-0 whitespace-nowrap">{timeAgoCorto(a.creado_en)}</span>
       </div>
       <div className="flex items-center justify-between gap-2 mt-2.5">
-        <div>{!a.leida_admin && <span className="text-[11px] font-bold text-ink">● No leída</span>}</div>
+        <div>
+          {estado === "en_proceso" && <Badge color="amber">En proceso{a.en_proceso_admin ? ` por ${a.en_proceso_admin.nombre}` : ""}</Badge>}
+          {estado === "resuelta" && <Badge color="green">Resuelta</Badge>}
+          {estado === "nueva" && <span className="text-[11px] font-bold text-ink">● Nueva</span>}
+          {estado === "vista" && <span className="text-[11px] font-bold text-muted">Vista</span>}
+        </div>
         <div className="flex gap-2 flex-wrap justify-end">
-          {esDesbloqueo && (
+          {esDesbloqueo && estado !== "resuelta" && (
             <>
               <button onClick={() => onAbrirMecanico(a, "turno")} className="text-[12px] font-bold text-white px-3 py-1.5 rounded-full bg-ink">Nuevo turno</button>
               <button onClick={() => onAbrirMecanico(a, "empresa")} className="text-[12px] font-bold text-ink px-3 py-1.5 rounded-full bg-[#F3F4F6]">Cambiar empresa</button>
@@ -3659,17 +3805,17 @@ function AlertaCard({ a, empresaLabel, onVer, onMarcarLeida, onIgnorar, onAbrirM
           {(esDiscNeu || esDiscInv || esCierre) && (
             <button onClick={() => onVer(a)} className="text-[12px] font-bold text-ink px-3 py-1.5 rounded-full bg-[#F3F4F6]">{esCierre ? "Ver reporte" : "Ver detalle"}</button>
           )}
-          {!esDesbloqueo && !a.leida_admin && <button onClick={() => onMarcarLeida(a)} className="text-[12px] font-bold text-ink px-3 py-1.5 rounded-full bg-[#F3F4F6]">Marcar leída</button>}
-          {!tieneResolucionDedicada && !esInfo && a.estado !== "resuelta" && (
-            <button onClick={() => onMarcarResuelta(a)} className="text-[12px] font-bold text-white px-3 py-1.5 rounded-full bg-ink">✓ Marcar resuelta</button>
-          )}
+          {!esInfo && !esDesbloqueo && estado === "nueva" && <button onClick={() => onMarcarLeida(a)} className="text-[12px] font-bold text-ink px-3 py-1.5 rounded-full bg-[#F3F4F6]">👁 Marcar vista</button>}
+          {!esInfo && !esDesbloqueo && (estado === "nueva" || estado === "vista") && <button onClick={() => onMarcarEnProceso(a)} className="text-[12px] font-bold text-ink px-3 py-1.5 rounded-full bg-[#F3F4F6]">⚙ En proceso</button>}
+          {!esInfo && !esDesbloqueo && estado !== "resuelta" && <button onClick={resolverClick} className="text-[12px] font-bold text-white px-3 py-1.5 rounded-full bg-ink">✅ Resolver</button>}
+          {esInfo && !a.leida_admin && <button onClick={() => onMarcarLeida(a)} className="text-[12px] font-bold text-ink px-3 py-1.5 rounded-full bg-[#F3F4F6]">Marcar leída</button>}
         </div>
       </div>
     </div>
   );
 }
 
-function AlertasAdminView({ empresaCtl, adminUser }) {
+function AlertasAdminView({ empresaCtl, adminUser, setView }) {
   const { filtro, empresas } = empresaCtl;
   const [alertas, setAlertas] = useState([]);
   const [stats, setStats] = useState(null);
@@ -3710,14 +3856,19 @@ function AlertasAdminView({ empresaCtl, adminUser }) {
 
   async function marcarLeida(a) {
     await adminDb.marcarAlertaLeida(a.id);
-    setAlertas(as => as.map(x => x.id === a.id ? { ...x, leida_admin: true } : x));
-    pushToast("✓ Alerta marcada como leída");
+    setAlertas(as => as.map(x => x.id === a.id ? { ...x, leida_admin: true, estado: x.estado === "nueva" ? "vista" : x.estado } : x));
+    pushToast("✓ Alerta marcada como vista");
+  }
+  async function marcarEnProceso(a) {
+    await marcarAlertaEnProceso(a.id, adminUser.id);
+    setAlertas(as => as.map(x => x.id === a.id ? { ...x, leida_admin: true, estado: "en_proceso", en_proceso_admin: { nombre: adminUser.nombre, apellido: adminUser.apellido } } : x));
+    pushToast("✓ Alerta en proceso");
   }
   async function marcarTodasLeidas() {
     let q = sb.from("alertas").update({ leida_admin: true }).eq("leida_admin", false);
     q = filtroCliente(q, filtro);
     await q;
-    let q2 = sb.from("alertas").update({ visto_en: new Date().toISOString(), en_proceso_en: new Date().toISOString(), estado: "en_proceso" }).eq("estado", "pendiente");
+    let q2 = sb.from("alertas").update({ visto_en: new Date().toISOString(), estado: "vista" }).eq("estado", "nueva");
     q2 = filtroCliente(q2, filtro);
     await q2;
     pushToast("✓ Todas las alertas marcadas como leídas");
@@ -3783,7 +3934,8 @@ function AlertasAdminView({ empresaCtl, adminUser }) {
         <div className="space-y-2 mb-6">
           {filtradas.map(a => (
             <AlertaCard key={a.id} a={a} empresaLabel={empresaLabel(a)} onVer={verDetalleAlerta}
-              onMarcarLeida={marcarLeida} onIgnorar={ignorarDesbloqueo} onAbrirMecanico={abrirMecanico} onMarcarResuelta={marcarResueltaManual} />
+              onMarcarLeida={marcarLeida} onMarcarEnProceso={marcarEnProceso} onIgnorar={ignorarDesbloqueo} onAbrirMecanico={abrirMecanico}
+              onMarcarResuelta={marcarResueltaManual} onNavegar={(al) => irAResolucion(al, setView)} />
           ))}
           {!filtradas.length && <p className="text-center text-muted py-10 text-sm">Sin alertas que coincidan.</p>}
         </div>
@@ -3876,7 +4028,8 @@ const CONFIG_STOCK_FIELDS = [
   { clave: "stock_minimo_recauchado", label: "Stock mínimo recauchados" }
 ];
 const CONFIG_ALERTA_FIELDS = [
-  { clave: "dias_alerta_recauchado", label: "Días en reparar → alerta" }
+  { clave: "dias_alerta_recauchado", label: "Días en reparar → alerta" },
+  { clave: "horas_escalada_alerta", label: "Tiempo para escalada al SuperAdmin (horas)" }
 ];
 const CONFIG_JORNADA_FIELDS = [
   { clave: "horas_jornada_normal", label: "Horas jornada normal" }
@@ -4293,16 +4446,27 @@ function AdminApp({ user, onLogout }) {
   const [view, setView] = useState("dashboard");
   const [mecanicoBloqueado, setMecanicoBloqueado] = useState(null);
   const [alertasNoLeidas, setAlertasNoLeidas] = useState(0);
+  const [campanita, setCampanita] = useState({ nivel1: 0, nivel2SinVer: 0 });
   const [refreshToken, setRefreshToken] = useState(0);
 
   async function refrescarCampanita() {
     try { setAlertasNoLeidas(await adminDb.countAlertasNoLeidasTotal()); } catch (e) {}
+    try { setCampanita(await adminDb.fetchCampanitaCounts(empresaCtl.filtro)); } catch (e) {}
   }
   useEffect(() => {
     refrescarCampanita();
     const t = setInterval(refrescarCampanita, 15000);
     return () => clearInterval(t);
-  }, []);
+  }, [empresaCtl.filtro]);
+
+  // Escalada automatica (mejor esfuerzo, ver notas de la tarea): solo corre
+  // mientras este Admin tiene la app abierta, cada 30 min.
+  useEffect(() => {
+    async function chequear() { try { await verificarEscaladas(empresaCtl.filtro); refrescarCampanita(); } catch (e) { console.error("No se pudo verificar escaladas", e); } }
+    chequear();
+    const t = setInterval(chequear, 30 * 60 * 1000);
+    return () => clearInterval(t);
+  }, [empresaCtl.filtro]);
 
   function handleMecanicoDesbloqueado() {
     setMecanicoBloqueado(null);
@@ -4315,13 +4479,14 @@ function AdminApp({ user, onLogout }) {
   else if (view === "jornada") body = <JornadaView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} />;
   else if (view === "productividad") body = <ProductividadView key={refreshToken} empresaCtl={empresaCtl} esSuperAdmin={false} />;
   else if (view === "maestros") body = <MaestrosView key={refreshToken} empresaCtl={empresaCtl} />;
-  else if (view === "alertas") body = <AlertasAdminView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} />;
+  else if (view === "alertas") body = <AlertasAdminView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} setView={setView} />;
   else if (view === "configuracion") body = <ConfiguracionAdminView key={refreshToken} empresaCtl={empresaCtl} />;
   else if (view === "perfil") body = <PerfilAdminView user={user} onLogout={onLogout} />;
-  else body = <DashboardView key={refreshToken} empresaCtl={empresaCtl} onAbrirMecanico={setMecanicoBloqueado} />;
+  else body = <DashboardView key={refreshToken} empresaCtl={empresaCtl} onAbrirMecanico={setMecanicoBloqueado} setView={setView} />;
 
   return (
-    <AdminShell view={view} setView={setView} empresaCtl={empresaCtl} alertasNoLeidas={alertasNoLeidas}>
+    <AdminShell view={view} setView={setView} empresaCtl={empresaCtl} alertasNoLeidas={alertasNoLeidas} campanita={campanita} adminUser={user}>
+      {view !== "alertas" && <BannerVolverAlertas setView={setView} />}
       {body}
       {mecanicoBloqueado && (
         <MecanicoBloqueadoModal mecanico={mecanicoBloqueado} empresas={empresaCtl.empresas}

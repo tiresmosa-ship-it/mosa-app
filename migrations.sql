@@ -532,6 +532,48 @@ ALTER TABLE alertas ADD COLUMN IF NOT EXISTS resuelto_por UUID REFERENCES usuari
 ALTER TABLE alertas ADD COLUMN IF NOT EXISTS escalada_superadmin BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE alertas ADD COLUMN IF NOT EXISTS justificacion_admin TEXT;
 
+-- =====================================================================
+-- 31) Reestructuracion del sistema de alertas (3 niveles visuales +
+-- resolucion en vivo + escalada automatica). El bloque 30 uso
+-- pendiente/en_proceso/resuelta; esta spec separa "vista" de "en_proceso"
+-- como pasos distintos (nueva -> vista -> en_proceso -> resuelta) y quiere
+-- registrar QUIEN puso una alerta en_proceso (no solo cuando). Se renombra
+-- en_proceso_en -> en_proceso_desde, se agrega en_proceso_por (admin que la
+-- tomo) y escalada_en (cuando se escalo, separado del booleano
+-- escalada_superadmin que ya existia desde el bloque 30).
+-- El CHECK de alertas.tipo ya fue restaurado a mano por el usuario antes de
+-- este bloque (confirmado con curl: rechaza tipos inventados, acepta los
+-- 19 tipos reales incluyendo escalada_sin_resolver/recordatorio_admin).
+-- =====================================================================
+-- Version idempotente (el primer intento quedo a medio aplicar: la columna
+-- ya se renombro pero el CHECK nuevo nunca prendio, asi que esto se puede
+-- correr de nuevo sin romper sin importar en que paso se haya cortado).
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'alertas' AND column_name = 'en_proceso_en')
+     AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'alertas' AND column_name = 'en_proceso_desde') THEN
+    ALTER TABLE alertas RENAME COLUMN en_proceso_en TO en_proceso_desde;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'alertas' AND column_name = 'en_proceso_en')
+     AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'alertas' AND column_name = 'en_proceso_desde') THEN
+    -- Quedaron las dos columnas de un intento anterior a medio aplicar:
+    -- en_proceso_desde ya es la que usa el codigo, asi que se descarta la vieja.
+    ALTER TABLE alertas DROP COLUMN en_proceso_en;
+  END IF;
+END $$;
+ALTER TABLE alertas ADD COLUMN IF NOT EXISTS en_proceso_por UUID REFERENCES usuarios(id);
+ALTER TABLE alertas ADD COLUMN IF NOT EXISTS escalada_en TIMESTAMPTZ;
+-- El DROP tiene que ir ANTES del UPDATE: el CHECK viejo (pendiente/en_proceso/
+-- resuelta) todavia esta activo en este punto y rechaza el 'nueva' que
+-- pone el UPDATE de abajo si se corre en el orden equivocado.
+ALTER TABLE alertas DROP CONSTRAINT IF EXISTS alertas_estado_check;
+-- Cualquier fila con un estado que no entre en la lista nueva (viejas
+-- 'pendiente', o filas de prueba cargadas entre intentos) se normaliza antes
+-- de agregar el CHECK, para que la validacion de filas existentes no falle.
+UPDATE alertas SET estado = 'nueva' WHERE estado NOT IN ('nueva', 'vista', 'en_proceso', 'resuelta') OR estado IS NULL;
+ALTER TABLE alertas ALTER COLUMN estado SET DEFAULT 'nueva';
+ALTER TABLE alertas ADD CONSTRAINT alertas_estado_check CHECK (estado IN ('nueva', 'vista', 'en_proceso', 'resuelta'));
+
 INSERT INTO config_cliente (cliente_id, clave, valor) VALUES
   ('la_portada', 'horas_escalada_alerta', '4'),
   ('bys', 'horas_escalada_alerta', '4')

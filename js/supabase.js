@@ -439,7 +439,6 @@ async function enviarItem(item) {
     case "novedad": return enviarNovedad(item.data);
     case "auditoria": return enviarAuditoria(item.data);
     case "cambio": return enviarCambio(item.data);
-    case "cierre": return enviarCierre(item.data);
     case "alerta": return enviarAlerta(item.data);
     case "discrepancia_auditoria": return enviarDiscrepanciaAuditoria(item.data);
     case "discrepancia": return enviarDiscrepancia(item.data);
@@ -593,16 +592,6 @@ async function enviarCambio(data) {
     if (e4) console.error("No se pudo actualizar el estado del instructivo", e4);
   }
   for (const a of (alertas || [])) await insertAlerta(a);
-}
-async function enviarCierre(data) {
-  const { error } = await sb.from("cierre_dia").insert(data);
-  if (error) throw error;
-  await insertAlerta({
-    id: uuid(), cliente_id: data.cliente_id, equipo_id: null, mecanico_id: data.mecanico_id,
-    tipo: "cierre_dia", severidad: "info", titulo: "Cierre de jornada",
-    descripcion: `Jornada cerrada: ${data.auditorias_realizadas} auditorías, ${data.cambios_realizados} cambios.`,
-    leida_mecanico: true, leida_admin: false, leida_superadmin: false
-  });
 }
 async function insertAlerta(a) {
   const { error } = await sb.from("alertas").insert(a);
@@ -1371,21 +1360,91 @@ async function marcarAlertaLeidaMecanico(id) {
 }
 
 /* =====================================================================
-   ESTADO DE RESOLUCION DE ALERTAS (panel de desempeño del Admin)
-   Transiciones: pendiente -> en_proceso (primera vez que el Admin la ve/marca
-   leída) -> resuelta (cuando se resuelve la discrepancia asociada, se ignora
-   un desbloqueo, o el Admin la marca resuelta manualmente). El .eq("estado",
-   "pendiente") evita pisar una fila que ya haya avanzado.
+   NIVELES DE ALERTA (3 niveles visuales) + estado de resolucion en vivo.
+   Transiciones: nueva -> vista -> en_proceso -> resuelta. Cada paso solo
+   avanza desde el estado esperado (los .eq("estado", ...) evitan pisar una
+   fila que ya haya avanzado más, p.ej. si dos admins tocan la misma alerta).
 ===================================================================== */
+const NIVELES_ALERTA = {
+  rojo: {
+    nivel: 1, label: "Urgentes",
+    tipos: ["psi_bajo", "psi_alto", "mm_critico", "mm_bajo", "neumatico_no_registrado", "discrepancia_inventario", "tipo_neumatico_incorrecto"]
+  },
+  amarillo: {
+    nivel: 2, label: "Revisión",
+    tipos: ["baja_prematura", "stock_minimo", "marca_modelo_no_registrado", "km_repetidos", "horas_extras", "solicitud_desbloqueo"]
+  },
+  info: {
+    nivel: 3, label: "Informativas",
+    tipos: ["cierre_dia", "rotacion_recomendada", "desbloqueo_aprobado", "discrepancia_resuelta"]
+  }
+};
+// escalada_sin_resolver/recordatorio_admin no entran en ningun nivel fijo de
+// negocio (son alertas del propio sistema de escalada) - se muestran igual
+// que "rojo" por severidad real de la fila, no por esta tabla.
+function nivelDeAlerta(tipo) {
+  for (const [color, info] of Object.entries(NIVELES_ALERTA)) { if (info.tipos.includes(tipo)) return color; }
+  return null;
+}
+
 async function marcarAlertaVista(id) {
-  await sb.from("alertas").update({ visto_en: new Date().toISOString(), en_proceso_en: new Date().toISOString(), estado: "en_proceso" })
-    .eq("id", id).eq("estado", "pendiente");
+  await sb.from("alertas").update({ visto_en: new Date().toISOString(), estado: "vista", leida_admin: true })
+    .eq("id", id).eq("estado", "nueva");
+}
+async function marcarAlertaEnProceso(id, adminUserId) {
+  await sb.from("alertas").update({ estado: "en_proceso", en_proceso_por: adminUserId || null, en_proceso_desde: new Date().toISOString(), leida_admin: true })
+    .eq("id", id).in("estado", ["nueva", "vista"]);
 }
 async function marcarAlertaResuelta(id, adminUserId, justificacion) {
   if (!id) return;
-  const update = { estado: "resuelta", resuelto_en: new Date().toISOString(), resuelto_por: adminUserId || null };
+  const update = { estado: "resuelta", resuelto_en: new Date().toISOString(), resuelto_por: adminUserId || null, leida_admin: true };
   if (justificacion) update.justificacion_admin = justificacion;
   await sb.from("alertas").update(update).eq("id", id);
+}
+
+/* =====================================================================
+   ESCALADA AUTOMATICA AL SUPERADMIN. Pensada para correr en un setInterval
+   mientras hay un Admin/SuperAdmin con la app abierta (ver nota en la tarea:
+   sin cron server-side, esto es "mejor esfuerzo" - si nadie tiene la app
+   abierta no corre. Para escalada garantizada haria falta una Edge Function).
+===================================================================== */
+async function verificarEscaladas(clienteId) {
+  const { data: cfgRows, error: e0 } = await sb.from("config_cliente").select("cliente_id,valor").eq("clave", "horas_escalada_alerta");
+  if (e0) throw e0;
+  const horasPorCliente = {};
+  (cfgRows || []).forEach(r => { horasPorCliente[r.cliente_id] = parseFloat(r.valor) || 4; });
+  const tiposNivel1 = NIVELES_ALERTA.rojo.tipos;
+  let q = sb.from("alertas").select("*").in("estado", ["nueva", "vista"]).in("tipo", tiposNivel1).eq("escalada_superadmin", false);
+  q = filtroCliente(q, clienteId);
+  const { data: candidatas, error } = await q;
+  if (error) throw error;
+  const ahora = Date.now();
+  let equiposMap = {};
+  const eqIds = [...new Set((candidatas || []).map(a => a.equipo_id))].filter(Boolean);
+  if (eqIds.length) {
+    const { data: eqs } = await sb.from("equipos").select("id_equipo,patente").in("id_equipo", eqIds);
+    (eqs || []).forEach(e => { equiposMap[e.id_equipo] = e; });
+  }
+  let escaladas = 0;
+  for (const a of (candidatas || [])) {
+    const horasLimite = horasPorCliente[a.cliente_id] || 4;
+    const horasTranscurridas = (ahora - new Date(a.creado_en).getTime()) / 3600000;
+    if (horasTranscurridas <= horasLimite) continue;
+    const ahoraISO = new Date().toISOString();
+    await sb.from("alertas").update({ escalada_superadmin: true, escalada_en: ahoraISO }).eq("id", a.id);
+    const eq = equiposMap[a.equipo_id];
+    const horasRedondeadas = Math.floor(horasTranscurridas);
+    await insertAlerta({
+      id: uuid(), cliente_id: a.cliente_id, equipo_id: a.equipo_id || null, mecanico_id: a.mecanico_id || null,
+      tipo: "escalada_sin_resolver", severidad: "rojo",
+      titulo: `⚠ Sin resolver hace +${horasRedondeadas}hs: ${a.tipo}`,
+      descripcion: `Admin no resolvió: ${a.descripcion || a.titulo}. Equipo: ${eq ? eq.patente : "-"} — Pos: ${a.posicion != null ? a.posicion : "-"} — Hace: ${horasRedondeadas}hs`,
+      posicion: a.posicion || null, numero_fuego: a.numero_fuego || null,
+      leida_mecanico: true, leida_admin: false, leida_superadmin: false
+    });
+    escaladas++;
+  }
+  return escaladas;
 }
 
 /* =====================================================================
@@ -1420,6 +1479,65 @@ const adminDb = {
     // Para la campanita: todas las empresas, sin filtrar por severidad.
     const { count } = await sb.from("alertas").select("id", { count: "exact", head: true }).eq("leida_admin", false);
     return count || 0;
+  },
+  // Campanita nueva (3 niveles): rojo = nivel 1 sin resolver; punto amarillo
+  // extra si hay nivel 2 todavia 'nueva' (sin ni siquiera ver).
+  async fetchCampanitaCounts(clienteId) {
+    let q1 = sb.from("alertas").select("id", { count: "exact", head: true }).in("tipo", NIVELES_ALERTA.rojo.tipos).neq("estado", "resuelta");
+    q1 = filtroCliente(q1, clienteId);
+    let q2 = sb.from("alertas").select("id", { count: "exact", head: true }).in("tipo", NIVELES_ALERTA.amarillo.tipos).eq("estado", "nueva");
+    q2 = filtroCliente(q2, clienteId);
+    const [{ count: nivel1 }, { count: nivel2Sin }] = await Promise.all([q1, q2]);
+    return { nivel1: nivel1 || 0, nivel2SinVer: nivel2Sin || 0 };
+  },
+  async fetchAlertasNivel(clienteId, color) {
+    const tipos = (NIVELES_ALERTA[color] || {}).tipos || [];
+    let q = sb.from("alertas").select("*").in("tipo", tipos).order("creado_en", { ascending: false }).limit(200);
+    q = filtroCliente(q, clienteId);
+    const { data, error } = await q;
+    if (error) throw error;
+    return data || [];
+  },
+  async fetchAlertasNivel1Pendientes(clienteId) {
+    let q = sb.from("alertas").select("*").in("tipo", NIVELES_ALERTA.rojo.tipos).neq("estado", "resuelta").order("creado_en", { ascending: false }).limit(50);
+    q = filtroCliente(q, clienteId);
+    const { data, error } = await q;
+    if (error) throw error;
+    return data || [];
+  },
+  async fetchAlertasEscaladas(clienteId) {
+    let q = sb.from("alertas").select("*").eq("escalada_superadmin", true).neq("estado", "resuelta").order("creado_en", { ascending: true });
+    q = filtroCliente(q, clienteId);
+    const { data, error } = await q;
+    if (error) throw error;
+    const adminIds = [...new Set((data || []).map(a => a.en_proceso_por))].filter(Boolean);
+    let adminMap = {};
+    if (adminIds.length) {
+      const { data: admins } = await sb.from("usuarios").select("id,nombre,apellido").in("id", adminIds);
+      (admins || []).forEach(u => { adminMap[u.id] = u; });
+    }
+    return (data || []).map(a => ({ ...a, admin: adminMap[a.en_proceso_por] || null }));
+  },
+  // SuperAdmin > tab Escaladas > "Recordar al Admin": si nadie tomo la alerta
+  // todavia (en_proceso_por null) se le avisa a todos los admins activos de
+  // esa empresa; si alguien la tiene en_proceso, solo a esa persona.
+  async recordarAdmin(alertaEscalada) {
+    let destinatarios = [];
+    if (alertaEscalada.en_proceso_por) {
+      destinatarios = [alertaEscalada.en_proceso_por];
+    } else {
+      const { data: admins } = await sb.from("usuarios").select("id").eq("rol", "admin").eq("activo", true).eq("cliente_id", alertaEscalada.cliente_id);
+      destinatarios = (admins || []).map(a => a.id);
+    }
+    for (const adminId of destinatarios) {
+      await insertAlerta({
+        id: uuid(), cliente_id: alertaEscalada.cliente_id, equipo_id: alertaEscalada.equipo_id || null, mecanico_id: null,
+        tipo: "recordatorio_admin", severidad: "amarillo", titulo: "Recordatorio: tenés alertas sin resolver",
+        descripcion: `${alertaEscalada.titulo} sigue sin resolverse.`,
+        leida_mecanico: true, leida_admin: false, leida_superadmin: true
+      });
+    }
+    return destinatarios.length;
   },
   async fetchAlertas(clienteId, opts) {
     opts = opts || {};
