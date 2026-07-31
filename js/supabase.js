@@ -109,6 +109,18 @@ function ejeTipoDePosicion(cfg, pos) {
   const row = cfg.rows.find(r => r.positions.includes(pos));
   return row ? row.ejeTipo : "M";
 }
+// Tipo de neumatico esperado en una posicion, segun configuracion_ejes del
+// equipo (HC-2, y Fix 5: catalogo marcas_modelos_cliente). null = sin
+// restriccion (SEMI o eje auxilio). Movida a supabase.js desde mecanico.html
+// para que construirYGuardarAuditoria (Fix 5) tambien pueda usarla.
+function tipoNeumaticoEsperado(equipo, axleCfg, pos) {
+  if (equipo.tipo === "SEMI") return null;
+  const ejeTipo = ejeTipoDePosicion(axleCfg, pos);
+  if (ejeTipo === "auxilio") return null;
+  if (ejeTipo === "D") return "direccional";
+  if (ejeTipo === "T") return "eje_libre";
+  return "traccional";
+}
 // Lado (izq/der) de una posicion dentro de SU propia fila: primera mitad de
 // row.positions = izquierda, segunda mitad = derecha. Se usa solo para
 // validar ejes traccionales (ejeTipo "M"), que no pueden cambiar de lado.
@@ -130,6 +142,38 @@ function todayISO() {
   return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate());
 }
 function nowHM() { const d = new Date(); return pad2(d.getHours()) + ":" + pad2(d.getMinutes()) + ":" + pad2(d.getSeconds()); }
+// Bug 6: formateo de fechas/horas guardadas en Supabase a hora local de
+// Chile, en formato DD/MM/YYYY y 24hs — no AM/PM ni YYYY-MM-DD crudo.
+// Ojo: las columnas `date` puras (ej. auditorias.fecha/cierre_dia.fecha,
+// strings "YYYY-MM-DD" sin hora) YA estan en la fecha local del mecanico
+// (las genera todayISO() del lado del cliente) — parsearlas con `new Date()`
+// las interpretaria como medianoche UTC y, al convertir a America/Santiago,
+// las correria un dia para atras. Por eso formatFecha detecta si el string
+// trae hora (timestamptz real, ej. creado_en) o es solo fecha, y solo aplica
+// conversion de timezone en el primer caso.
+function formatFecha(fechaISO) {
+  if (!fechaISO) return "";
+  const soloFecha = typeof fechaISO === "string" && !fechaISO.includes("T");
+  const d = soloFecha ? new Date(fechaISO + "T00:00:00") : new Date(fechaISO);
+  if (isNaN(d.getTime())) return "";
+  // en-CA con timeZone da siempre YYYY-MM-DD sin importar locale/ICU del
+  // navegador (toLocaleDateString con "es-CL" a veces devuelve DD-MM-YYYY
+  // con guiones en vez de barras segun el build) — se arman las barras a mano.
+  const opts = { year: "numeric", month: "2-digit", day: "2-digit" };
+  if (!soloFecha) opts.timeZone = "America/Santiago";
+  const [anio, mes, dia] = d.toLocaleDateString("en-CA", opts).split("-");
+  return `${dia}/${mes}/${anio}`;
+}
+function formatHora(fechaISO) {
+  if (!fechaISO) return "";
+  const d = new Date(fechaISO);
+  if (isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString("en-GB", { timeZone: "America/Santiago", hour: "2-digit", minute: "2-digit", hour12: false });
+}
+function formatFechaHora(fechaISO) {
+  if (!fechaISO) return "";
+  return `${formatFecha(fechaISO)} ${formatHora(fechaISO)}`;
+}
 function formatDateLong(iso) {
   const dias = ["Domingo","Lunes","Martes","Miércoles","Jueves","Viernes","Sábado"];
   const meses = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
@@ -301,6 +345,35 @@ const db = {
     if (error) throw error;
     return (data && data[0]) || null;
   },
+  // Bug 1 (persistencia HC): igual que fetchRecetaEnProcesoHoy pero sin
+  // conocer de antemano el equipo — se usa al abrir mecanico.html para
+  // detectar automaticamente si este mecanico dejo una hoja de cambio a
+  // medias hoy (receta en_proceso) y retomarla sin que tenga que navegar
+  // de nuevo hasta el equipo.
+  async fetchCambioActivoHoy(mecanicoId) {
+    const { data, error } = await sb.from("auditorias_receta")
+      .select("id,auditoria_id,estado,posiciones_alerta,tareas_extra,auditorias!inner(equipo_id,fecha,bultero_id)")
+      .eq("auditorias.bultero_id", mecanicoId).eq("auditorias.fecha", todayISO()).eq("estado", "en_proceso")
+      .order("creado_en", { ascending: false }).limit(1);
+    if (error) throw error;
+    return (data && data[0]) || null;
+  },
+  // Fix 6: sesion de HC activa (header ya creado por ensureCambioHeader,
+  // hora_salida todavia null) para este equipo+mecanico hoy — si existe y es
+  // reciente (<8hs), no hace falta pedir los km de nuevo al reabrir la HC.
+  async fetchCambioActivoReciente(equipoId, mecanicoId) {
+    const { data, error } = await sb.from("cambios_neumaticos")
+      .select("id_cambio,kilometraje,creado_en,hora_ingreso")
+      .eq("equipo_id", equipoId).eq("bultero_id", mecanicoId).eq("fecha", todayISO())
+      .is("hora_salida", null).order("creado_en", { ascending: false }).limit(1);
+    if (error) throw error;
+    return (data && data[0]) || null;
+  },
+  async fetchEquipoPorId(id) {
+    const { data, error } = await sb.from("equipos").select("*").eq("id_equipo", id).maybeSingle();
+    if (error) throw error;
+    return data;
+  },
   // Tareas sin terminar de auditorias anteriores de este equipo (para el modal
   // "Tenes tareas sin terminar" antes de mostrar el instructivo).
   async fetchTareasPendientesAnteriores(equipoId, excluirAuditoriaId) {
@@ -439,6 +512,10 @@ async function enviarItem(item) {
     case "novedad": return enviarNovedad(item.data);
     case "auditoria": return enviarAuditoria(item.data);
     case "cambio": return enviarCambio(item.data);
+    case "cambio_header": return enviarCambioHeader(item.data);
+    case "cambio_item": return enviarCambioItem(item.data);
+    case "cambio_checklist": return enviarCambioChecklist(item.data);
+    case "cambio_cierre": return enviarCambioCierre(item.data);
     case "alerta": return enviarAlerta(item.data);
     case "discrepancia_auditoria": return enviarDiscrepanciaAuditoria(item.data);
     case "discrepancia": return enviarDiscrepancia(item.data);
@@ -593,6 +670,94 @@ async function enviarCambio(data) {
   }
   for (const a of (alertas || [])) await insertAlerta(a);
 }
+/* =====================================================================
+   HOJA DE CAMBIO — persistencia incremental (Bug 1)
+   Cada movimiento se guarda apenas se confirma (no se espera a "Finalizar").
+   El header (cambios_neumaticos) se crea una sola vez, en el primer
+   movimiento de la sesion; los siguientes movimientos referencian ese
+   mismo id_cambio. Al recargar la pagina, mecanico.html reconstruye el
+   mapa leyendo `neumaticos` (ya actualizado por estos inserts) y el
+   checklist desde `auditorias_receta.posiciones_alerta` (actualizado en
+   cada toggle via enviarCambioChecklist).
+===================================================================== */
+async function enviarCambioHeader(data) {
+  // cambios_neumaticos no tiene columna cliente_id (ver nota en enviarCambio):
+  // se usa solo para lo que necesita el emisor de la cola, no va en el insert.
+  const { cliente_id, ...cab } = data;
+  const { error } = await sb.from("cambios_neumaticos").insert(cab);
+  if (error) throw error;
+}
+async function enviarCambioItem(data) {
+  const { kind, cliente_id, mecanico_id, equipo_id, cambio_id, item } = data;
+  if (kind === "sale") {
+    await asegurarNeumatico(cliente_id, item.numero_fuego, null, null, item);
+    const { error } = await sb.from("cambio_detalle").insert({ id: uuid(), cambio_id, tipo: "sale", numero_fuego: item.numero_fuego, posicion: item.posicion || null, milimetros: item.milimetros || null, psi: item.psi || null, estado: null, motivo_salida: item.motivo_salida || item.motivo || null });
+    if (error) throw error;
+    await actualizarNeumaticoSale(cliente_id, item);
+    await insertMovimientoBodega(cliente_id, mecanico_id, "salida", item.origen_mov || item.motivo || "salida", item.numero_fuego);
+  } else if (kind === "entra") {
+    await asegurarNeumatico(cliente_id, item.numero_fuego, equipo_id, item.posicion, item);
+    const { error } = await sb.from("cambio_detalle").insert({ id: uuid(), cambio_id, tipo: "entra", numero_fuego: item.numero_fuego, posicion: item.posicion || null, milimetros: item.milimetros || null, psi: item.psi || null, estado: item.estado || null, motivo_salida: null });
+    if (error) throw error;
+    await actualizarNeumaticoEntra(cliente_id, equipo_id, item);
+    await insertMovimientoBodega(cliente_id, mecanico_id, "entrada", "montaje", item.numero_fuego);
+  } else if (kind === "rotacion") {
+    const r = item, a = r.a, b = r.b;
+    const detalle = [
+      { id: uuid(), cambio_id, tipo: "sale", numero_fuego: a.numero_fuego, posicion: r.origen, milimetros: a.mm || null, psi: a.psi || null, estado: null, motivo_salida: "rotacion" },
+      { id: uuid(), cambio_id, tipo: "entra", numero_fuego: a.numero_fuego, posicion: r.destino, milimetros: a.mm || null, psi: a.psi || null, estado: null, motivo_salida: "rotacion" }
+    ];
+    if (b) {
+      detalle.push({ id: uuid(), cambio_id, tipo: "sale", numero_fuego: b.numero_fuego, posicion: r.destino, milimetros: b.mm || null, psi: b.psi || null, estado: null, motivo_salida: "rotacion" });
+      detalle.push({ id: uuid(), cambio_id, tipo: "entra", numero_fuego: b.numero_fuego, posicion: r.origen, milimetros: b.mm || null, psi: b.psi || null, estado: null, motivo_salida: "rotacion" });
+      await sb.from("neumaticos").update({ posicion_actual: null }).eq("cliente_id", cliente_id).eq("numero_fuego", a.numero_fuego).eq("equipo_actual", equipo_id);
+      await sb.from("neumaticos").update({ posicion_actual: r.origen }).eq("cliente_id", cliente_id).eq("numero_fuego", b.numero_fuego).eq("equipo_actual", equipo_id);
+      await sb.from("neumaticos").update({ posicion_actual: r.destino }).eq("cliente_id", cliente_id).eq("numero_fuego", a.numero_fuego).eq("equipo_actual", equipo_id);
+    } else {
+      await sb.from("neumaticos").update({ posicion_actual: r.destino }).eq("cliente_id", cliente_id).eq("numero_fuego", a.numero_fuego).eq("equipo_actual", equipo_id);
+    }
+    const { error } = await sb.from("cambio_detalle").insert(detalle);
+    if (error) throw error;
+  } else if (kind === "intervencion") {
+    const { error } = await sb.from("intervenciones").insert(item);
+    if (error) throw error;
+    if (item.tipo === "regulacion_psi" && item.psi_nuevo != null && item.numero_fuego) {
+      await sb.from("neumaticos").update({ psi_actual: item.psi_nuevo }).eq("cliente_id", cliente_id).eq("numero_fuego", item.numero_fuego);
+    }
+  }
+}
+async function enviarCambioChecklist(data) {
+  const { error } = await sb.from("auditorias_receta").update({ posiciones_alerta: data.posiciones_alerta }).eq("id", data.receta_id);
+  if (error) throw error;
+}
+async function enviarCambioCierre(data) {
+  const { error } = await sb.from("cambios_neumaticos").update({
+    hora_salida: data.hora_salida, observaciones: data.observaciones,
+    ruedas_torqueadas: data.ruedas_torqueadas, psi_regulados: data.psi_regulados
+  }).eq("id_cambio", data.id_cambio);
+  if (error) throw error;
+  await sb.from("equipos").update({ kilometros: data.kilometraje }).eq("id_equipo", data.equipo_id);
+  if (data.recetaUpdate && data.recetaUpdate.id) {
+    const { error: e2 } = await sb.from("auditorias_receta").update({
+      estado: data.recetaUpdate.estado, tareas_cumplidas: data.recetaUpdate.tareas_cumplidas, tareas_pendientes: data.recetaUpdate.tareas_pendientes
+    }).eq("id", data.recetaUpdate.id);
+    if (e2) console.error("No se pudo actualizar el estado del instructivo", e2);
+  }
+}
+// Fix 3: neumaticos.estado_actual pasa a "en_uso" apenas se monta (para
+// cualquier origen: nuevo/transito/recauchado) y no vuelve a cambiar, asi
+// que no sirve para saber si el neumatico montado hoy en un equipo es
+// recauchado o no. El origen real (nuevo/transito/recauchado) solo queda
+// en cambio_detalle.estado, seteado al montar (ver enviarCambioItem/
+// enviarCambio, tipo='entra'). Se busca el ultimo para ese numero_fuego.
+async function fetchOrigenNeumatico(numeroFuego) {
+  if (!numeroFuego) return null;
+  const { data, error } = await sb.from("cambio_detalle").select("estado")
+    .eq("numero_fuego", numeroFuego).eq("tipo", "entra").not("estado", "is", null)
+    .order("creado_en", { ascending: false }).limit(1);
+  if (error || !data || !data.length) return null;
+  return data[0].estado;
+}
 async function insertAlerta(a) {
   const { error } = await sb.from("alertas").insert(a);
   if (error) console.error("No se pudo registrar alerta", error);
@@ -665,14 +830,29 @@ const ALL_STOCK_FIELDS = [...NEUMATICO_FIELDS, ...PATIO_FIELDS];
 // a mano en el check diario (nuevo/transito/recauchado/reparacion). Las demas
 // bodegas (retiro_desgaste, retiro_daño_otro, para_recauchar, nfu) son estados
 // intermedios que administra el Admin y no se cuentan aca.
+// Fix 2: fuente unica de verdad para el conteo de neumaticos por bodega —
+// usada por el check diario, el reconteo al cierre, Maestros>Inventario del
+// Admin y el stock rapido del Dashboard, para que todos muestren el mismo
+// numero para la misma bodega. Solo cuenta neumaticos activos con bodega
+// asignada (no filtra por equipo_actual: un neumatico "sucio" que quedo con
+// equipo_actual Y bodega a la vez cuenta igual en ambos lados, a proposito,
+// para no repetir la inconsistencia que causaba el bug).
+async function getInventarioNeumaticos(clienteId) {
+  let q = sb.from("neumaticos").select("bodega").eq("activo", true).not("bodega", "is", null);
+  q = filtroCliente(q, clienteId);
+  const { data, error } = await q;
+  if (error) throw error;
+  const conteo = {};
+  (data || []).forEach(n => { conteo[n.bodega] = (conteo[n.bodega] || 0) + 1; });
+  return conteo;
+}
 async function compararInventarioNeumaticos(clienteId, checkTotales) {
-  const { data: neus } = await sb.from("neumaticos").select("bodega").eq("cliente_id", clienteId).eq("activo", true);
-  const sistema = { nuevo: 0, transito: 0, recauchado: 0, reparacion: 0 };
-  (neus || []).forEach(n => { if (sistema[n.bodega] !== undefined) sistema[n.bodega]++; });
+  const sistema = await getInventarioNeumaticos(clienteId);
   const labels = { nuevo: "Neumáticos nuevos", transito: "Neumáticos en tránsito", recauchado: "Neumáticos recauchados", reparacion: "Neumáticos en reparación" };
   const diffs = [];
   for (const bucket of ["nuevo", "transito", "recauchado", "reparacion"]) {
-    if (checkTotales[bucket] !== sistema[bucket]) diffs.push({ bucket, label: labels[bucket], sistema: sistema[bucket], fisico: checkTotales[bucket] });
+    const sis = sistema[bucket] || 0;
+    if (checkTotales[bucket] !== sis) diffs.push({ bucket, label: labels[bucket], sistema: sis, fisico: checkTotales[bucket] });
   }
   return diffs;
 }
@@ -776,7 +956,7 @@ async function compararStockCierre(clienteId, totalesNeumaticos, totalesLlantas)
   return { neuDiffs, llantaDiffs };
 }
 
-async function registrarDiscrepanciasCierre(clienteId, mecanico, fecha, neuDiffs, llantaDiffs) {
+async function registrarDiscrepanciasCierre(clienteId, mecanico, fecha, neuDiffs, llantaDiffs, observacion) {
   const rows = [];
   const alertas = [];
   if (neuDiffs.length) {
@@ -784,7 +964,7 @@ async function registrarDiscrepanciasCierre(clienteId, mecanico, fecha, neuDiffs
       id: uuid(), origen: "check_diario", tipo_item: "neumatico", item_detalle: d.bucket,
       valor_sistema: d.sistema, valor_fisico: d.fisico, diferencia: d.fisico - d.sistema,
       tipo_discrepancia: d.fisico > d.sistema ? "positiva" : "negativa",
-      cliente_id: clienteId, mecanico_id: mecanico.id, fecha
+      cliente_id: clienteId, mecanico_id: mecanico.id, fecha, observacion_mecanico: observacion || null
     }));
     alertas.push({
       id: uuid(), cliente_id: clienteId, equipo_id: null, mecanico_id: mecanico.id,
@@ -798,7 +978,7 @@ async function registrarDiscrepanciasCierre(clienteId, mecanico, fecha, neuDiffs
       id: uuid(), origen: "check_diario", tipo_item: "llanta", item_detalle: d.subtipo,
       valor_sistema: d.sistema, valor_fisico: d.fisico, diferencia: d.fisico - d.sistema,
       tipo_discrepancia: d.fisico > d.sistema ? "positiva" : "negativa",
-      cliente_id: clienteId, mecanico_id: mecanico.id, fecha
+      cliente_id: clienteId, mecanico_id: mecanico.id, fecha, observacion_mecanico: observacion || null
     }));
     alertas.push({
       id: uuid(), cliente_id: clienteId, equipo_id: null, mecanico_id: mecanico.id,
@@ -963,7 +1143,39 @@ async function construirYGuardarAuditoria({ user, clienteId, equipo, cfg, posDat
   const flags = {};
   recsInfo.recs.forEach(r => { if (r.key) flags[r.key] = checklist.find(c => c.id === r.id) ? true : false; });
 
+  // Fix 5: validar marca+modelo auditados contra el tipo declarado en el
+  // catalogo del cliente (marcas_modelos_cliente), vs el tipo esperado de
+  // esa posicion segun configuracion_ejes. No bloquea al mecanico — genera
+  // una alerta amarilla para que el Admin decida. Si el cliente no tiene
+  // catalogo cargado, no hay nada contra que validar (se salta entero).
+  let tiposIncorrectos = [];
+  try {
+    const catalogo = (await db.fetchMarcasModelosCliente(clienteId)).filter(c => c.activo);
+    if (catalogo && catalogo.length) {
+      const porClave = {};
+      catalogo.forEach(c => { porClave[`${normStr(c.marca)}|${normStr(c.modelo)}`] = c.tipo; });
+      Object.values(posData).forEach(d => {
+        if (!d.marca || !d.modelo) return;
+        const tipoCatalogo = porClave[`${normStr(d.marca)}|${normStr(d.modelo)}`];
+        const tipoEsperado = tipoNeumaticoEsperado(equipo, axleCfg, d.posicion);
+        if (!tipoCatalogo || !tipoEsperado || tipoCatalogo === tipoEsperado) return;
+        tiposIncorrectos.push({ posicion: d.posicion, tipo_alerta: "tipo_incorrecto", tipo_catalogo: tipoCatalogo, tipo_esperado: tipoEsperado, descripcion: `Neumático ${tipoCatalogo} montado en posición ${tipoEsperado}` });
+      });
+    }
+  } catch (e) { console.error("No se pudo validar el catálogo de marcas/modelos", e); }
+
   const alertasGeneradas = [];
+  tiposIncorrectos.forEach(ti => {
+    const d = posData[ti.posicion] || {};
+    alertasGeneradas.push({
+      id: uuid(), cliente_id: clienteId, equipo_id: equipo.id_equipo, mecanico_id: user.id,
+      tipo: "tipo_neumatico_incorrecto", severidad: "amarillo",
+      titulo: `Tipo incorrecto — ${equipo.patente} pos ${ti.posicion}`,
+      descripcion: `Posición ${ti.posicion}: neumático ${d.marca || ""} ${d.modelo || ""} es de tipo ${ti.tipo_catalogo} pero está en posición ${ti.tipo_esperado}`,
+      posicion: ti.posicion, numero_fuego: d.numero_fuego || null,
+      leida_mecanico: true, leida_admin: false, leida_superadmin: false
+    });
+  });
   const posiciones = Object.values(posData).map(d => {
     if (d.status !== "ok") {
       alertasGeneradas.push({
@@ -1017,7 +1229,8 @@ async function construirYGuardarAuditoria({ user, clienteId, equipo, cfg, posDat
       posiciones_alerta: {
         recomendaciones: recomendacionesJSON,
         discrepancias_neumaticos: discrepanciasNeumaticos || [],
-        tareas_extra: tareasExtraJSON
+        tareas_extra: tareasExtraJSON,
+        tipos_incorrectos: tiposIncorrectos
       },
       total_tareas: totalTareas, tareas_cumplidas: 0, tareas_pendientes: totalTareas,
       seguio_receta: pct === 100, pct_receta_seguida: pct,
@@ -1155,11 +1368,6 @@ async function evaluarEstadoMecanico(user) {
   if (checkValido) return { estado: "menu_principal", clienteId: checks[0].empresa_id || checks[0].cliente_id };
   return { estado: "bienvenida" };
 }
-async function contarNeumaticosPorBodega(clienteId, bodega) {
-  const { count } = await sb.from("neumaticos").select("id_neumatico", { count: "exact", head: true }).eq("cliente_id", clienteId).eq("bodega", bodega);
-  return count || 0;
-}
-
 /* =====================================================================
    RESUMEN Y CIERRE DE JORNADA (compartido entre el cierre normal del dia
    y el cierre de una jornada anterior olvidada)
@@ -1207,10 +1415,9 @@ async function construirResumenJornada(mecanicoId, clienteId, fecha) {
     });
   }
 
-  const [stock_nuevo, stock_transito, stock_recauchado, stock_nfu] = await Promise.all([
-    contarNeumaticosPorBodega(clienteId, "nuevo"), contarNeumaticosPorBodega(clienteId, "transito"),
-    contarNeumaticosPorBodega(clienteId, "recauchado"), contarNeumaticosPorBodega(clienteId, "nfu")
-  ]);
+  const inventarioStock = await getInventarioNeumaticos(clienteId);
+  const stock_nuevo = inventarioStock.nuevo || 0, stock_transito = inventarioStock.transito || 0,
+    stock_recauchado = inventarioStock.recauchado || 0, stock_nfu = inventarioStock.nfu || 0;
 
   const conteos = { auditorias_realizadas: auds.length, cambios_realizados: cams.length, regulaciones_psi, retorqueos, rotaciones, reparaciones, pct_receta_promedio };
   const stock = { stock_nuevo, stock_transito, stock_recauchado, stock_nfu };
@@ -1290,7 +1497,7 @@ async function siguienteNumeroCambio(clienteId, cfg) {
   const { data, error } = await sb.from("cambios_neumaticos").select("numero_cambio").order("numero_cambio", { ascending: false }).limit(1);
   let base = parseInt(cfg.numero_cambio_inicio || 1, 10);
   if (!error && data && data[0] && !isNaN(parseInt(data[0].numero_cambio, 10))) base = Math.max(base, parseInt(data[0].numero_cambio, 10) + 1);
-  const pendientes = getQueue().filter(q => q.clienteId === clienteId && q.tipo === "cambio").length;
+  const pendientes = getQueue().filter(q => q.clienteId === clienteId && (q.tipo === "cambio" || q.tipo === "cambio_header")).length;
   return String(base + pendientes);
 }
 // Numeros de fuego que ya estan en cola local (auditoria/cambio aun sin
@@ -1304,6 +1511,7 @@ function numerosFuegoEnCola(clienteId) {
       (q.data.entra || []).forEach(e => considerar(e.numero_fuego));
       (q.data.sale || []).forEach(s => considerar(s.numero_fuego));
     }
+    if (q.tipo === "cambio_item" && q.data && q.data.item && (q.data.kind === "entra" || q.data.kind === "sale")) considerar(q.data.item.numero_fuego);
   });
   return nums;
 }
@@ -1387,19 +1595,28 @@ function nivelDeAlerta(tipo) {
   return null;
 }
 
+// Bug 3: notifica a quien este escuchando (dashboard del Admin) que el
+// estado de las alertas cambio, para refrescar el bloque de urgentes sin
+// esperar al polling de 30s. Mismo nombre de evento que ya usa
+// useAlertasNoLeidas en mecanico.html/admin.html.
+function notificarAlertasCambiaron() { window.dispatchEvent(new Event("mosa-alertas-changed")); }
+
 async function marcarAlertaVista(id) {
   await sb.from("alertas").update({ visto_en: new Date().toISOString(), estado: "vista", leida_admin: true })
     .eq("id", id).eq("estado", "nueva");
+  notificarAlertasCambiaron();
 }
 async function marcarAlertaEnProceso(id, adminUserId) {
   await sb.from("alertas").update({ estado: "en_proceso", en_proceso_por: adminUserId || null, en_proceso_desde: new Date().toISOString(), leida_admin: true })
     .eq("id", id).in("estado", ["nueva", "vista"]);
+  notificarAlertasCambiaron();
 }
 async function marcarAlertaResuelta(id, adminUserId, justificacion) {
   if (!id) return;
   const update = { estado: "resuelta", resuelto_en: new Date().toISOString(), resuelto_por: adminUserId || null, leida_admin: true };
   if (justificacion) update.justificacion_admin = justificacion;
   await sb.from("alertas").update(update).eq("id", id);
+  notificarAlertasCambiaron();
 }
 
 /* =====================================================================
@@ -1552,6 +1769,7 @@ const adminDb = {
   async marcarAlertaLeida(id) {
     await marcarAlertaVista(id);
     await sb.from("alertas").update({ leida_admin: true }).eq("id", id);
+    notificarAlertasCambiaron();
   },
   async fetchPctInstructivoHoy(clienteId) {
     // auditorias_receta no tiene "fecha" propia -> se filtra por creado_en del dia.
@@ -1586,15 +1804,16 @@ const adminDb = {
       return { patente: eq.patente || "-", numero_interno: eq.numero_interno || null, estado: r.estado, tareas_pendientes: r.tareas_pendientes, total_tareas: r.total_tareas, fecha: a.fecha || null };
     }).sort((x, y) => (x.fecha || "").localeCompare(y.fecha || ""));
   },
+  // Fix 2: usa getInventarioNeumaticos (misma fuente que check diario/cierre/
+  // Maestros>Inventario) para los conteos por bodega. "en_equipo" es una
+  // dimension aparte (equipo_actual, no bodega) que se suma por separado.
   async fetchStockRapido(clienteId) {
-    let q = sb.from("neumaticos").select("bodega,equipo_actual").eq("activo", true);
-    q = filtroCliente(q, clienteId);
-    const { data } = await q;
-    const conteos = { nuevo: 0, transito: 0, reparacion: 0, retiro_desgaste: 0, para_recauchar: 0, recauchado: 0, en_equipo: 0, "retiro_daño_otro": 0, nfu: 0 };
-    (data || []).forEach(n => {
-      if (n.equipo_actual) conteos.en_equipo++;
-      else if (n.bodega && conteos[n.bodega] !== undefined) conteos[n.bodega]++;
-    });
+    const [bodegas, { count: enEquipo }] = await Promise.all([
+      getInventarioNeumaticos(clienteId),
+      (() => { let q = sb.from("neumaticos").select("id_neumatico", { count: "exact", head: true }).eq("activo", true).not("equipo_actual", "is", null); q = filtroCliente(q, clienteId); return q; })()
+    ]);
+    const conteos = { nuevo: 0, transito: 0, reparacion: 0, retiro_desgaste: 0, para_recauchar: 0, recauchado: 0, en_equipo: enEquipo || 0, "retiro_daño_otro": 0, nfu: 0 };
+    Object.entries(bodegas).forEach(([k, v]) => { if (conteos[k] !== undefined) conteos[k] = v; });
     return conteos;
   },
   async fetchMecanicosEnJornada(clienteId) {
@@ -1766,6 +1985,18 @@ async function resolverDiscrepancia(discrepancia, aprobar, justificacion, adminU
     descripcion: `${discrepancia.item_detalle}: sistema ${discrepancia.valor_sistema} · físico ${discrepancia.valor_fisico}`,
     leida_mecanico: false, leida_admin: true, leida_superadmin: false
   });
+  // Bug 2: la alerta original ("discrepancia_inventario") que le avisa al
+  // Admin de esta discrepancia debe quedar leida al resolverla, si no la
+  // campanita la sigue contando aunque ya este resuelta. No hay FK directa
+  // discrepancia->alerta (una alerta agrupa varias filas del mismo check
+  // diario), asi que se matchea por mecanico_id + tipo (sin filtrar por
+  // fecha exacta: creado_en es UTC y discrepancia.fecha es la fecha local
+  // del mecanico, pueden no coincidir cerca de medianoche — mismo gotcha
+  // que en fetchAlertas/resolverDiscrepanciaAuditoria).
+  await sb.from("alertas").update({ leida_admin: true, leida_superadmin: true })
+    .eq("mecanico_id", discrepancia.mecanico_id).eq("tipo", "discrepancia_inventario")
+    .eq("leida_admin", false);
+  notificarAlertasCambiaron();
 }
 async function countDiscrepanciasPendientes(clienteId) {
   let q = sb.from("discrepancias_inventario").select("id", { count: "exact", head: true }).eq("resuelta", false).eq("origen", "check_diario");
@@ -1851,6 +2082,16 @@ async function resolverDiscrepanciaAuditoria(discrepancia, aprobar, justificacio
     resuelto_por: adminUser.id, resuelto_en: new Date().toISOString()
   }).eq("id", discrepancia.id);
   if (error) throw error;
+
+  // Bug 2: marcar leida la alerta "neumatico_no_registrado" que generó esta
+  // discrepancia (construirYGuardarAuditoria la crea con equipo_id/posicion/
+  // numero_fuego=valor_fisico) — si no, sigue contando en la campanita del
+  // Admin aunque la discrepancia ya este resuelta.
+  await sb.from("alertas").update({ leida_admin: true, leida_superadmin: true })
+    .eq("tipo", "neumatico_no_registrado").eq("equipo_id", discrepancia.equipo_id)
+    .eq("posicion", discrepancia.posicion).eq("numero_fuego", discrepancia.valor_fisico)
+    .eq("leida_admin", false);
+  notificarAlertasCambiaron();
 
   // Best-effort: reflejar la resolucion en el JSONB de la auditoria (no bloquea si falla).
   try {

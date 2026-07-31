@@ -517,7 +517,7 @@ function AlertaRow({ a, equiposMap, onVer }) {
         <p className="text-[12.5px] text-muted mt-0.5 line-clamp-2">{a.descripcion}</p>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-[11.5px] text-muted">
           {a.equipo_id && equiposMap && equiposMap[a.equipo_id] && <span>{equiposMap[a.equipo_id]}</span>}
-          {a.creado_en && <span>{(a.creado_en).slice(0, 10)} · {(a.creado_en).slice(11, 16)}</span>}
+          {a.creado_en && <span>{formatFechaHora(a.creado_en)}</span>}
         </div>
       </div>
       <Button variant="subtle" className="h-9 px-3.5 text-[12.5px] shrink-0" onClick={() => onVer(a)}>Ver</Button>
@@ -533,7 +533,7 @@ function AlertaDetalleModal({ alerta, onClose, onMarcarLeida }) {
         </div>
         <p className="font-bold text-[16px]">{alerta.titulo}</p>
         <p className="text-[14px] text-[#374151] whitespace-pre-wrap">{alerta.descripcion}</p>
-        <p className="text-[12.5px] text-muted">{(alerta.creado_en || "").slice(0, 10)} · {(alerta.creado_en || "").slice(11, 16)}</p>
+        <p className="text-[12.5px] text-muted">{formatFechaHora(alerta.creado_en)}</p>
         {!alerta.leida_admin && <Button className="w-full" onClick={() => onMarcarLeida(alerta)}>Marcar como leída</Button>}
       </div>
     </Modal>
@@ -552,8 +552,8 @@ function DashboardView({ empresaCtl, onAbrirMecanico, setView }) {
   const [verAlerta, setVerAlerta] = useState(null);
   const [pushToast, toastNode] = useToasts();
 
-  async function cargar() {
-    setLoading(true);
+  async function cargar(silent) {
+    if (!silent) setLoading(true);
     try {
       const [equiposCount, auditoriasCount, criticasList, pct, pend, stk, mecs, nivel1List] = await Promise.all([
         adminDb.countEquiposActivos(filtro), adminDb.countAuditoriasHoy(filtro),
@@ -574,9 +574,21 @@ function DashboardView({ empresaCtl, onAbrirMecanico, setView }) {
         setEquiposMap(map);
       } else setEquiposMap({});
     } catch (e) { console.error("No se pudo cargar el dashboard", e); }
-    setLoading(false);
+    if (!silent) setLoading(false);
   }
-  useEffect(() => { cargar(); }, [filtro]);
+  // Bug 3: refrescar el bloque de urgentes y los KPIs solos, sin esperar a
+  // que el Admin recargue la pagina a mano. Polling cada 30s + refresco
+  // inmediato apenas se resuelve una alerta desde cualquier parte de la app
+  // (marcarAlertaLeida/marcarAlertaResuelta/etc. disparan "mosa-alertas-changed").
+  // silent=true en el poll/evento para no tapar la pantalla con el spinner
+  // de carga inicial cada vez que refresca solo.
+  useEffect(() => {
+    cargar();
+    const cargarSilencioso = () => cargar(true);
+    const t = setInterval(cargarSilencioso, 30000);
+    window.addEventListener("mosa-alertas-changed", cargarSilencioso);
+    return () => { clearInterval(t); window.removeEventListener("mosa-alertas-changed", cargarSilencioso); };
+  }, [filtro]);
 
   async function marcarLeida(a) {
     await adminDb.marcarAlertaLeida(a.id);
@@ -1000,13 +1012,32 @@ function InfoEquipoTab({ equipo, ultimaAuditoria }) {
   );
 }
 
+// Fix 3: origen real (nuevo/transito/recauchado) — neumaticos.estado_actual
+// siempre queda "en_uso" tras montar, no sirve para esto (ver nota en
+// fetchOrigenNeumatico, js/supabase.js). Se busca en cambio_detalle.
+const ORIGEN_BADGE = {
+  recauchado: { color: "amber", label: "♻ Recauchado" },
+  nuevo: { color: "green", label: "✦ Nuevo" },
+  transito: { color: "gray", label: "↔ Tránsito" }
+};
+function OrigenNeumaticoBadge({ numeroFuego }) {
+  const [origen, setOrigen] = useState(undefined);
+  useEffect(() => {
+    let cancel = false;
+    setOrigen(undefined);
+    fetchOrigenNeumatico(numeroFuego).then(o => { if (!cancel) setOrigen(o); }).catch(() => { if (!cancel) setOrigen(null); });
+    return () => { cancel = true; };
+  }, [numeroFuego]);
+  if (!origen || !ORIGEN_BADGE[origen]) return null;
+  return <Badge color={ORIGEN_BADGE[origen].color}>{ORIGEN_BADGE[origen].label}</Badge>;
+}
 function PosicionDetalleModal({ n, pos, onClose }) {
   const mm = n.aud ? (n.aud.milimetros != null ? n.aud.milimetros : n.aud.mm_centro) : null;
   const psi = n.psi_actual != null ? n.psi_actual : (n.aud ? n.aud.psi : null);
   return (
     <Modal title={`Posición ${pos}`} onClose={onClose}>
       <div className="space-y-3 text-[14px]">
-        <div className="flex items-center justify-between"><span className="text-muted">N° fuego</span><span className="font-bold">{n.numero_fuego || "-"}</span></div>
+        <div className="flex items-center justify-between"><span className="text-muted">N° fuego</span><span className="font-bold flex items-center gap-2">{n.numero_fuego || "-"}<OrigenNeumaticoBadge numeroFuego={n.numero_fuego} /></span></div>
         <div className="flex items-center justify-between"><span className="text-muted">Marca</span><span className="font-bold">{n.marca || "-"}</span></div>
         <div className="flex items-center justify-between"><span className="text-muted">Medida</span><span className="font-bold">{n.medida || "-"}</span></div>
         <div className="flex items-center justify-between"><span className="text-muted">PSI</span><span className="font-bold">{psi != null ? psi : "-"}</span></div>
@@ -1193,7 +1224,7 @@ function HistorialEquipoTab({ equipo }) {
             </div>
             <div className="flex-1 pb-4">
               <p className="font-semibold text-[13.5px]">{it.desc}</p>
-              <p className="text-[11.5px] text-muted mt-0.5">{it.fecha ? formatDateLong(it.fecha) : ""}{it.creado_en ? ` · ${it.creado_en.slice(11, 16)}` : ""}</p>
+              <p className="text-[11.5px] text-muted mt-0.5">{it.fecha ? formatDateLong(it.fecha) : ""}{it.creado_en ? ` · ${formatHora(it.creado_en)}` : ""}</p>
             </div>
           </div>
         ))}
@@ -1491,7 +1522,7 @@ function AlertaCriticaRow({ a, onVer, onMarcarLeida }) {
       <div className="flex-1 min-w-0">
         <p className="font-bold text-[14px]">🔴 {ALERTA_TIPO_LABELS[a.tipo] || a.tipo}{a.equipo ? ` — ${a.equipo.numero_interno ? a.equipo.numero_interno + " · " : ""}${a.equipo.patente}` : ""}</p>
         <p className="text-[12.5px] text-muted mt-0.5 line-clamp-2">{a.descripcion}</p>
-        <p className="text-[11.5px] text-muted mt-1">{(a.creado_en || "").slice(11, 16)}</p>
+        <p className="text-[11.5px] text-muted mt-1">{formatHora(a.creado_en)}</p>
       </div>
       <div className="flex flex-col gap-2 shrink-0">
         <Button variant="subtle" className="h-9 px-3.5 text-[12.5px]" onClick={() => onVer(a)}>Ver detalle</Button>
@@ -1544,7 +1575,7 @@ function DiscrepanciaAuditoriaCard({ d, onResolver }) {
     <div className="bg-[#FFFBEB] border border-[#FDE68A] rounded-2xl p-4 space-y-3">
       <div>
         <p className="font-bold text-[14px] text-[#92400E]">🔴 Discrepancia — {d.equipo ? `${d.equipo.patente} (${d.equipo.numero_interno || "-"})` : "-"} — Posición {d.posicion}</p>
-        <p className="text-[12.5px] text-[#92400E]">Mecánico: {d.mecanico ? `${d.mecanico.nombre} ${d.mecanico.apellido || ""}` : "-"} — {(d.creado_en || "").slice(11, 16)}</p>
+        <p className="text-[12.5px] text-[#92400E]">Mecánico: {d.mecanico ? `${d.mecanico.nombre} ${d.mecanico.apellido || ""}` : "-"} — {formatHora(d.creado_en)}</p>
       </div>
       <div className="text-[13px] text-[#374151] space-y-0.5">
         <p><span className="font-semibold">Campo:</span> {d.item_detalle}</p>
@@ -1665,7 +1696,7 @@ function MovimientoRow({ m, onVerFoto }) {
   }
   return (
     <div className="bg-white rounded-2xl border border-bd shadow-card p-4">
-      <p className="text-[11.5px] text-muted font-semibold">{(m.creado_en || "").slice(11, 16)} — {mecanicoLabel} — {equipoLabel}</p>
+      <p className="text-[11.5px] text-muted font-semibold">{formatHora(m.creado_en)} — {mecanicoLabel} — {equipoLabel}</p>
       {linea}
       {m.kind === "cambio" && m.tipo === "entra" && m.foto_url && (
         <button className="text-[12.5px] font-bold text-ink underline mt-1.5" onClick={() => onVerFoto(m.foto_url)}>📷 Ver foto de torque</button>
@@ -1812,7 +1843,7 @@ function AuditoriasDelDiaModal({ mecanico, fecha, onClose }) {
           {lista.map(a => (
             <div key={a.id_auditoria} className="flex items-center justify-between text-[13.5px] border-b border-bd pb-2">
               <span className="font-semibold">{a.equipo ? `${a.equipo.patente}${a.equipo.numero_interno ? ` (${a.equipo.numero_interno})` : ""}` : "-"}</span>
-              <span className="text-muted">{(a.creado_en || "").slice(11, 16)}</span>
+              <span className="text-muted">{formatHora(a.creado_en)}</span>
             </div>
           ))}
           {!lista.length && <p className="text-[13.5px] text-muted py-2">Sin auditorías registradas.</p>}
@@ -2316,16 +2347,17 @@ const BODEGA_BUCKETS = [
   { id: "en_equipo", label: "En equipo" }, { id: "retiro_daño_otro", label: "Retiro Daño/Otro" },
   { id: "nfu", label: "NFU" }
 ];
+// Fix 2: usa getInventarioNeumaticos (misma fuente que check diario, cierre y
+// stock rapido del Dashboard) para que Maestros>Inventario muestre el mismo
+// numero que ve el mecanico para la misma bodega.
 async function fetchBodegaCounts(clienteId) {
-  let q = sb.from("neumaticos").select("bodega,equipo_actual").eq("activo", true);
-  q = filtroCliente(q, clienteId);
-  const { data, error } = await q;
+  const [bodegas, { count: enEquipo, error }] = await Promise.all([
+    getInventarioNeumaticos(clienteId),
+    (() => { let q = sb.from("neumaticos").select("id_neumatico", { count: "exact", head: true }).eq("activo", true).not("equipo_actual", "is", null); q = filtroCliente(q, clienteId); return q; })()
+  ]);
   if (error) throw error;
-  const counts = { nuevo: 0, transito: 0, reparacion: 0, retiro_desgaste: 0, para_recauchar: 0, recauchado: 0, en_equipo: 0, "retiro_daño_otro": 0, nfu: 0 };
-  (data || []).forEach(n => {
-    if (n.equipo_actual) counts.en_equipo++;
-    else if (n.bodega && counts[n.bodega] != null) counts[n.bodega]++;
-  });
+  const counts = { nuevo: 0, transito: 0, reparacion: 0, retiro_desgaste: 0, para_recauchar: 0, recauchado: 0, en_equipo: enEquipo || 0, "retiro_daño_otro": 0, nfu: 0 };
+  Object.entries(bodegas).forEach(([k, v]) => { if (counts[k] !== undefined) counts[k] = v; });
   return counts;
 }
 const INSUMO_CATEGORIAS = [
@@ -2693,12 +2725,22 @@ function ReparacionTransitoSeccion({ filtro, pushToast, onCambio }) {
 function RetiroDesgastePararRecaucharSeccion({ filtro, pushToast, onCambio }) {
   const columnas = {
     headers: ["N° fuego", "Marca", "Modelo", "MM retiro", "Fecha"],
-    fetchExtra: (fuegos) => fetchUltimoPorFuego("cambio_detalle", "milimetros", { tipo: "sale", motivo_salida: "retiro_desgaste" }, fuegos),
+    // Fix 5: "Fecha" es la del ULTIMO movimiento de bodega de este neumatico
+    // (cuando entro a "retiro por desgaste"), no fecha_ingreso — esa es fija
+    // desde que el neumatico se registro por primera vez, no se actualiza en
+    // cada pase entre bodegas, y por eso mostraba una fecha vieja.
+    fetchExtra: async (fuegos) => {
+      const [mm, fechas] = await Promise.all([
+        fetchUltimoPorFuego("cambio_detalle", "milimetros", { tipo: "sale", motivo_salida: "retiro_desgaste" }, fuegos),
+        fetchUltimoPorFuego("movimientos_bodega", "fecha", {}, fuegos)
+      ]);
+      return { mm, fechas };
+    },
     renderRow: (n, extra) => (
       <>
         <td className="py-2.5 px-4 font-bold">{n.numero_fuego || "-"}</td><td className="py-2.5 px-4">{n.marca || "-"}</td>
-        <td className="py-2.5 px-4">{n.modelo || "-"}</td><td className="py-2.5 px-4">{extra[n.numero_fuego] != null ? extra[n.numero_fuego] : "-"}</td>
-        <td className="py-2.5 px-4">{n.fecha_ingreso || "-"}</td>
+        <td className="py-2.5 px-4">{n.modelo || "-"}</td><td className="py-2.5 px-4">{extra.mm[n.numero_fuego] != null ? extra.mm[n.numero_fuego] : "-"}</td>
+        <td className="py-2.5 px-4">{extra.fechas[n.numero_fuego] ? formatFecha(extra.fechas[n.numero_fuego]) : "-"}</td>
       </>
     )
   };
@@ -2744,12 +2786,20 @@ function ParaRecaucharRecauchadoSeccion({ filtro, pushToast, onCambio }) {
 function RetiroDanoOtroNfuSeccion({ filtro, pushToast, onCambio }) {
   const columnas = {
     headers: ["N° fuego", "Marca", "Modelo", "Motivo", "Fecha"],
-    fetchExtra: (fuegos) => fetchUltimoPorFuego("alertas", "descripcion", { tipo: "baja_prematura" }, fuegos),
+    // Fix 5: idem RetiroDesgastePararRecaucharSeccion — fecha del ultimo
+    // movimiento de bodega, no fecha_ingreso (fija desde el alta original).
+    fetchExtra: async (fuegos) => {
+      const [motivos, fechas] = await Promise.all([
+        fetchUltimoPorFuego("alertas", "descripcion", { tipo: "baja_prematura" }, fuegos),
+        fetchUltimoPorFuego("movimientos_bodega", "fecha", {}, fuegos)
+      ]);
+      return { motivos, fechas };
+    },
     renderRow: (n, extra) => (
       <>
         <td className="py-2.5 px-4 font-bold">{n.numero_fuego || "-"}</td><td className="py-2.5 px-4">{n.marca || "-"}</td>
-        <td className="py-2.5 px-4">{n.modelo || "-"}</td><td className="py-2.5 px-4">{extra[n.numero_fuego] || "-"}</td>
-        <td className="py-2.5 px-4">{n.fecha_ingreso || "-"}</td>
+        <td className="py-2.5 px-4">{n.modelo || "-"}</td><td className="py-2.5 px-4">{extra.motivos[n.numero_fuego] || "-"}</td>
+        <td className="py-2.5 px-4">{extra.fechas[n.numero_fuego] ? formatFecha(extra.fechas[n.numero_fuego]) : "-"}</td>
       </>
     )
   };
@@ -2774,6 +2824,77 @@ const INVENTARIO_TABS = [
   { id: "para_recauchar_recauchado", label: "Para Recauchar → Recauchado" },
   { id: "retiro_dano_nfu", label: "Retiro Daño/Otro → NFU" }
 ];
+// Fix 1: seccion dedicada de llantas en patio (debajo del resumen de
+// neumaticos), leidas de insumos (tipo='llanta') — ya se cargaban ahi via
+// el tab generico "Insumos", pero no habia una vista propia con las 4
+// subtipos fijos ni edicion directa de cantidad/precio.
+const LLANTA_LABELS = { americana_aluminio: "Am. aluminio", americana_fierro: "Am. fierro", europea_aluminio: "Eu. aluminio", europea_fierro: "Eu. fierro" };
+function LlantaEditModal({ llanta, onClose, onSaved, pushToast }) {
+  const [cantidad, setCantidad] = useState(String(llanta.cantidad));
+  const [precio, setPrecio] = useState(String(llanta.precio || 0));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  async function guardar() {
+    const cant = parseInt(cantidad, 10), pre = parseFloat(precio);
+    if (isNaN(cant) || cant < 0) { setError("Cantidad inválida."); return; }
+    if (isNaN(pre) || pre < 0) { setError("Precio inválido."); return; }
+    setSaving(true); setError("");
+    try {
+      const { error: err } = await sb.from("insumos").update({ cantidad: cant, precio: pre }).eq("id", llanta.id);
+      if (err) throw err;
+      pushToast("✓ Llantas actualizadas");
+      onSaved();
+    } catch (e) { console.error(e); setError("No se pudo guardar."); setSaving(false); }
+  }
+  return (
+    <Modal title={`Editar — ${LLANTA_LABELS[llanta.subtipo] || llanta.subtipo}`} onClose={onClose}>
+      <div className="space-y-4">
+        <Field label="Cantidad" required><TextInput type="number" inputMode="numeric" value={cantidad} onChange={e => setCantidad(e.target.value)} /></Field>
+        <Field label="Precio unitario" required><TextInput type="number" inputMode="numeric" value={precio} onChange={e => setPrecio(e.target.value)} /></Field>
+        {error && <p className="text-[12.5px] font-bold text-[#B91C1C]">{error}</p>}
+        <Button className="w-full" disabled={saving} onClick={guardar}>{saving ? <span className="spinner" /> : "Guardar"}</Button>
+      </div>
+    </Modal>
+  );
+}
+function LlantasPatioSeccion({ insumos, onCambio }) {
+  const [editando, setEditando] = useState(null);
+  const [pushToast, toastNode] = useToasts();
+  const porSubtipo = {};
+  insumos.forEach(i => { if (porSubtipo[i.subtipo] === undefined) porSubtipo[i.subtipo] = i; }); // insumos puede tener duplicados preexistentes, se toma el primero
+  return (
+    <div>
+      {toastNode}
+      <p className="font-bold text-[16px] mb-3">Llantas en patio</p>
+      <div className="bg-white rounded-2xl border border-bd shadow-card overflow-x-auto">
+        <table className="w-full text-[13.5px] min-w-[420px]">
+          <thead><tr className="text-left text-muted border-b border-bd">
+            <th className="font-semibold py-3 px-4">Tipo</th><th className="font-semibold py-3 px-4">Cantidad</th>
+            <th className="font-semibold py-3 px-4">Precio unit.</th><th className="font-semibold py-3 px-4"></th>
+          </tr></thead>
+          <tbody>
+            {Object.keys(LLANTA_LABELS).map(subtipo => {
+              const i = porSubtipo[subtipo];
+              return (
+                <tr key={subtipo} className="border-b border-bd last:border-0">
+                  <td className="py-2.5 px-4 font-bold">{LLANTA_LABELS[subtipo]}</td>
+                  <td className="py-2.5 px-4">{i ? i.cantidad : 0}</td>
+                  <td className="py-2.5 px-4">{i ? formatMoney(i.precio, i.moneda) : "-"}</td>
+                  <td className="py-2.5 px-4">
+                    {i && <button onClick={() => setEditando(i)} className="w-8 h-8 rounded-full bg-[#F3F4F6] flex items-center justify-center"><Icon.pencil width="13" height="13" /></button>}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {editando && (
+        <LlantaEditModal llanta={editando} pushToast={pushToast} onClose={() => setEditando(null)} onSaved={() => { setEditando(null); onCambio(); }} />
+      )}
+    </div>
+  );
+}
 function InventarioMaestroView({ empresaCtl, onBack }) {
   const { filtro } = empresaCtl;
   const [tab, setTab] = useState("resumen");
@@ -2814,8 +2935,11 @@ function InventarioMaestroView({ empresaCtl, onBack }) {
       {loading ? <div className="flex justify-center py-10"><span className="spinner" /></div> : (
         <>
           {tab === "resumen" && (
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-              {BODEGA_BUCKETS.map(b => <KpiCard key={b.id} label={b.label} value={counts ? counts[b.id] : null} />)}
+            <div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-8">
+                {BODEGA_BUCKETS.map(b => <KpiCard key={b.id} label={b.label} value={counts ? counts[b.id] : null} />)}
+              </div>
+              <LlantasPatioSeccion insumos={insumos.filter(i => i.tipo === "llanta")} onCambio={cargar} />
             </div>
           )}
           {tab === "insumos" && (
@@ -3592,7 +3716,7 @@ function timeAgoCorto(iso) {
   if (hrs < 24) return `hace ${hrs}h`;
   const dias = Math.floor(hrs / 24);
   if (dias < 7) return `hace ${dias}d`;
-  return iso.slice(0, 10);
+  return formatFecha(iso);
 }
 async function fetchAlertasCompletas(clienteId) {
   let q = sb.from("alertas").select("*").order("creado_en", { ascending: false }).limit(300);

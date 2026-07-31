@@ -274,6 +274,25 @@ function AxleMapReadOnly({ cfg, porPosicion, colorDePosicion, selectedPos, onTap
     </div>
   );
 }
+// Fix 3: origen real (nuevo/transito/recauchado) — neumaticos.estado_actual
+// siempre queda "en_uso" tras montar, no sirve para esto (ver nota en
+// fetchOrigenNeumatico, js/supabase.js). Se busca en cambio_detalle.
+const ORIGEN_BADGE = {
+  recauchado: { color: "amber", label: "♻ Recauchado" },
+  nuevo: { color: "green", label: "✦ Nuevo" },
+  transito: { color: "gray", label: "↔ Tránsito" }
+};
+function OrigenNeumaticoBadge({ numeroFuego }) {
+  const [origen, setOrigen] = useState(undefined);
+  useEffect(() => {
+    let cancel = false;
+    setOrigen(undefined);
+    fetchOrigenNeumatico(numeroFuego).then(o => { if (!cancel) setOrigen(o); }).catch(() => { if (!cancel) setOrigen(null); });
+    return () => { cancel = true; };
+  }, [numeroFuego]);
+  if (!origen || !ORIGEN_BADGE[origen]) return null;
+  return <Badge color={ORIGEN_BADGE[origen].color}>{ORIGEN_BADGE[origen].label}</Badge>;
+}
 function PosicionDetalleModal({ n, pos, onClose }) {
   const mm = n.aud ? (n.aud.milimetros != null ? n.aud.milimetros : n.aud.mm_centro) : null;
   const psi = n.psi_actual != null ? n.psi_actual : (n.aud ? n.aud.psi : null);
@@ -282,7 +301,7 @@ function PosicionDetalleModal({ n, pos, onClose }) {
   return (
     <Modal title={`Posición ${pos}`} onClose={onClose}>
       <div className="space-y-3 text-[14px]">
-        <div className="flex items-center justify-between"><span className="text-muted">N° fuego</span><span className="font-bold">{n.numero_fuego || "-"}</span></div>
+        <div className="flex items-center justify-between"><span className="text-muted">N° fuego</span><span className="font-bold flex items-center gap-2">{n.numero_fuego || "-"}<OrigenNeumaticoBadge numeroFuego={n.numero_fuego} /></span></div>
         <div className="flex items-center justify-between"><span className="text-muted">Marca</span><span className="font-bold">{n.marca || "-"}</span></div>
         <div className="flex items-center justify-between"><span className="text-muted">Medida</span><span className="font-bold">{n.medida || "-"}</span></div>
         <div className="flex items-center justify-between"><span className="text-muted">PSI actual</span><span className="font-bold">{psi != null ? psi : "-"}</span></div>
