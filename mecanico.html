@@ -974,6 +974,11 @@ function PosicionModal({ pos, equipo, cfg, clienteId, axleCfg, existing, onClose
 ===================================================================== */
 function Instructivo({ equipo, axleCfg, posData, recsInfo, checklist, setChecklist, discrepancias, onContinuar, onCerrar }) {
   const [nuevaTarea, setNuevaTarea] = useState("");
+  // Fix 6: tarea -> modal del neumatico de esa posicion (solo consulta, sin
+  // acciones de HC). infoPos != null abre el mismo TireInfoModal que la HC;
+  // al cerrar, se vuelve al instructivo tal cual estaba (no se pierde nada,
+  // es el mismo checklist/estado, solo se cierra un modal encima).
+  const [infoPos, setInfoPos] = useState(null);
   const sistemaTotal = checklist.filter(c => !c.extra).length;
   const cumplidas = checklist.filter(c => !c.extra && c.done).length;
   const extra = checklist.filter(c => c.extra).length;
@@ -992,7 +997,7 @@ function Instructivo({ equipo, axleCfg, posData, recsInfo, checklist, setCheckli
       <p className="text-[12.5px] text-muted mb-5">Revisá el mapa y marcá las tareas cumplidas</p>
 
       <Card className="mb-4">
-        <AxleMap cfg={axleCfg} posData={posData} selectedPos={null} onTap={() => {}} />
+        <AxleMap cfg={axleCfg} posData={posData} selectedPos={infoPos} onTap={(p) => posData[p] && setInfoPos(p)} />
         <div className="flex items-center gap-4 mt-5 pt-4 border-t border-bd">
           {[["#D1D5DB", "OK"], ["#F59E0B", "Atención"], ["#EF4444", "Alerta"]].map(([c, l]) => (
             <div key={l} className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full" style={{ border: `2px solid ${c}` }} /><span className="text-[11.5px] text-sub">{l}</span></div>
@@ -1000,28 +1005,53 @@ function Instructivo({ equipo, axleCfg, posData, recsInfo, checklist, setCheckli
         </div>
       </Card>
 
-      <div className="flex items-center justify-between mb-2">
-        <p className="font-bold text-[15px]">Recomendaciones</p>
-        <span className="text-[12.5px] font-bold text-muted">{pct}% cumplido</span>
-      </div>
+      {/* Fix 2: si la auditoria no genera ninguna recomendacion, no tiene
+          sentido mostrar un checklist vacio (baja el % sin motivo) — se
+          avisa que esta todo en orden. Las tareas extra que el mecanico
+          agregue igual se muestran y se pueden seguir sumando. */}
+      {sistemaTotal === 0 ? (
+        <div className="bg-[#DCFCE7] rounded-2xl p-4 mb-3">
+          <p className="font-bold text-[14px] text-[#15803D]">✅ Todo en orden — no hay tareas pendientes para este equipo</p>
+        </div>
+      ) : (
+        <div className="flex items-center justify-between mb-2">
+          <p className="font-bold text-[15px]">Recomendaciones</p>
+          <span className="text-[12.5px] font-bold text-muted">{pct}% cumplido</span>
+        </div>
+      )}
       <div className="space-y-2 mb-3">
-        {checklist.map(c => (
-          <button key={c.id} onClick={() => toggle(c.id)} className="w-full text-left bg-white rounded-2xl border border-bd shadow-card px-4 py-3 flex items-center gap-3">
-            <span className={cx("w-6 h-6 rounded-lg flex items-center justify-center shrink-0", c.done ? "bg-ink" : "bg-white border border-[#D1D5DB]")}>
-              {c.done && <Icon.check width="14" height="14" className="text-white" />}
-            </span>
-            <span className={cx("text-[14px] font-semibold flex-1", c.done && "strike")}>{c.texto}</span>
-            {c.origen && <Badge color="amber">De auditoría {formatDateLong(c.origen)}</Badge>}
-            {c.extra && <Icon.pencil width="15" height="15" className="text-muted shrink-0" />}
-          </button>
-        ))}
+        {checklist.filter(c => sistemaTotal > 0 || c.extra).map(c => {
+          // Fix 6: detecta "posición N"/"pos N" en el texto de la tarea para
+          // ofrecer un atajo directo al neumatico de esa posicion.
+          const m = /posici[oó]n\s*(\d+)|\bpos\.?\s*(\d+)/i.exec(c.texto);
+          const posMatch = m ? parseInt(m[1] || m[2], 10) : null;
+          return (
+            <div key={c.id} className="w-full text-left bg-white rounded-2xl border border-bd shadow-card px-4 py-3 flex items-center gap-3">
+              <button onClick={() => toggle(c.id)} className="flex items-center gap-3 flex-1 min-w-0 text-left">
+                <span className={cx("w-6 h-6 rounded-lg flex items-center justify-center shrink-0", c.done ? "bg-ink" : "bg-white border border-[#D1D5DB]")}>
+                  {c.done && <Icon.check width="14" height="14" className="text-white" />}
+                </span>
+                <span className={cx("text-[14px] font-semibold flex-1", c.done && "strike")}>{c.texto}</span>
+              </button>
+              {c.origen && <Badge color="amber">De auditoría {formatDateLong(c.origen)}</Badge>}
+              {c.extra && <Icon.pencil width="15" height="15" className="text-muted shrink-0" />}
+              {posMatch != null && posData[posMatch] && (
+                <button onClick={() => setInfoPos(posMatch)} className="text-[11px] font-bold text-ink px-2.5 py-1.5 rounded-full bg-[#F3F4F6] shrink-0 whitespace-nowrap">🔗</button>
+              )}
+            </div>
+          );
+        })}
       </div>
       <div className="flex gap-2 mb-6">
         <TextInput placeholder="Agregar tarea personalizada" value={nuevaTarea} onChange={e => setNuevaTarea(e.target.value)} onKeyDown={e => { if (e.key === "Enter") agregar(); }} />
         <Button variant="subtle" onClick={agregar}>+ Agregar</Button>
       </div>
 
-      <p className="text-[12.5px] text-muted mb-6">Recomendadas: {sistemaTotal} · Cumplidas: {cumplidas} · Extra agregadas: {extra}</p>
+      {sistemaTotal > 0 && <p className="text-[12.5px] text-muted mb-6">Recomendadas: {sistemaTotal} · Cumplidas: {cumplidas} · Extra agregadas: {extra}</p>}
+
+      {infoPos != null && posData[infoPos] && (
+        <TireInfoModal pos={infoPos} data={posData[infoPos]} equipo={equipo} axleCfg={axleCfg} onClose={() => setInfoPos(null)} />
+      )}
 
       {discrepancias && discrepancias.length > 0 && (
         <div className="bg-[#FEE2E2] rounded-2xl p-4 mb-6">
@@ -1181,6 +1211,22 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
     }).catch(() => { if (!cancel) setSesionActiva(null); });
     return () => { cancel = true; };
   }, []);
+  // Fix 3: log de "Movimientos realizados" — se va llenando en vivo con
+  // logMovimiento() a medida que se confirma cada accion (ver mas abajo), y
+  // si se retoma una sesion activa (sesionActiva) se reconstruye desde
+  // cambio_detalle/intervenciones para no perderlo al recargar la pagina.
+  const [movimientos, setMovimientos] = useState([]);
+  function logMovimiento(texto, detalle) {
+    setMovimientos(m => [...m, { id: uuid(), creado_en: new Date().toISOString(), texto, detalle: detalle || null }]);
+  }
+  useEffect(() => {
+    if (!sesionActiva) return;
+    let cancel = false;
+    db.fetchMovimientosCambio(sesionActiva.id_cambio, equipo.id_equipo, user.id)
+      .then(items => { if (!cancel) setMovimientos(items); })
+      .catch(e => console.error("No se pudo reconstruir el log de movimientos", e));
+    return () => { cancel = true; };
+  }, [sesionActiva]);
   const [posData, setPosData] = useState(() => ({ ...posDataInicial }));
   // Item 9: posiciones con discrepancia de neumatico sin aprobar por el Admin
   // (numero_fuego/marca/medida no coincidian al auditar) - muestran banner +
@@ -1293,6 +1339,12 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
     intervenciones.current.push(iv);
     pushQueue({ id: uuid(), tipo: "cambio_item", clienteId, ts: Date.now(), data: { kind: "intervencion", cliente_id: clienteId, item: iv } });
     syncQueue();
+    // Fix 3: log de movimientos
+    if (tipo === "regulacion_psi") logMovimiento(`Regulación PSI pos ${pos} → ${iv.psi_nuevo} PSI`);
+    else if (tipo === "retorqueo") logMovimiento(`Retorqueo pos ${pos}`);
+    else if (tipo === "checkpoint") logMovimiento(`Foto pos ${pos} ✓`);
+    else if (tipo === "reparacion") logMovimiento(`Reparación pos ${pos}`);
+    else if (tipo === "giro_neumatico") logMovimiento(`Giro pos ${pos}`);
   }
 
   function ejecutarSalida(pos, motivo) {
@@ -1313,6 +1365,7 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
         });
         setPosData(s => { const n = { ...s }; delete n[pos]; return n; });
         pushToast("✓ Salida registrada");
+        logMovimiento(`Salida pos ${pos} → ${label === "tránsito" ? "Tránsito" : "Reparación"}`, `N° fuego: ${d.numero_fuego}`);
         setConfirmDlg(null); setInfoPos(null);
       }
     });
@@ -1341,6 +1394,7 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
     }
     setPosData(s => { const n = { ...s }; delete n[pos]; return n; });
     pushToast("✓ Retiro registrado");
+    logMovimiento(`Salida pos ${pos} → Retiro`, `N° fuego: ${d.numero_fuego}`);
     setRetiroSel(null); setInfoPos(null);
   }
 
@@ -1367,6 +1421,7 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
       syncQueue();
     }
     pushToast("✓ Montaje registrado");
+    logMovimiento(`Entrada pos ${pos} → ${tipo === "nuevo" ? "Nuevo" : tipo === "transito" ? "Tránsito" : "Recauchado"}`, `N° fuego: ${data.numero_fuego}`);
     setMontaje(null);
   }
 
@@ -1404,6 +1459,7 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
           return next;
         });
         pushToast("✓ Rotación registrada");
+        logMovimiento(`Rotación pos ${origen} ↔ pos ${destino}`);
         setConfirmDlg(null);
       }
     });
@@ -1597,6 +1653,22 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
         <TextInput placeholder="Agregar tarea personalizada" value={nuevaTarea} onChange={e => setNuevaTarea(e.target.value)} onKeyDown={e => { if (e.key === "Enter") agregarTarea(); }} />
         <Button variant="subtle" onClick={agregarTarea}>+ Agregar</Button>
       </div>
+
+      {/* Fix 3: log informativo de movimientos, solo lectura — sin checkboxes
+          ni acciones, se va completando a medida que se confirma cada accion. */}
+      {movimientos.length > 0 && (
+        <>
+          <p className="font-bold text-[15px] mb-2">Movimientos realizados</p>
+          <div className="space-y-2 mb-6">
+            {movimientos.map(m => (
+              <div key={m.id} className="bg-[#F9FAFB] rounded-2xl px-4 py-2.5">
+                <p className="text-[13.5px] font-semibold text-[#1F2937]">✅ {formatHora(m.creado_en)} — {m.texto}</p>
+                {m.detalle && <p className="text-[12px] text-muted mt-0.5 ml-6">{m.detalle}</p>}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
       </div>
 
       <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-bd p-4 safe-bottom space-y-3 z-30">
@@ -1624,6 +1696,7 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
 
       {infoPos != null && posData[infoPos] && (
         <TireInfoModal pos={infoPos} data={posData[infoPos]} cfg={cfg} equipo={equipo} axleCfg={axleCfg}
+          pendienteAprobacion={!!(posData[infoPos].numero_fuego && fuegosPendientes.includes(posData[infoPos].numero_fuego))}
           onClose={() => setInfoPos(null)}
           onGirar={() => {
             setConfirmDlg({
@@ -1707,10 +1780,14 @@ function OrigenNeumaticoBadge({ numeroFuego }) {
   if (!origen || !ORIGEN_BADGE[origen]) return null;
   return <Badge color={ORIGEN_BADGE[origen].color}>{ORIGEN_BADGE[origen].label}</Badge>;
 }
-function TireInfoModal({ pos, data, cfg, equipo, axleCfg, onClose, onRegularPsi, onRetorqueo, onReparacion, onGirar }) {
+function TireInfoModal({ pos, data, cfg, equipo, axleCfg, onClose, onRegularPsi, onRetorqueo, onReparacion, onGirar, pendienteAprobacion }) {
   const [psiField, setPsiField] = useState(String(data.psi || ""));
   const [showPsi, setShowPsi] = useState(false);
   const esDireccional = axleCfg && ejeTipoDePosicion(axleCfg, pos) === "D";
+  // Fix 6: en el Instructivo (revision previa a la HC) este modal se usa
+  // solo para consulta, sin las acciones de la hoja de cambio — se pasan
+  // los handlers en undefined y se ocultan los botones correspondientes.
+  const soloConsulta = !onRegularPsi && !onRetorqueo && !onReparacion;
   return (
     <Modal title={`Posición P${pos}`} onClose={onClose}>
       <div className="mb-4">
@@ -1718,14 +1795,29 @@ function TireInfoModal({ pos, data, cfg, equipo, axleCfg, onClose, onRegularPsi,
           <p className="text-[22px] font-extrabold leading-none">{data.numero_fuego}</p>
           <OrigenNeumaticoBadge numeroFuego={data.numero_fuego} />
         </div>
-        <p className="text-[13px] text-muted mt-1">{data.marca || "Sin marca"} · {data.medida || "-"}</p>
+        {/* Fix 4: desgaste irregular detectado en la ultima auditoria (ya viene
+            en posData/data.tipo_desgaste, sin necesidad de query aparte). */}
+        {data.tipo_desgaste === "irregular" && (
+          <div className="mt-2 bg-[#FEF3C7] rounded-xl px-3 py-2">
+            <p className="text-[12.5px] font-bold text-[#92400E]">⚠ Desgaste irregular detectado en última auditoría</p>
+          </div>
+        )}
+        {/* Fix 5: discrepancia de neumatico sin aprobar por el Admin — informativo,
+            el mecanico no puede resolverla desde aca. */}
+        {pendienteAprobacion && (
+          <div className="mt-2 bg-[#FEE2E2] rounded-xl px-3 py-2">
+            <p className="text-[12.5px] font-bold text-[#B91C1C]">🔒 Pendiente de aprobación del supervisor</p>
+            <p className="text-[11.5px] text-[#B91C1C] mt-0.5">Este neumático tiene una discrepancia detectada en la última auditoría.</p>
+          </div>
+        )}
+        <p className="text-[13px] text-muted mt-2">{data.marca || "Sin marca"} · {data.medida || "-"}</p>
         <div className="flex gap-4 mt-3">
           <div><p className="text-[11px] text-muted font-semibold">PSI actual</p><p className="font-extrabold text-[16px]">{data.psi || "-"}</p></div>
           <div><p className="text-[11px] text-muted font-semibold">MM</p><p className="font-extrabold text-[16px]">{data.minMM != null ? data.minMM : "-"}</p></div>
           <div><p className="text-[11px] text-muted font-semibold">Estado</p><Badge color={statusColor(data.status)}>{statusLabel(data.status)}</Badge></div>
         </div>
       </div>
-      {showPsi ? (
+      {soloConsulta ? null : showPsi ? (
         <div className="space-y-3 mb-2">
           <Field label="Nuevo valor de PSI" required><TextInput type="number" inputMode="numeric" value={psiField} onChange={e => setPsiField(e.target.value)} /></Field>
           <Button className="w-full" disabled={!psiField} onClick={() => onRegularPsi(parseInt(psiField, 10))}>Guardar regulación</Button>
@@ -2454,8 +2546,15 @@ function MecanicoApp({ user }) {
         onCancel={() => setFlow(null)}
         onGenerarInstructivo={async (posData, axleCfg, km, startedAt, tareasExtra) => {
           const recsInfo = generarRecomendaciones(posData, axleCfg, flow.equipo.tipo, cfg);
+          // Fix 2: generarRecomendaciones mete un item placeholder ("Todo en
+          // orden...", key:null) cuando no hay ninguna recomendacion real, para
+          // que la pantalla nunca quede con una lista vacia. Ese placeholder no
+          // debe entrar al checklist real — si entra, cuenta como una tarea
+          // "no cumplida" y baja el % de instructivo seguido sin sentido (el
+          // bug que pide arreglar Fix 2). r.key existe solo en recomendaciones
+          // reales.
           const checklist = [
-            ...recsInfo.recs.map(r => ({ id: r.id, texto: r.texto, done: false, extra: false })),
+            ...recsInfo.recs.filter(r => r.key).map(r => ({ id: r.id, texto: r.texto, done: false, extra: false })),
             ...(tareasExtra || []).map(t => ({ id: uuid(), texto: t.texto, done: false, extra: true, origen: t.origen || null }))
           ];
           let discrepanciasNeumaticos = [];

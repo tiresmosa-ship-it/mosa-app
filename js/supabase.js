@@ -369,6 +369,64 @@ const db = {
     if (error) throw error;
     return (data && data[0]) || null;
   },
+  // Fix 3: reconstruye el log de "Movimientos realizados" al retomar una HC
+  // (recarga de pagina) desde cambio_detalle (montajes/salidas/rotaciones de
+  // ESTA sesion) e intervenciones (psi/retorqueo/foto/reparacion/giro de HOY
+  // para este equipo+mecanico, no tienen cambio_id propio). Las rotaciones
+  // insertan 2 filas por neumatico movido (sale+entra del MISMO numero_fuego,
+  // origen/destino) — un intercambio son 2 pares (4 filas), un movimiento a
+  // posicion vacia es 1 par (2 filas). Se arman los pares por fuego primero,
+  // y despues se busca el par "opuesto" (mismo origen/destino invertidos)
+  // para mostrar el intercambio como una sola linea "pos X ↔ pos Y".
+  async fetchMovimientosCambio(cambioId, equipoId, mecanicoId) {
+    const [{ data: cd, error: e1 }, { data: iv, error: e2 }] = await Promise.all([
+      sb.from("cambio_detalle").select("*").eq("cambio_id", cambioId).order("creado_en", { ascending: true }),
+      sb.from("intervenciones").select("*").eq("equipo_id", equipoId).eq("mecanico_id", mecanicoId).eq("fecha", todayISO()).order("creado_en", { ascending: true })
+    ]);
+    if (e1) throw e1;
+    if (e2) throw e2;
+    const SALIDA_LABEL = { transito: "Tránsito", reparacion: "Reparación", retiro_desgaste: "Retiro (desgaste)", "retiro_daño_otro": "Retiro (daño/otro)" };
+    const ENTRADA_LABEL = { nuevo: "Nuevo", transito: "Tránsito", recauchado: "Recauchado" };
+    const rows = cd || [];
+    const usados = new Set();
+    const items = [];
+    // Paso 1: armar pares sale+entra del mismo numero_fuego (una rotacion
+    // de un solo neumatico: origen->destino).
+    const pares = [];
+    rows.forEach(r => {
+      if (usados.has(r.id) || r.tipo !== "sale" || r.motivo_salida !== "rotacion") return;
+      const pareja = rows.find(r2 => !usados.has(r2.id) && r2.id !== r.id && r2.tipo === "entra" && r2.motivo_salida === "rotacion" && r2.numero_fuego === r.numero_fuego);
+      if (pareja) { usados.add(r.id); usados.add(pareja.id); pares.push({ origen: r.posicion, destino: pareja.posicion, creado_en: r.creado_en }); }
+    });
+    // Paso 2: dos pares con origen/destino invertidos son el mismo intercambio.
+    const paresUsados = new Set();
+    pares.forEach((p, i) => {
+      if (paresUsados.has(i)) return;
+      const j = pares.findIndex((p2, i2) => i2 !== i && !paresUsados.has(i2) && p2.origen === p.destino && p2.destino === p.origen);
+      if (j !== -1) {
+        paresUsados.add(i); paresUsados.add(j);
+        items.push({ id: uuid(), creado_en: p.creado_en, texto: `Rotación pos ${p.origen} ↔ pos ${p.destino}` });
+      } else {
+        paresUsados.add(i);
+        items.push({ id: uuid(), creado_en: p.creado_en, texto: `Rotación pos ${p.origen} → pos ${p.destino}` });
+      }
+    });
+    rows.forEach(r => {
+      if (usados.has(r.id)) return;
+      usados.add(r.id);
+      if (r.tipo === "sale") items.push({ id: r.id, creado_en: r.creado_en, texto: `Salida pos ${r.posicion} → ${SALIDA_LABEL[r.motivo_salida] || r.motivo_salida || "-"}`, detalle: `N° fuego: ${r.numero_fuego}` });
+      else items.push({ id: r.id, creado_en: r.creado_en, texto: `Entrada pos ${r.posicion} → ${ENTRADA_LABEL[r.estado] || r.estado || "-"}`, detalle: `N° fuego: ${r.numero_fuego}` });
+    });
+    (iv || []).forEach(v => {
+      if (v.tipo === "regulacion_psi") items.push({ id: v.id, creado_en: v.creado_en, texto: `Regulación PSI pos ${v.posicion} → ${v.psi_nuevo} PSI` });
+      else if (v.tipo === "retorqueo") items.push({ id: v.id, creado_en: v.creado_en, texto: `Retorqueo pos ${v.posicion}` });
+      else if (v.tipo === "checkpoint") items.push({ id: v.id, creado_en: v.creado_en, texto: `Foto pos ${v.posicion} ✓` });
+      else if (v.tipo === "reparacion") items.push({ id: v.id, creado_en: v.creado_en, texto: `Reparación pos ${v.posicion}` });
+      else if (v.tipo === "giro_neumatico") items.push({ id: v.id, creado_en: v.creado_en, texto: `Giro pos ${v.posicion}` });
+    });
+    items.sort((a, b) => new Date(a.creado_en) - new Date(b.creado_en));
+    return items;
+  },
   async fetchEquipoPorId(id) {
     const { data, error } = await sb.from("equipos").select("*").eq("id_equipo", id).maybeSingle();
     if (error) throw error;
@@ -1236,7 +1294,13 @@ async function construirYGuardarAuditoria({ user, clienteId, equipo, cfg, posDat
       seguio_receta: pct === 100, pct_receta_seguida: pct,
       tareas_extra: tareasExtraJSON,
       discrepancias_neumaticos: discrepanciasNeumaticos || [],
-      estado: recetaEstado || "pendiente",
+      // Fix 2: sin recomendaciones del sistema, no hay nada que el mecanico
+      // tenga que "completar" despues. Ojo: si igual sigue a la hoja de
+      // cambio (recetaEstado='en_proceso'), NO se pisa ese estado — sigue
+      // en_proceso hasta que la HC se retome/termine (fetchRecetaEnProcesoHoy/
+      // fetchCambioActivoHoy de Fix 1 dependen de ese estado para poder
+      // retomar la sesion activa si el mecanico recarga la pagina).
+      estado: (totalTareas === 0 && recetaEstado !== "en_proceso") ? "completado" : (recetaEstado || "pendiente"),
       observaciones_mecanico: null
     }
   };
