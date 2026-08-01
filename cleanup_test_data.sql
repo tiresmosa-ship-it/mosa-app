@@ -107,6 +107,12 @@ DELETE FROM neumaticos WHERE numero_fuego IN (
   '41629268','41629269','41629270','41629271','41629272','41629273'
 );
 
+-- Neumatico de prueba creado al verificar el fix de asegurarNeumatico (Bug 1:
+-- auditoria con numero de fuego inexistente debia grabar tipo/estado/bodega
+-- bien) contra NAK810. No se pudo borrar en el momento por REST (anon sin
+-- DELETE en neumaticos).
+DELETE FROM neumaticos WHERE numero_fuego LIKE 'AUDTEST%';
+
 -- =====================================================================
 -- Verificacion (deberia devolver 0 en todas)
 -- =====================================================================

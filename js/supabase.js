@@ -121,6 +121,18 @@ function tipoNeumaticoEsperado(equipo, axleCfg, pos) {
   if (ejeTipo === "T") return "eje_libre";
   return "traccional";
 }
+// Bug 1 (auditoria)/Bug 2 (HC): tipo real a grabar en neumaticos.tipo cuando
+// se registra o monta un neumatico, inferido de la posicion + configuracion
+// de ejes del equipo. A diferencia de tipoNeumaticoEsperado (que devuelve
+// null para SEMI/auxilio porque ahi no hay restriccion que validar), este
+// siempre devuelve un tipo real -- SEMI/auxilio son 'traccional' por defecto.
+function inferirTipoNeumatico(equipo, axleCfg, pos) {
+  if (equipo.tipo === "SEMI") return "traccional";
+  const ejeTipo = ejeTipoDePosicion(axleCfg, pos);
+  if (ejeTipo === "D") return "direccional";
+  if (ejeTipo === "T") return "eje_libre";
+  return "traccional";
+}
 // Lado (izq/der) de una posicion dentro de SU propia fila: primera mitad de
 // row.positions = izquierda, segunda mitad = derecha. Se usa solo para
 // validar ejes traccionales (ejeTipo "M"), que no pueden cambiar de lado.
@@ -620,13 +632,20 @@ async function enviarNovedad(data) {
   const rows = checklist.map(c => ({ id: uuid(), novedad_id: cab.id, herramienta: c.herramienta, cantidad: c.cantidad }));
   if (rows.length) { const { error: e2 } = await sb.from("check_diario_herramientas").insert(rows); if (e2) throw e2; }
 }
+// Bug 1: si el numero de fuego no existia en el sistema, la fila se crea ya
+// montada (no "de bodega" -- si esta funcion corre es porque se la vinculo a
+// un equipo/posicion, sea desde la auditoria o desde el montaje de la HC),
+// asi que estado_actual/bodega tienen que reflejar eso, y el tipo (direccional/
+// traccional/eje_libre) viene inferido de la posicion + config de ejes por
+// quien llama (construirYGuardarAuditoria, montarNeumatico), no se adivina aca.
 async function asegurarNeumatico(clienteId, numeroFuego, equipoId, posicion, extra) {
   const { data: existente } = await sb.from("neumaticos").select("id_neumatico").eq("cliente_id", clienteId).eq("numero_fuego", numeroFuego).maybeSingle();
   if (existente) return;
   await sb.from("neumaticos").insert({
     id_neumatico: uuid(), numero_fuego: numeroFuego, cliente_id: clienteId,
-    marca: (extra && extra.marca) || null, medida: (extra && extra.medida) || null,
-    estado_actual: "nuevo", bodega: null, equipo_actual: equipoId, posicion_actual: posicion,
+    marca: (extra && extra.marca) || null, modelo: (extra && extra.modelo) || null, medida: (extra && extra.medida) || null,
+    tipo: (extra && extra.tipo) || null,
+    estado_actual: "en_uso", bodega: null, equipo_actual: equipoId, posicion_actual: posicion,
     fecha_ingreso: todayISO(), activo: true
   });
 }
@@ -844,16 +863,23 @@ async function actualizarNeumaticoSale(clienteId, s) {
 }
 async function actualizarNeumaticoEntra(clienteId, equipoId, en) {
   // Montaje: el neumatico queda montado en el equipo -> estado_actual='en_uso',
-  // bodega=NULL (spec hoja de cambio). El tipo original (nuevo/transito/
-  // recauchado) queda registrado en cambio_detalle.estado.
+  // bodega=NULL (spec hoja de cambio). El origen del montaje (nuevo/transito/
+  // recauchado) queda registrado en cambio_detalle.estado; en.tipo es el tipo
+  // real del neumatico (direccional/traccional/eje_libre, ver
+  // inferirTipoNeumatico en mecanico.html) y SI se graba en neumaticos.tipo
+  // (Bug 1/2) -- si ya tenia un tipo cargado de antes (bodega 'nuevo' con
+  // entrada valorizada) se lo dejamos, salvo que en.tipo traiga uno mejor.
   const { data: existente } = await sb.from("neumaticos").select("*").eq("cliente_id", clienteId).eq("numero_fuego", en.numero_fuego).maybeSingle();
   if (existente) {
-    const { error } = await sb.from("neumaticos").update({ estado_actual: "en_uso", bodega: null, equipo_actual: equipoId, posicion_actual: en.posicion || null }).eq("id_neumatico", existente.id_neumatico);
+    const update = { estado_actual: "en_uso", bodega: null, equipo_actual: equipoId, posicion_actual: en.posicion || null };
+    if (en.tipo) update.tipo = en.tipo;
+    const { error } = await sb.from("neumaticos").update(update).eq("id_neumatico", existente.id_neumatico);
     if (error) throw error;
   } else {
     const { error } = await sb.from("neumaticos").insert({
       id_neumatico: uuid(), numero_fuego: en.numero_fuego, cliente_id: clienteId,
-      marca: en.marca || null, medida: en.medida || null, estado_actual: "en_uso", bodega: null,
+      marca: en.marca || null, modelo: en.modelo || null, medida: en.medida || null, tipo: en.tipo || null,
+      estado_actual: "en_uso", bodega: null,
       equipo_actual: equipoId, posicion_actual: en.posicion || null, fecha_ingreso: todayISO(), activo: true
     });
     if (error) throw error;
@@ -1258,7 +1284,12 @@ async function construirYGuardarAuditoria({ user, clienteId, equipo, cfg, posDat
       mm_borde_izq: d.mm_borde_izq !== "" ? parseFloat(d.mm_borde_izq) : null,
       mm_centro: d.mm_centro !== "" ? parseFloat(d.mm_centro) : null,
       mm_borde_der: d.mm_borde_der !== "" ? parseFloat(d.mm_borde_der) : null,
-      tipo_desgaste: d.tipo_desgaste || null, marca: d.marca || null, modelo: d.modelo || null
+      tipo_desgaste: d.tipo_desgaste || null, marca: d.marca || null, modelo: d.modelo || null,
+      // Bug 1: tipo real (direccional/traccional/eje_libre) para que, si este
+      // numero de fuego no existia todavia, asegurarNeumatico lo grabe bien
+      // en vez de dejarlo null. No va en auditoria_posiciones (esa tabla no
+      // tiene columna tipo) -- solo lo lee asegurarNeumatico via `p` mas abajo.
+      tipo: inferirTipoNeumatico(equipo, axleCfg, d.posicion)
     };
   });
 

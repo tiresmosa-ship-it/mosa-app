@@ -1400,7 +1400,12 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
 
   function montarNeumatico(pos, data, tipo) {
     setPosData(s => ({ ...s, [pos]: { ...data, posicion: pos, status: "ok", minMM: data.mm ? parseFloat(data.mm) : null } }));
-    const itemEntra = { numero_fuego: data.numero_fuego, posicion: pos, milimetros: data.mm ? parseFloat(data.mm) : null, psi: data.psi ? parseInt(data.psi, 10) : null, estado: tipo };
+    // Bug 1/2: tipo de neumatico (direccional/traccional/eje_libre) inferido
+    // de la posicion + configuracion de ejes, no tipeado a mano — se graba en
+    // neumaticos.tipo via asegurarNeumatico/actualizarNeumaticoEntra. "estado"
+    // sigue siendo el origen del montaje (nuevo/transito/recauchado), campo
+    // distinto que ya usaba cambio_detalle.estado.
+    const itemEntra = { numero_fuego: data.numero_fuego, posicion: pos, milimetros: data.mm ? parseFloat(data.mm) : null, psi: data.psi ? parseInt(data.psi, 10) : null, estado: tipo, tipo: inferirTipoNeumatico(equipo, axleCfg, pos), marca: data.marca || null, modelo: data.modelo || null, medida: data.medida || null };
     entra.current.push(itemEntra);
     ensureCambioHeader().then(cambio_id => {
       pushQueue({ id: uuid(), tipo: "cambio_item", clienteId, ts: Date.now(), data: { kind: "entra", cambio_id, cliente_id: clienteId, mecanico_id: user.id, equipo_id: equipo.id_equipo, item: itemEntra } });
@@ -1926,7 +1931,7 @@ function MontajeModal({ tipo, pos, equipo, clienteId, cfg, axleCfg, user, onClos
   // (null = sin contestar) — el buscador solo aparece si contesta que si.
   // Para transito, el buscador es siempre el primer paso (sin pregunta previa).
   const [fuegoMarcado, setFuegoMarcado] = useState(tipo === "recauchado" ? null : true);
-  const [buscando, setBuscando] = useState(tipo === "transito");
+  const [buscando, setBuscando] = useState(tipo === "transito" || tipo === "nuevo");
   const [opciones, setOpciones] = useState(null); // null = cargando
   // Fix 2/4: registro del sistema del neumatico elegido en el buscador —
   // se guarda aparte (no se precarga en los campos) solo para validar
@@ -1934,12 +1939,34 @@ function MontajeModal({ tipo, pos, equipo, clienteId, cfg, axleCfg, user, onClos
   const [seleccionado, setSeleccionado] = useState(null);
   const [errorValidacion, setErrorValidacion] = useState("");
 
+  // Bug 2 (HC): montar "nuevo" tenia que ofrecer elegir de la bodega 'nuevo'
+  // igual que transito/recauchado (asi el stock se descuenta de verdad, ver
+  // actualizarNeumaticoEntra) en vez de generar siempre un fuego nuevo de la
+  // nada. Se filtra por el tipo esperado de la posicion (direccional/
+  // traccional/eje_libre) para no ofrecer, p.ej., un direccional en un eje
+  // traccional. Si no hay stock de ese tipo, sinStockNuevo cae al flujo viejo
+  // (fuego sugerido + carga manual).
+  const [sinStockNuevo, setSinStockNuevo] = useState(false);
   useEffect(() => {
     if (tipo !== "nuevo") return;
+    const tipoEsperado = tipoNeumaticoEsperado(equipo, axleCfg, pos);
+    fetchNeumaticosBodega(clienteId, "nuevo")
+      .then(list => setOpciones(list.filter(o => !tipoEsperado || !o.tipo || o.tipo === tipoEsperado)))
+      .catch(() => setOpciones([]));
+  }, []);
+  // Si no hay stock de "nuevo" para el tipo esperado, cae sola al flujo viejo
+  // (fuego sugerido + carga manual) en vez de dejar al mecanico mirando un
+  // buscador vacio.
+  useEffect(() => {
+    if (tipo === "nuevo" && !sinStockNuevo && opciones !== null && opciones.length === 0) setSinStockNuevo(true);
+  }, [opciones]);
+  useEffect(() => {
+    if (tipo !== "nuevo" || !sinStockNuevo) return;
     generarNumeroFuegoSugerido(clienteId, cfg, equipo.numero_interno, pos, todayISO())
       .then(sug => setFuego(f => (f ? f : sug)))
       .catch(() => {});
-  }, []);
+  }, [sinStockNuevo]);
+  function elegirNuevoSinStock() { setSinStockNuevo(true); setBuscando(false); setSeleccionado(null); }
 
   useEffect(() => {
     if (tipo === "transito") fetchNeumaticosBodega(clienteId, "transito").then(setOpciones).catch(() => setOpciones([]));
@@ -2034,11 +2061,11 @@ function MontajeModal({ tipo, pos, equipo, clienteId, cfg, axleCfg, user, onClos
   if (tipo === "recauchado" && fuegoMarcado === true && opciones !== null && opciones.length === 0) {
     return <SinStockRecauchadoModal equipo={equipo} clienteId={clienteId} user={user} onClose={onClose} />;
   }
-
-  if (buscando && (tipo === "transito" || (tipo === "recauchado" && fuegoMarcado === true))) {
-    if (opciones === null) return <Modal title={tipo === "transito" ? "Montar desde tránsito" : "Montar recauchado"} onClose={onClose}><div className="flex justify-center py-10"><span className="spinner" /></div></Modal>;
+  if (buscando && (tipo === "transito" || (tipo === "recauchado" && fuegoMarcado === true) || (tipo === "nuevo" && !sinStockNuevo))) {
+    const tituloBuscador = tipo === "transito" ? "Montar desde tránsito" : tipo === "nuevo" ? "Montar nuevo — bodega" : "Montar recauchado";
+    if (opciones === null || opciones.length === 0) return <Modal title={tituloBuscador} onClose={onClose}><div className="flex justify-center py-10"><span className="spinner" /></div></Modal>;
     return (
-      <Modal title={tipo === "transito" ? "Montar desde tránsito" : "Montar recauchado"} onClose={onClose}>
+      <Modal title={tituloBuscador} onClose={onClose}>
         <TextInput placeholder="Buscar por N° fuego, marca o modelo" value={search} onChange={e => setSearch(e.target.value)} className="mb-3" />
         <div className="space-y-2 max-h-72 overflow-y-auto">
           {filtradas.map(o => (
@@ -2050,6 +2077,9 @@ function MontajeModal({ tipo, pos, equipo, clienteId, cfg, axleCfg, user, onClos
           ))}
           {filtradas.length === 0 && <p className="text-center text-muted text-sm py-6">No hay neumáticos que coincidan.</p>}
         </div>
+        {tipo === "nuevo" && (
+          <button onClick={elegirNuevoSinStock} className="w-full text-center text-[13px] font-bold text-muted mt-4 py-2">No está en la lista — cargar manualmente</button>
+        )}
       </Modal>
     );
   }
