@@ -379,9 +379,15 @@ const db = {
   // y despues se busca el par "opuesto" (mismo origen/destino invertidos)
   // para mostrar el intercambio como una sola linea "pos X ↔ pos Y".
   async fetchMovimientosCambio(cambioId, equipoId, mecanicoId) {
+    return db.fetchMovimientosCambioEnFecha(cambioId, equipoId, mecanicoId, todayISO());
+  },
+  // Igual que fetchMovimientosCambio pero para reconstruir el log de una HC
+  // ya cerrada (Historial del equipo en Admin/SuperAdmin) — ahi la fecha no
+  // es "hoy" sino la fecha real de esa hoja de cambio.
+  async fetchMovimientosCambioEnFecha(cambioId, equipoId, mecanicoId, fecha) {
     const [{ data: cd, error: e1 }, { data: iv, error: e2 }] = await Promise.all([
       sb.from("cambio_detalle").select("*").eq("cambio_id", cambioId).order("creado_en", { ascending: true }),
-      sb.from("intervenciones").select("*").eq("equipo_id", equipoId).eq("mecanico_id", mecanicoId).eq("fecha", todayISO()).order("creado_en", { ascending: true })
+      sb.from("intervenciones").select("*").eq("equipo_id", equipoId).eq("mecanico_id", mecanicoId).eq("fecha", fecha).order("creado_en", { ascending: true })
     ]);
     if (e1) throw e1;
     if (e2) throw e2;
@@ -1315,7 +1321,7 @@ async function construirYGuardarAuditoria({ user, clienteId, equipo, cfg, posDat
       id: uuid(), cliente_id: clienteId, equipo_id: equipo.id_equipo, mecanico_id: user.id,
       tipo: "neumatico_no_registrado", severidad: "rojo",
       titulo: `Neumático no coincide en P${dn.posicion}`,
-      descripcion: `${CAMPO_LABELS[dn.campo] || dn.campo}: sistema ${dn.valor_sistema == null ? "sin registro" : dn.valor_sistema} · mecánico ${dn.valor_mecanico}`,
+      descripcion: `${CAMPO_LABELS[dn.campo] || dn.campo}: sistema ${dn.valor_sistema == null ? "sin registro" : dn.valor_sistema} · encontrado ${dn.valor_mecanico}`,
       posicion: dn.posicion, numero_fuego: dn.valor_mecanico,
       leida_mecanico: true, leida_admin: false, leida_superadmin: false
     });
