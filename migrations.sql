@@ -578,3 +578,14 @@ INSERT INTO config_cliente (cliente_id, clave, valor) VALUES
   ('la_portada', 'horas_escalada_alerta', '4'),
   ('bys', 'horas_escalada_alerta', '4')
 ON CONFLICT (cliente_id, clave) DO NOTHING;
+
+-- 32) discrepancias_inventario.valor_sistema tenia NOT NULL, pero una
+-- discrepancia de auditoria legitima puede no tener valor de sistema (el
+-- mecanico encontro un neumatico con numero de fuego que el sistema no
+-- tiene registrado en esa posicion -> valor_sistema queda null a proposito,
+-- ver enviarDiscrepanciaAuditoria/discrepanciasParaAdmin en js/supabase.js).
+-- Esto trababa el insert para siempre (3 reintentos y la cola offline deja
+-- de reintentar solo, el registro queda "pendiente de sincronizar" sin
+-- explicacion visible para el mecanico). Igual que con los CHECK viejos
+-- (ver notas de arriba), el criterio es sacar la restriccion, no ampliarla.
+ALTER TABLE discrepancias_inventario ALTER COLUMN valor_sistema DROP NOT NULL;
