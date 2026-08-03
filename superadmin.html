@@ -1469,7 +1469,7 @@ function EquiposView({ empresaCtl, adminUser, setView }) {
     } catch (e) { console.error("No se pudo cambiar el estado del equipo", e); }
   }
 
-  if (detalle) return <EquipoDetalleView equipo={detalle} onBack={() => setDetalle(null)} setView={setView} />;
+  if (detalle) return <EquipoDetalleView equipo={detalle} onBack={() => setDetalle(null)} setView={setView} adminUser={adminUser} />;
 
   return (
     <div>
@@ -1765,7 +1765,69 @@ function InstructivoEquipoTab({ receta }) {
 }
 
 const HISTORIAL_ICONS = { auditoria: "📋", cambio: "🔄", intervencion: "⚙" };
-function HistorialEquipoTab({ equipo }) {
+// Requerimiento 4B: tabla centralizada de tareas derivadas a Pendiente para
+// este equipo (de cualquier auditoria/HC). "Reasignar a hoy" inyecta la
+// tarea en la HC activa de hoy si existe; si no, queda marcada para que el
+// arrastre automatico de la proxima auditoria la traiga sola.
+function TareasPendientesSeccion({ equipo, adminUser, pushToast }) {
+  const [tareas, setTareas] = useState(null);
+  const [reasignando, setReasignando] = useState(null);
+
+  function cargar() {
+    db.fetchTareasPendientesEquipo(equipo.id_equipo).then(setTareas).catch(e => { console.error("No se pudo cargar tareas pendientes", e); setTareas([]); });
+  }
+  useEffect(() => { cargar(); }, [equipo.id_equipo]);
+
+  async function reasignar(t) {
+    setReasignando(t.id);
+    try {
+      const res = await db.reasignarTareaAHoy(equipo.id_equipo, t, adminUser);
+      pushToast(res.inyectada ? "✓ Reasignada a la Hoja de Cambio activa de hoy" : "✓ Se va a incluir sola en la próxima auditoría/HC de este equipo");
+      cargar();
+    } catch (e) { console.error("No se pudo reasignar la tarea", e); pushToast("✕ No se pudo reasignar", "red"); }
+    setReasignando(null);
+  }
+
+  const TIPO_LABEL = { sistema: "Sistema", admin: "Admin", mecanico: "Mecánico" };
+
+  if (tareas === null) return <div className="flex justify-center py-10"><span className="spinner" /></div>;
+
+  return (
+    <div className="mb-8">
+      <p className="font-bold text-[16px] mb-3">🔴 Tareas pendientes ({tareas.length})</p>
+      {!tareas.length ? (
+        <p className="text-[13.5px] text-muted py-2 mb-4">Sin tareas derivadas a pendiente para este equipo.</p>
+      ) : (
+        <div className="bg-white rounded-2xl border border-bd shadow-card overflow-x-auto mb-4">
+          <table className="w-full text-[13px] min-w-[720px]">
+            <thead><tr className="text-left text-muted border-b border-bd">
+              <th className="font-semibold py-2.5 px-4">Fecha origen</th><th className="font-semibold py-2.5 px-4">Tipo origen</th>
+              <th className="font-semibold py-2.5 px-4">Tarea pendiente</th><th className="font-semibold py-2.5 px-4">Agregada/derivada por</th>
+              <th className="font-semibold py-2.5 px-4">Estado</th><th className="font-semibold py-2.5 px-4">Acción</th>
+            </tr></thead>
+            <tbody>
+              {tareas.map(t => (
+                <tr key={t.id} className="border-t border-bd">
+                  <td className="py-2.5 px-4 whitespace-nowrap">{t.fecha_origen ? formatDateLong(t.fecha_origen) : "-"}</td>
+                  <td className="py-2.5 px-4"><Badge color={t.tipo_origen === "sistema" ? "gray" : t.tipo_origen === "admin" ? "amber" : "green"}>{TIPO_LABEL[t.tipo_origen] || t.tipo_origen}</Badge></td>
+                  <td className="py-2.5 px-4">{t.texto}</td>
+                  <td className="py-2.5 px-4">{t.creado_por || "-"}</td>
+                  <td className="py-2.5 px-4"><Badge color="red">Pendiente</Badge></td>
+                  <td className="py-2.5 px-4">
+                    <Button variant="subtle" className="h-9 px-3 text-[12.5px]" disabled={reasignando === t.id} onClick={() => reasignar(t)}>
+                      {reasignando === t.id ? <span className="spinner" /> : "Reasignar a hoy"}
+                    </Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+function HistorialEquipoTab({ equipo, adminUser, pushToast }) {
   const [items, setItems] = useState(null);
 
   useEffect(() => {
@@ -1797,28 +1859,32 @@ function HistorialEquipoTab({ equipo }) {
     XLSX.writeFile(wb, `historial_${(equipo.patente || equipo.id_equipo)}.xlsx`);
   }
 
-  if (items === null) return <div className="flex justify-center py-10"><span className="spinner" /></div>;
-
   return (
     <div>
-      <div className="flex justify-end mb-4">
-        <Button variant="subtle" className="h-10 px-4 text-[13px]" disabled={!items.length} onClick={exportarExcel}>📊 Exportar a Excel</Button>
-      </div>
-      <div className="space-y-0">
-        {items.map((it, i) => (
-          <div key={i} className="flex gap-3">
-            <div className="flex flex-col items-center">
-              <div className="w-8 h-8 rounded-full bg-[#F3F4F6] flex items-center justify-center shrink-0 text-[14px]">{HISTORIAL_ICONS[it.tipo] || "•"}</div>
-              {i < items.length - 1 && <div className="w-px flex-1 bg-bd" />}
-            </div>
-            <div className="flex-1 pb-4">
-              <p className="font-semibold text-[13.5px]">{it.desc}</p>
-              <p className="text-[11.5px] text-muted mt-0.5">{it.fecha ? formatDateLong(it.fecha) : ""}{it.creado_en ? ` · ${it.creado_en.slice(11, 16)}` : ""}</p>
-            </div>
+      <TareasPendientesSeccion equipo={equipo} adminUser={adminUser} pushToast={pushToast} />
+      <p className="font-bold text-[16px] mb-3">Historial</p>
+      {items === null ? <div className="flex justify-center py-10"><span className="spinner" /></div> : (
+        <>
+          <div className="flex justify-end mb-4">
+            <Button variant="subtle" className="h-10 px-4 text-[13px]" disabled={!items.length} onClick={exportarExcel}>📊 Exportar a Excel</Button>
           </div>
-        ))}
-        {!items.length && <p className="text-[13.5px] text-muted py-6 text-center">Sin historial registrado.</p>}
-      </div>
+          <div className="space-y-0">
+            {items.map((it, i) => (
+              <div key={i} className="flex gap-3">
+                <div className="flex flex-col items-center">
+                  <div className="w-8 h-8 rounded-full bg-[#F3F4F6] flex items-center justify-center shrink-0 text-[14px]">{HISTORIAL_ICONS[it.tipo] || "•"}</div>
+                  {i < items.length - 1 && <div className="w-px flex-1 bg-bd" />}
+                </div>
+                <div className="flex-1 pb-4">
+                  <p className="font-semibold text-[13.5px]">{it.desc}</p>
+                  <p className="text-[11.5px] text-muted mt-0.5">{it.fecha ? formatDateLong(it.fecha) : ""}{it.creado_en ? ` · ${it.creado_en.slice(11, 16)}` : ""}</p>
+                </div>
+              </div>
+            ))}
+            {!items.length && <p className="text-[13.5px] text-muted py-6 text-center">Sin historial registrado.</p>}
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -1826,12 +1892,13 @@ function HistorialEquipoTab({ equipo }) {
 const EQUIPO_DETALLE_TABS_BASE = [
   { id: "info", label: "Info" },
   { id: "mapa", label: "Mapa" },
-  { id: "historial", label: "Historial" }
+  { id: "historial", label: "Tareas Pendientes e Historial" }
 ];
-function EquipoDetalleView({ equipo, onBack, setView }) {
+function EquipoDetalleView({ equipo, onBack, setView, adminUser }) {
   const [tab, setTab] = useState("info");
   const [ultimaAuditoria, setUltimaAuditoria] = useState(undefined); // undefined=cargando, null=sin auditorías
   const [instructivoPendiente, setInstructivoPendiente] = useState(undefined);
+  const [pushToast, toastNode] = useToasts();
 
   useEffect(() => {
     let cancel = false;
@@ -1875,8 +1942,9 @@ function EquipoDetalleView({ equipo, onBack, setView }) {
 
       {tab === "info" && <InfoEquipoTab equipo={equipo} ultimaAuditoria={ultimaAuditoria} />}
       {tab === "mapa" && <MapaEquipoTab equipo={equipo} setView={setView} />}
+      {toastNode}
       {tab === "instructivo" && instructivoPendiente && <InstructivoEquipoTab receta={instructivoPendiente} />}
-      {tab === "historial" && <HistorialEquipoTab equipo={equipo} />}
+      {tab === "historial" && <HistorialEquipoTab equipo={equipo} adminUser={adminUser} pushToast={pushToast} />}
     </div>
   );
 }
@@ -2216,11 +2284,54 @@ const INSTRUCTIVO_ESTADO = {
   en_proceso: { label: "EN PROCESO", color: "black" },
   sin_cambio: { label: "SIN CAMBIO", color: "gray" }
 };
-function InstructivoCard({ r }) {
+// Requerimiento 2B: el Admin/SuperAdmin puede ver el instructivo activo de
+// cualquier equipo y togear cada tarea HACER_HOY (🟢, va al mecanico) /
+// PENDIENTE (🔴, sale de hoy y se deriva a Equipos > Tareas Pendientes —
+// misma tabla que usa el mecanico, db.diferirTareaChecklist), ademas de
+// agregar tareas propias (tipo_origen:'admin').
+function InstructivoCard({ r, adminUser, pushToast, onRefrescar }) {
   const pa = r.posiciones_alerta || {};
   const recs = Array.isArray(pa.recomendaciones) ? pa.recomendaciones : [];
   const extras = Array.isArray(pa.tareas_extra) ? pa.tareas_extra : [];
   const est = INSTRUCTIVO_ESTADO[r.estado] || { label: (r.estado || "-").toUpperCase(), color: "gray" };
+  const [nuevaTarea, setNuevaTarea] = useState("");
+  const [ocupado, setOcupado] = useState(null);
+
+  async function derivarAPendiente(t, extra) {
+    setOcupado(t.id);
+    try {
+      // Los dos cambios (sacarla de recomendaciones/tareas_extra + agregarla a
+      // tareas_diferidas) van en UN solo read-modify-write sobre la misma
+      // fila -- llamar a db.diferirTareaChecklist (que hace su propio
+      // read-write) y despues otro update separado los pisa entre si.
+      const { data: fresh, error: eFresh } = await sb.from("auditorias_receta").select("posiciones_alerta").eq("id", r.id).maybeSingle();
+      if (eFresh) throw eFresh;
+      const paFresca = fresh.posiciones_alerta || {};
+      const diferidas = Array.isArray(paFresca.tareas_diferidas) ? paFresca.tareas_diferidas : [];
+      const nuevaDiferida = { id: t.id, texto: t.texto, tipo_origen: t.tipo_origen || "sistema", creado_por: t.creado_por || "Sistema (Automático)", fecha_origen: t.fecha_origen || r.fecha, estado: "PENDIENTE" };
+      const nuevaPa = extra
+        ? { ...paFresca, tareas_extra: (paFresca.tareas_extra || []).filter(x => x.id !== t.id || x.texto !== t.texto), tareas_diferidas: [...diferidas, nuevaDiferida] }
+        : { ...paFresca, recomendaciones: (paFresca.recomendaciones || []).filter(x => x.id !== t.id), tareas_diferidas: [...diferidas, nuevaDiferida] };
+      const { error } = await sb.from("auditorias_receta").update({ posiciones_alerta: nuevaPa }).eq("id", r.id);
+      if (error) throw error;
+      pushToast("→ Tarea derivada a Pendiente");
+      onRefrescar();
+    } catch (e) { console.error("No se pudo derivar la tarea", e); pushToast("✕ No se pudo derivar la tarea", "red"); }
+    setOcupado(null);
+  }
+  async function agregarTareaAdmin() {
+    if (!nuevaTarea.trim()) return;
+    setOcupado("nueva");
+    try {
+      const tarea = { id: uuid(), texto: nuevaTarea.trim(), done: false, tipo_origen: "admin", creado_por: adminUser ? `${adminUser.nombre} ${adminUser.apellido || ""}`.trim() : "Admin", fecha_origen: todayISO(), estado: "HACER_HOY" };
+      await sb.from("auditorias_receta").update({ posiciones_alerta: { ...pa, tareas_extra: [...extras, tarea] } }).eq("id", r.id);
+      setNuevaTarea("");
+      pushToast("✓ Tarea agregada al instructivo");
+      onRefrescar();
+    } catch (e) { console.error("No se pudo agregar la tarea", e); pushToast("✕ No se pudo agregar la tarea", "red"); }
+    setOcupado(null);
+  }
+
   return (
     <div className="bg-white rounded-2xl border border-bd shadow-card p-4">
       <div className="flex items-start justify-between gap-2 mb-2">
@@ -2232,27 +2343,38 @@ function InstructivoCard({ r }) {
       </div>
       <div className="space-y-1.5 mt-3">
         {recs.map(t => (
-          <p key={t.id} className={cx("text-[13px]", t.done ? "text-[#15803D]" : "text-[#92400E]")}>{t.done ? "✅" : "⏳"} {t.texto} <span className="text-muted">{t.done ? "(cumplida)" : "(pendiente)"}</span></p>
+          <div key={t.id} className="flex items-center justify-between gap-2">
+            <p className={cx("text-[13px] flex-1", t.done ? "text-[#15803D]" : "text-[#92400E]")}>{t.done ? "✅" : "🟢"} {t.texto} <span className="text-muted">{t.done ? "(cumplida)" : "(hacer hoy)"}</span></p>
+            {!t.done && <button disabled={ocupado === t.id} onClick={() => derivarAPendiente(t, false)} className="text-[11px] font-bold text-[#92400E] px-2.5 py-1 rounded-full bg-[#FEF3C7] shrink-0 whitespace-nowrap">{ocupado === t.id ? "…" : "🔴 Pendiente"}</button>}
+          </div>
         ))}
         {extras.map((t, i) => (
-          <p key={i} className={cx("text-[13px]", t.done ? "text-[#15803D]" : "text-[#92400E]")}>➕ {t.texto} {t.done ? "✅" : "⏳"} <span className="text-muted">(extra)</span></p>
+          <div key={i} className="flex items-center justify-between gap-2">
+            <p className={cx("text-[13px] flex-1", t.done ? "text-[#15803D]" : "text-[#92400E]")}>➕ {t.texto} {t.done ? "✅" : "🟢"} <span className="text-muted">({t.tipo_origen || "extra"}{t.creado_por ? ` — ${t.creado_por}` : ""})</span></p>
+            {!t.done && <button disabled={ocupado === t.id} onClick={() => derivarAPendiente(t, true)} className="text-[11px] font-bold text-[#92400E] px-2.5 py-1 rounded-full bg-[#FEF3C7] shrink-0 whitespace-nowrap">{ocupado === t.id ? "…" : "🔴 Pendiente"}</button>}
+          </div>
         ))}
         {!recs.length && !extras.length && <p className="text-[13px] text-muted">Sin tareas registradas.</p>}
+      </div>
+      <div className="flex gap-2 mt-3 pt-3 border-t border-bd">
+        <TextInput placeholder="Agregar tarea al instructivo" value={nuevaTarea} onChange={e => setNuevaTarea(e.target.value)} onKeyDown={e => { if (e.key === "Enter") agregarTareaAdmin(); }} className="h-9 text-[12.5px]" />
+        <Button variant="subtle" className="h-9 px-3 text-[12.5px]" disabled={ocupado === "nueva"} onClick={agregarTareaAdmin}>+ Agregar</Button>
       </div>
     </div>
   );
 }
-function InstructivosTab({ filtro, onCambio }) {
+function InstructivosTab({ filtro, adminUser, pushToast, onCambio }) {
   const [lista, setLista] = useState([]);
   const [loading, setLoading] = useState(true);
-  useEffect(() => {
+  function cargar() {
     setLoading(true);
     fetchInstructivosHoy(filtro).then(data => { setLista(data); onCambio && onCambio(data); }).catch(e => console.error(e)).finally(() => setLoading(false));
-  }, [filtro]);
+  }
+  useEffect(cargar, [filtro]);
   if (loading) return <div className="flex justify-center py-10"><span className="spinner" /></div>;
   return (
     <div className="space-y-3">
-      {lista.map(r => <InstructivoCard key={r.id} r={r} />)}
+      {lista.map(r => <InstructivoCard key={r.id} r={r} adminUser={adminUser} pushToast={pushToast} onRefrescar={cargar} />)}
       {!lista.length && <p className="text-[13.5px] text-muted py-4">Sin auditorías hoy.</p>}
     </div>
   );
@@ -2374,7 +2496,7 @@ function MovimientosDelDiaView({ empresaCtl, adminUser }) {
       </div>
       {tab === "alertas" && <AlertasCriticasTab filtro={filtro} pushToast={pushToast} onCambio={refrescarAlertasBadge} />}
       {tab === "discrepancias" && <DiscrepanciasAuditoriaTab filtro={filtro} adminUser={adminUser} pushToast={pushToast} onCambio={refrescarDiscrepanciasBadge} />}
-      {tab === "instructivos" && <InstructivosTab filtro={filtro} onCambio={(data) => setBadge("instructivos", data.filter(r => r.estado === "pendiente" || r.estado === "parcial"))} />}
+      {tab === "instructivos" && <InstructivosTab filtro={filtro} adminUser={adminUser} pushToast={pushToast} onCambio={(data) => setBadge("instructivos", data.filter(r => r.estado === "pendiente" || r.estado === "parcial"))} />}
       {tab === "cambio" && <HojaDeCambioTab filtro={filtro} onCambio={(data) => setBadge("cambio", data)} />}
     </div>
   );
@@ -2695,6 +2817,10 @@ function MecanicoMaestroModal({ mecanico, filtro, empresas, onClose, onSaved, pu
   const [usuario, setUsuario] = useState(mecanico ? (mecanico.usuario || "") : "");
   const [password, setPassword] = useState("");
   const [clienteId, setClienteId] = useState(mecanico ? mecanico.cliente_id : (filtro !== "todas" ? filtro : ""));
+  // Requerimiento 2A: mismo permiso que en admin.html — deriva tareas del
+  // instructivo a Pendiente y agrega tareas propias (sin el permiso, el
+  // mecanico solo puede tachar tareas como completadas).
+  const [puedeModificar, setPuedeModificar] = useState(mecanico ? !!mecanico.puede_modificar_instructivo : false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -2710,7 +2836,7 @@ function MecanicoMaestroModal({ mecanico, filtro, empresas, onClose, onSaved, pu
       const { data: dup } = await q;
       if (dup && dup.length) { setError("Ya existe un usuario con ese nombre de usuario."); setSaving(false); return; }
 
-      const payload = { nombre: nombre.trim(), apellido: apellido.trim() || null, telefono: telefono.trim() || null, email: email.trim() || null, usuario: usuario.trim(), cliente_id: clienteId };
+      const payload = { nombre: nombre.trim(), apellido: apellido.trim() || null, telefono: telefono.trim() || null, email: email.trim() || null, usuario: usuario.trim(), cliente_id: clienteId, puede_modificar_instructivo: puedeModificar };
       if (password.trim()) payload.password_hash = await sha256Hex(password.trim());
       if (editando) {
         const { error: e } = await sb.from("usuarios").update(payload).eq("id", mecanico.id);
@@ -2743,6 +2869,15 @@ function MecanicoMaestroModal({ mecanico, filtro, empresas, onClose, onSaved, pu
             {empresas.map(e => <option key={e.id_cliente} value={e.id_cliente}>{e.nombre}</option>)}
           </Select>
         </Field>
+        <label className="flex items-start gap-3 bg-[#F9FAFB] rounded-2xl p-3.5 cursor-pointer" onClick={() => setPuedeModificar(v => !v)}>
+          <span className={cx("w-11 h-6 rounded-full shrink-0 relative transition mt-0.5", puedeModificar ? "bg-ink" : "bg-[#D1D5DB]")}>
+            <span className={cx("absolute top-0.5 w-5 h-5 rounded-full bg-white transition", puedeModificar ? "left-[22px]" : "left-0.5")} />
+          </span>
+          <span>
+            <span className="block text-[14px] font-bold">Puede modificar el instructivo</span>
+            <span className="block text-[12px] text-muted mt-0.5">Deriva tareas a Pendiente y agrega tareas propias en la Hoja de Cambio. Sin esto, solo puede tacharlas como completadas.</span>
+          </span>
+        </label>
         {error && <p className="text-[12.5px] font-bold text-[#B91C1C]">{error}</p>}
         <Button className="w-full" disabled={saving} onClick={guardar}>{saving ? <span className="spinner" /> : (editando ? "Guardar cambios" : "Crear mecánico")}</Button>
       </div>

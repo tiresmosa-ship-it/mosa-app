@@ -1365,9 +1365,9 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
     if (!recetaId.current) return;
     const recomendaciones = cs.filter(c => !c.extra).map(c => {
       const r = (recsInfo && recsInfo.recs || []).find(x => x.id === c.id) || {};
-      return { id: c.id, key: r.key || null, texto: c.texto, done: !!c.done };
+      return { id: c.id, key: r.key || null, texto: c.texto, done: !!c.done, tipo_origen: c.tipo_origen || "sistema", creado_por: c.creado_por || "Sistema (Automático)", fecha_origen: c.fecha_origen || todayISO(), estado: c.done ? "COMPLETADA" : "HACER_HOY" };
     });
-    const tareas_extra = cs.filter(c => c.extra).map(c => ({ texto: c.texto, done: !!c.done, origen: c.origen || null }));
+    const tareas_extra = cs.filter(c => c.extra).map(c => ({ texto: c.texto, done: !!c.done, origen: c.origen || null, tipo_origen: c.tipo_origen || "mecanico", creado_por: c.creado_por || null, fecha_origen: c.fecha_origen || todayISO(), estado: c.done ? "COMPLETADA" : "HACER_HOY" }));
     pushQueue({
       id: uuid(), tipo: "cambio_checklist", clienteId, ts: Date.now(), data: {
         receta_id: recetaId.current,
@@ -1578,11 +1578,31 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
   function agregarTarea() {
     if (!nuevaTarea.trim()) return;
     setChecklist(cs => {
-      const next = [...cs, { id: uuid(), texto: nuevaTarea.trim(), done: false, extra: true }];
+      // Requerimiento 2C: tarea propia del mecanico, marcada como tal para que
+      // el Admin sepa quien la agrego (tipo_origen/creado_por/fecha_origen).
+      const next = [...cs, { id: uuid(), texto: nuevaTarea.trim(), done: false, extra: true, tipo_origen: "mecanico", creado_por: user.nombre, fecha_origen: todayISO(), estado: "HACER_HOY" }];
       persistChecklist(next);
       return next;
     });
     setNuevaTarea("");
+  }
+  // Requerimiento 2C: derivar una tarea a "Pendiente" (solo si
+  // puede_modificar_instructivo) — sale del checklist activo de hoy y queda
+  // guardada en tareas_diferidas de esta receta para que el Admin la vea en
+  // Equipos > Tareas Pendientes, y para que la proxima auditoria/HC de este
+  // equipo la traiga de nuevo automaticamente.
+  async function diferirTarea(c) {
+    if (!recetaId.current) return;
+    const tarea = { id: c.id, texto: c.texto, tipo_origen: c.tipo_origen || "sistema", creado_por: c.creado_por || "Sistema (Automático)", fecha_origen: c.fecha_origen || todayISO() };
+    try {
+      await db.diferirTareaChecklist(recetaId.current, tarea);
+      setChecklist(cs => {
+        const next = cs.filter(x => x.id !== c.id);
+        persistChecklist(next);
+        return next;
+      });
+      pushToast("→ Tarea derivada a Pendiente");
+    } catch (e) { console.error("No se pudo derivar la tarea", e); pushToast("✕ No se pudo derivar la tarea", "red"); }
   }
 
   async function finalizar() {
@@ -1593,13 +1613,28 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
     // todavia no existe: se crea aca recien, sin detalle. "Finalizar" solo
     // cierra esa cabecera (hora_salida/observaciones) y el instructivo.
     const cambio_id = await ensureCambioHeader();
-    const sistemaTotal = checklist.filter(c => !c.extra).length;
-    const cumplidas = checklist.filter(c => !c.extra && c.done).length;
-    const pendientesTareas = sistemaTotal - cumplidas;
+    // Requerimiento 3: el % de cumplimiento cuenta TODAS las tareas activas de
+    // hoy (sistema + admin + mecanico, ya no solo las del sistema como antes)
+    // — las que ya se derivaron a mano a Pendiente ya salieron de `checklist`
+    // (ver diferirTarea), asi que no entran en el divisor.
+    const totalActivas = checklist.length;
+    const cumplidas = checklist.filter(c => c.done).length;
+    const sinCompletar = checklist.filter(c => !c.done);
+    // Requerimiento 3.3: lo que quedo sin completar al cerrar se deriva solo
+    // a Pendiente (no hace falta que el mecanico lo mueva a mano) — queda
+    // guardado en tareas_diferidas para Equipos > Tareas Pendientes y para
+    // que la proxima auditoria/HC de este equipo lo traiga de nuevo.
+    if (sinCompletar.length && recetaId.current) {
+      for (const c of sinCompletar) {
+        try {
+          await db.diferirTareaChecklist(recetaId.current, { id: c.id, texto: c.texto, tipo_origen: c.tipo_origen || "sistema", creado_por: c.creado_por || "Sistema (Automático)", fecha_origen: c.fecha_origen || todayISO() });
+        } catch (e) { console.error("No se pudo derivar una tarea inconclusa a pendiente", e); }
+      }
+    }
     // Cierre del instructivo: parcial si quedan tareas, completado si no. Sin alerta.
     const recetaUpdate = recetaId.current ? {
-      id: recetaId.current, estado: pendientesTareas > 0 ? "parcial" : "completado",
-      tareas_cumplidas: cumplidas, tareas_pendientes: pendientesTareas
+      id: recetaId.current, estado: sinCompletar.length > 0 ? "parcial" : "completado",
+      tareas_cumplidas: cumplidas, tareas_pendientes: sinCompletar.length
     } : null;
     pushQueue({
       id: uuid(), tipo: "cambio_cierre", clienteId, ts: Date.now(), data: {
@@ -1607,7 +1642,7 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
         hora_salida: nowHM(),
         psi_regulados: intervenciones.current.some(i => i.tipo === "regulacion_psi"),
         ruedas_torqueadas: intervenciones.current.filter(i => i.tipo === "retorqueo" || i.tipo === "checkpoint").length,
-        observaciones: `Instructivo seguido: ${sistemaTotal ? Math.round((cumplidas / sistemaTotal) * 100) : 100}%`,
+        observaciones: `Instructivo seguido: ${totalActivas ? Math.round((cumplidas / totalActivas) * 100) : 100}%`,
         recetaUpdate
       }
     });
@@ -1704,14 +1739,21 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
               {posMatch != null && posData[posMatch] && (
                 <button onClick={() => setInfoPos(posMatch)} className="text-[11px] font-bold text-ink px-2.5 py-1.5 rounded-full bg-[#F3F4F6] shrink-0 whitespace-nowrap">🔗 Ir al neumático</button>
               )}
+              {/* Requerimiento 2C: solo si el mecanico tiene permiso — sin el
+                  permiso, unicamente puede tachar (COMPLETADA), no derivar. */}
+              {user.puede_modificar_instructivo && !c.done && (
+                <button onClick={() => diferirTarea(c)} className="text-[11px] font-bold text-[#92400E] px-2.5 py-1.5 rounded-full bg-[#FEF3C7] shrink-0 whitespace-nowrap">🔴 Pendiente</button>
+              )}
             </div>
           );
         })}
       </div>
-      <div className="flex gap-2 mb-6">
-        <TextInput placeholder="Agregar tarea personalizada" value={nuevaTarea} onChange={e => setNuevaTarea(e.target.value)} onKeyDown={e => { if (e.key === "Enter") agregarTarea(); }} />
-        <Button variant="subtle" onClick={agregarTarea}>+ Agregar</Button>
-      </div>
+      {user.puede_modificar_instructivo && (
+        <div className="flex gap-2 mb-6">
+          <TextInput placeholder="Agregar tarea personalizada" value={nuevaTarea} onChange={e => setNuevaTarea(e.target.value)} onKeyDown={e => { if (e.key === "Enter") agregarTarea(); }} />
+          <Button variant="subtle" onClick={agregarTarea}>+ Agregar</Button>
+        </div>
+      )}
 
       {/* Fix 3: log informativo de movimientos, solo lectura — sin checkboxes
           ni acciones, se va completando a medida que se confirma cada accion. */}

@@ -589,3 +589,11 @@ ON CONFLICT (cliente_id, clave) DO NOTHING;
 -- explicacion visible para el mecanico). Igual que con los CHECK viejos
 -- (ver notas de arriba), el criterio es sacar la restriccion, no ampliarla.
 ALTER TABLE discrepancias_inventario ALTER COLUMN valor_sistema DROP NOT NULL;
+
+-- 33) Instructivos dinamicos con estados HACER_HOY/PENDIENTE/COMPLETADA
+-- (motor de reglas + tareas pendientes por camion, ver notas en js/supabase.js
+-- funcion generarRecomendaciones/fetchTareasPendientesEquipo). Cada tarea
+-- sigue viviendo dentro de auditorias_receta.posiciones_alerta (recomendaciones/
+-- tareas_extra), no se creo tabla nueva -- solo se agrega el permiso por
+-- mecanico para poder derivar tareas a pendiente / agregar tareas propias.
+ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS puede_modificar_instructivo BOOLEAN NOT NULL DEFAULT false;

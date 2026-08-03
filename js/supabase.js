@@ -473,6 +473,71 @@ const db = {
     const { data, error } = await sb.from("marcas_modelos_cliente").select("*").eq("cliente_id", clienteId).order("marca").order("modelo");
     if (error) throw error;
     return data || [];
+  },
+  // Instructivos dinamicos (HACER_HOY/PENDIENTE/COMPLETADA): una tarea que se
+  // deriva a pendiente (por el mecanico si tiene el permiso, o por el Admin)
+  // sale del checklist activo y se guarda en posiciones_alerta.tareas_diferidas
+  // de la receta donde vivia -- read-modify-write sobre el JSON, mismo patron
+  // que el resto de la app usa para posiciones_alerta (ver resolverDiscrepanciaAuditoria).
+  async diferirTareaChecklist(recetaId, tarea) {
+    const { data, error: e1 } = await sb.from("auditorias_receta").select("posiciones_alerta").eq("id", recetaId).maybeSingle();
+    if (e1) throw e1;
+    const pa = (data && data.posiciones_alerta) || {};
+    const diferidas = Array.isArray(pa.tareas_diferidas) ? pa.tareas_diferidas : [];
+    const nueva = { ...tarea, estado: "PENDIENTE" };
+    const { error: e2 } = await sb.from("auditorias_receta").update({ posiciones_alerta: { ...pa, tareas_diferidas: [...diferidas, nueva] } }).eq("id", recetaId);
+    if (e2) throw e2;
+  },
+  // Todas las tareas PENDIENTE derivadas para este equipo, de cualquier
+  // auditoria (no solo la ultima) -- para la pestaña "Tareas Pendientes e
+  // Historial" del Admin y el arrastre automatico a la proxima auditoria/HC.
+  async fetchTareasPendientesEquipo(equipoId) {
+    const { data: auds, error: e1 } = await sb.from("auditorias").select("id_auditoria,fecha").eq("equipo_id", equipoId);
+    if (e1) throw e1;
+    const audIds = (auds || []).map(a => a.id_auditoria);
+    if (!audIds.length) return [];
+    const { data: recetas, error: e2 } = await sb.from("auditorias_receta").select("id,auditoria_id,posiciones_alerta").in("auditoria_id", audIds);
+    if (e2) throw e2;
+    const audMap = {}; (auds || []).forEach(a => { audMap[a.id_auditoria] = a; });
+    const out = [];
+    (recetas || []).forEach(r => {
+      const diferidas = Array.isArray((r.posiciones_alerta || {}).tareas_diferidas) ? r.posiciones_alerta.tareas_diferidas : [];
+      diferidas.filter(t => t.estado === "PENDIENTE").forEach(t => out.push({ ...t, receta_id: r.id, auditoria_id: r.auditoria_id, fecha_auditoria: audMap[r.auditoria_id] ? audMap[r.auditoria_id].fecha : null }));
+    });
+    return out.sort((a, b) => (b.fecha_origen || "").localeCompare(a.fecha_origen || ""));
+  },
+  // "Reasignar a hoy" desde el panel de equipo del Admin: si el mecanico tiene
+  // una hoja de cambio activa hoy para este equipo, la tarea se inyecta ahi
+  // mismo (HACER_HOY, visible de inmediato); si no hay sesion activa, se deja
+  // marcada para que el arrastre automatico de la proxima auditoria la traiga
+  // sola (ver construirYGuardarAuditoria).
+  async reasignarTareaAHoy(equipoId, tarea, adminUser) {
+    const receta = await db.fetchRecetaEnProcesoHoy(equipoId);
+    const { data: origenRow, error: eOrigen } = await sb.from("auditorias_receta").select("posiciones_alerta").eq("id", tarea.receta_id).maybeSingle();
+    if (eOrigen) throw eOrigen;
+    const paOrigen = origenRow.posiciones_alerta || {};
+    const diferidas = (Array.isArray(paOrigen.tareas_diferidas) ? paOrigen.tareas_diferidas : []).map(t =>
+      t.id === tarea.id ? { ...t, estado: receta ? "REASIGNADA" : "HACER_HOY", reasignado_por: adminUser ? adminUser.nombre : null, reasignado_en: todayISO() } : t
+    );
+    const nuevaTarea = { id: uuid(), texto: tarea.texto, done: false, tipo_origen: tarea.tipo_origen || "admin", creado_por: tarea.creado_por || (adminUser ? adminUser.nombre : "Admin"), fecha_origen: tarea.fecha_origen, estado: "HACER_HOY" };
+    // Si la tarea pendiente vivia en la MISMA receta que esta hoy en_proceso,
+    // los dos cambios (marcar la diferida como reasignada + agregarla a
+    // tareas_extra) tienen que ir en UN solo update -- si se hacen en dos
+    // updates separados sobre la misma fila, el segundo pisa al primero
+    // porque cada uno parte de su propia lectura vieja de posiciones_alerta.
+    if (receta && receta.id === tarea.receta_id) {
+      const extras = Array.isArray(paOrigen.tareas_extra) ? paOrigen.tareas_extra : [];
+      await sb.from("auditorias_receta").update({ posiciones_alerta: { ...paOrigen, tareas_diferidas: diferidas, tareas_extra: [...extras, nuevaTarea] } }).eq("id", tarea.receta_id);
+      return { inyectada: true };
+    }
+    await sb.from("auditorias_receta").update({ posiciones_alerta: { ...paOrigen, tareas_diferidas: diferidas } }).eq("id", tarea.receta_id);
+    if (receta) {
+      const pa = receta.posiciones_alerta || {};
+      const extras = Array.isArray(pa.tareas_extra) ? pa.tareas_extra : [];
+      await sb.from("auditorias_receta").update({ posiciones_alerta: { ...pa, tareas_extra: [...extras, nuevaTarea] } }).eq("id", receta.id);
+      return { inyectada: true };
+    }
+    return { inyectada: false };
   }
 };
 
@@ -1145,6 +1210,11 @@ function generarRecomendaciones(posData, axleCfg, equipoTipo, cfg) {
 
   const criticos = Object.values(posData).filter(d => d.status === "alerta" && (d.motivos || []).some(m => m.startsWith("mm"))).sort((a, b) => a.posicion - b.posicion);
   criticos.forEach(d => recs.push({ id: "cambiar_" + d.posicion, key: "rec_cambiar_neumaticos", texto: `Cambiar neumático en P${d.posicion} (${d.minMM} mm)` }));
+
+  // Requerimiento 1 (motor de reglas): desgaste irregular detectado en la
+  // auditoria (tipo_desgaste, ver PosicionModal) -> tarea de revision/rotacion.
+  const irregulares = Object.values(posData).filter(d => d.tipo_desgaste === "irregular").sort((a, b) => a.posicion - b.posicion);
+  irregulares.forEach(d => recs.push({ id: "irregular_" + d.posicion, key: "rec_revisar_irregular", texto: `Revisar / rotar posición P${d.posicion} (desgaste irregular)` }));
 
   axleCfg.groups.forEach((grupo, i) => {
     const mms = grupo.map(p => posData[p] && posData[p].minMM).filter(v => v != null);
