@@ -1173,40 +1173,56 @@ function InstructivoPendienteModal({ pendiente, onUsar, onLimpia }) {
   );
 }
 
-// Validacion de rotaciones (hoja de cambio), autocontenida — no depende de
-// axleCfg.groups/ladoDePosicion de js/supabase.js porque esas dos quedaban
-// mal para este caso: ladoDePosicion partia el array de posiciones de la fila
-// en "primera mitad"/"segunda mitad" en vez del lado real alternado (impar/par),
-// y AXLE_CONFIGS.semi.groups separaba cada eje del semi en su propio grupo
-// cuando el semi debe rotar totalmente libre. configEjes es '4x2'/'6x2'/'6x4'/'semi'.
-function validateRotation(fromPos, toPos, configEjes) {
+// Validador estricto y deterministico de rotaciones (hoja de cambio),
+// autocontenido — no depende de axleCfg.groups/ladoDePosicion de
+// js/supabase.js porque esas dos quedaban mal para este caso:
+// ladoDePosicion partia el array de posiciones de la fila en "primera
+// mitad"/"segunda mitad" en vez del lado real alternado (impar/par), y
+// AXLE_CONFIGS.semi.groups separaba cada eje del semi en su propio grupo
+// cuando el semi debe rotar totalmente libre. configEjes es
+// '4x2'/'6x2'/'6x4'/'semi' (equipo.tipo==='SEMI' ? 'semi' : equipo.configuracion_ejes).
+function esRotacionValida(posOrigen, posDestino, configEjes) {
   const ladoIzq = { "4x2": [3, 5], "6x2": [3, 5], "6x4": [3, 5, 7, 9] };
   const ladoDer = { "4x2": [4, 6], "6x2": [4, 6], "6x4": [4, 6, 8, 10] };
   const direccionales = [1, 2];
   const ejeLibre = [7, 8, 9, 10]; // solo 6x2
+  const etiquetaConfig = { "4x2": "4x2", "6x2": "6x2", "6x4": "6x4" }[configEjes] || configEjes;
+  const noPermitida = (motivo) => ({
+    valid: false,
+    msg: `Rotación no permitida: en configuración ${etiquetaConfig} no se permite intercambiar la posición ${posOrigen} con la posición ${posDestino}${motivo ? ` (${motivo})` : ""}.`
+  });
 
   if (configEjes === "semi") return { valid: true };
+  // Equipo sin configuracion de ejes cargada (dato faltante, no infrecuente en
+  // equipos viejos) — no hay matriz contra la cual validar, asi que se
+  // bloquea con un mensaje claro en vez de caer "por descarte" en el mensaje
+  // generico de "lados opuestos" (eso es lo que hacia que la funcion pareciera
+  // funcionar "intermitente": bloqueaba SIEMPRE, sin explicar por que, en
+  // cualquier equipo al que le faltara este dato).
+  if (!configEjes) {
+    return { valid: false, msg: "Este equipo no tiene configuración de ejes definida — no se puede validar la rotación. Pedile al Admin que la complete en Equipos." };
+  }
 
-  const ambosDir = direccionales.includes(fromPos) && direccionales.includes(toPos);
+  const ambosDir = direccionales.includes(posOrigen) && direccionales.includes(posDestino);
   if (ambosDir) return { valid: true };
 
-  const unoDir = direccionales.includes(fromPos) || direccionales.includes(toPos);
-  if (unoDir) return { valid: false, msg: "No podés rotar un direccional con un traccional" };
+  const unoDir = direccionales.includes(posOrigen) || direccionales.includes(posDestino);
+  if (unoDir) return noPermitida("un direccional no rota con un traccional");
 
   if (configEjes === "6x2") {
-    const ambosEL = ejeLibre.includes(fromPos) && ejeLibre.includes(toPos);
+    const ambosEL = ejeLibre.includes(posOrigen) && ejeLibre.includes(posDestino);
     if (ambosEL) return { valid: true };
-    const unoEL = ejeLibre.includes(fromPos) || ejeLibre.includes(toPos);
-    if (unoEL) return { valid: false, msg: "El eje libre solo rota entre sus propias posiciones" };
+    const unoEL = ejeLibre.includes(posOrigen) || ejeLibre.includes(posDestino);
+    if (unoEL) return noPermitida("el eje libre solo rota entre sus propias posiciones");
   }
 
   const izq = ladoIzq[configEjes] || [];
   const der = ladoDer[configEjes] || [];
-  const fromIzq = izq.includes(fromPos), toIzq = izq.includes(toPos);
-  const fromDer = der.includes(fromPos), toDer = der.includes(toPos);
+  const fromIzq = izq.includes(posOrigen), toIzq = izq.includes(posDestino);
+  const fromDer = der.includes(posOrigen), toDer = der.includes(posDestino);
   if ((fromIzq && toIzq) || (fromDer && toDer)) return { valid: true };
 
-  return { valid: false, msg: "No podés rotar neumáticos de lados opuestos" };
+  return noPermitida("reglas de desgaste y tracción, no se cruzan neumáticos de lados opuestos");
 }
 
 function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, checklistInicial, kmInicial, recetaIdInicial, pendiente, discrepanciasNeumaticosInicial, recsInfo, onFinish, onCancel }) {
@@ -1470,7 +1486,7 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
 
   function confirmarRotacion(origen, destino) {
     const configEjes = equipo.tipo === "SEMI" ? "semi" : equipo.configuracion_ejes;
-    const check = validateRotation(origen, destino, configEjes);
+    const check = esRotacionValida(origen, destino, configEjes);
     if (!check.valid) {
       if (navigator.vibrate) navigator.vibrate(200);
       pushToast(`✕ ${check.msg}`, "red");
