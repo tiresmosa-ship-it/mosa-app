@@ -5892,6 +5892,16 @@ function AdminApp({ user, onLogout }) {
     return () => clearInterval(t);
   }, [empresaCtl.filtro]);
 
+  // Objetivo 1: mismo patron "mejor esfuerzo" que la escalada de arriba —
+  // cierra solas las hojas de cambio con +8hs sin actividad y baja su
+  // instructivo a 'parcial'.
+  useEffect(() => {
+    async function chequear() { try { await verificarCambiosAbandonados(empresaCtl.filtro); } catch (e) { console.error("No se pudo verificar hojas de cambio abandonadas", e); } }
+    chequear();
+    const t = setInterval(chequear, 30 * 60 * 1000);
+    return () => clearInterval(t);
+  }, [empresaCtl.filtro]);
+
   function handleMecanicoDesbloqueado() {
     setMecanicoBloqueado(null);
     refrescarCampanita();

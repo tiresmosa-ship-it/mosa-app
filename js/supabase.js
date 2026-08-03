@@ -869,16 +869,23 @@ async function actualizarNeumaticoEntra(clienteId, equipoId, en) {
   // inferirTipoNeumatico en mecanico.html) y SI se graba en neumaticos.tipo
   // (Bug 1/2) -- si ya tenia un tipo cargado de antes (bodega 'nuevo' con
   // entrada valorizada) se lo dejamos, salvo que en.tipo traiga uno mejor.
+  // Objetivo 3 (rehidratacion): el PSI/MM que el mecanico tipeo al montar
+  // tiene que quedar en `neumaticos` (no solo en cambio_detalle/posData en
+  // memoria) -- si no, un F5 antes de la proxima auditoria pierde esos
+  // valores del mapa (construirPosDataDesdeEquipo los lee de aca primero).
   const { data: existente } = await sb.from("neumaticos").select("*").eq("cliente_id", clienteId).eq("numero_fuego", en.numero_fuego).maybeSingle();
   if (existente) {
     const update = { estado_actual: "en_uso", bodega: null, equipo_actual: equipoId, posicion_actual: en.posicion || null };
     if (en.tipo) update.tipo = en.tipo;
+    if (en.psi != null) update.psi_actual = en.psi;
+    if (en.milimetros != null) update.milimetros = en.milimetros;
     const { error } = await sb.from("neumaticos").update(update).eq("id_neumatico", existente.id_neumatico);
     if (error) throw error;
   } else {
     const { error } = await sb.from("neumaticos").insert({
       id_neumatico: uuid(), numero_fuego: en.numero_fuego, cliente_id: clienteId,
       marca: en.marca || null, modelo: en.modelo || null, medida: en.medida || null, tipo: en.tipo || null,
+      psi_actual: en.psi != null ? en.psi : null, milimetros: en.milimetros != null ? en.milimetros : null,
       estado_actual: "en_uso", bodega: null,
       equipo_actual: equipoId, posicion_actual: en.posicion || null, fecha_ingreso: todayISO(), activo: true
     });
@@ -1398,10 +1405,13 @@ async function construirPosDataDesdeEquipo(equipoId, cfg, axleCfg, equipo) {
   const map = {};
   data.forEach(n => {
     if (!n.posicion_actual) return;
-    map[n.posicion_actual] = { posicion: n.posicion_actual, numero_fuego: n.numero_fuego, marca: n.marca, modelo: n.modelo, medida: n.medida, psi: n.psi_actual != null ? n.psi_actual : null, status: "ok", minMM: null, tipo_desgaste: null };
+    // Objetivo 3: psi_actual/milimetros de `neumaticos` son la fuente mas
+    // fresca (actualizarNeumaticoEntra/regulacion PSI los escriben en vivo) --
+    // ganan sobre cualquier fallback de auditoria/cambio_detalle de mas abajo.
+    map[n.posicion_actual] = { posicion: n.posicion_actual, numero_fuego: n.numero_fuego, marca: n.marca, modelo: n.modelo, medida: n.medida, psi: n.psi_actual != null ? n.psi_actual : null, status: "ok", minMM: n.milimetros != null ? n.milimetros : null, tipo_desgaste: null };
   });
-  // Completar PSI/MM con los últimos valores conocidos de la auditoría más reciente
-  // (neumaticos no guarda milimetros; psi_actual solo se setea al regular PSI).
+  // Completar los huecos (psi/mm todavia null) con los ultimos valores
+  // conocidos de la auditoria mas reciente.
   try {
     const { data: ultimaAud } = await sb.from("auditorias").select("id_auditoria")
       .eq("equipo_id", equipoId).order("fecha", { ascending: false }).order("creado_en", { ascending: false }).limit(1);
@@ -1416,12 +1426,31 @@ async function construirPosDataDesdeEquipo(equipoId, cfg, axleCfg, equipo) {
           const ult = porFuego[d.numero_fuego];
           if (!ult) return;
           if (d.psi == null && ult.psi != null) d.psi = ult.psi;
-          if (ult.milimetros != null) d.minMM = ult.milimetros;
+          if (d.minMM == null && ult.milimetros != null) d.minMM = ult.milimetros;
           if (ult.tipo_desgaste) d.tipo_desgaste = ult.tipo_desgaste;
         });
       }
     }
   } catch (e) { console.error("No se pudieron cargar los últimos valores de auditoría", e); }
+  // Ultimo fallback: si un neumatico se monto durante la HC actual (todavia
+  // sin auditoria propia) y por lo que sea psi_actual/milimetros seguian sin
+  // valor, tomar el ultimo cambio_detalle (tipo='entra') de ese fuego -- ahi
+  // quedo lo que el mecanico tipeo al montarlo.
+  const faltantes = Object.values(map).filter(d => (d.psi == null || d.minMM == null) && d.numero_fuego);
+  if (faltantes.length) {
+    try {
+      const { data: ultimosEntra } = await sb.from("cambio_detalle").select("numero_fuego,psi,milimetros,creado_en")
+        .in("numero_fuego", faltantes.map(d => d.numero_fuego)).eq("tipo", "entra").order("creado_en", { ascending: false });
+      const porFuego = {};
+      (ultimosEntra || []).forEach(r => { if (!porFuego[r.numero_fuego]) porFuego[r.numero_fuego] = r; }); // el primero que aparece es el mas reciente
+      faltantes.forEach(d => {
+        const ult = porFuego[d.numero_fuego];
+        if (!ult) return;
+        if (d.psi == null && ult.psi != null) d.psi = ult.psi;
+        if (d.minMM == null && ult.milimetros != null) d.minMM = ult.milimetros;
+      });
+    } catch (e) { console.error("No se pudo completar psi/mm desde cambio_detalle", e); }
+  }
   if (cfg && axleCfg && equipo) {
     Object.entries(map).forEach(([pos, d]) => {
       const ev = evaluarPosicion(axleCfg, cfg, parseInt(pos, 10), equipo.tipo, { psi: d.psi, mm_borde_izq: d.minMM, mm_centro: d.minMM, mm_borde_der: d.minMM });
@@ -1533,8 +1562,58 @@ async function construirResumenJornada(mecanicoId, clienteId, fecha) {
   return { conteos, stock, detalle, cierreId: cierreActual ? cierreActual.id : null };
 }
 
+/* =====================================================================
+   OBJETIVO 1: HOJAS DE CAMBIO ABANDONADAS (hora_salida IS NULL hace +8hs, o
+   el mecanico cierra la jornada con una HC todavia abierta). cambios_neumaticos
+   no tiene columna de estado -- "cerrarla" es setear hora_salida (con una
+   observacion que dice que fue automatico) y bajar el instructivo asociado
+   (auditorias_receta, que SI tiene estado) de 'en_proceso' a 'parcial', para
+   que el Admin vea claramente que tareas quedaron sin hacer.
+===================================================================== */
+async function cerrarCambioAbandonado(cambio, motivo) {
+  const { error: e1 } = await sb.from("cambios_neumaticos")
+    .update({ hora_salida: nowHM(), observaciones: motivo }).eq("id_cambio", cambio.id_cambio).is("hora_salida", null);
+  if (e1) throw e1;
+  const { data: auds } = await sb.from("auditorias").select("id_auditoria")
+    .eq("equipo_id", cambio.equipo_id).eq("bultero_id", cambio.bultero_id).eq("fecha", cambio.fecha);
+  const audIds = (auds || []).map(a => a.id_auditoria);
+  if (audIds.length) {
+    await sb.from("auditorias_receta").update({ estado: "parcial" }).in("auditoria_id", audIds).eq("estado", "en_proceso");
+  }
+}
+// Mismo patron "mejor esfuerzo" que verificarEscaladas: sin cron server-side,
+// corre en un setInterval mientras un Admin/SuperAdmin tiene la app abierta.
+async function verificarCambiosAbandonados(clienteId) {
+  let qEq = sb.from("equipos").select("id_equipo");
+  qEq = filtroCliente(qEq, clienteId);
+  const { data: equipos } = await qEq;
+  const equipoIds = (equipos || []).map(e => e.id_equipo);
+  if (!equipoIds.length) return 0;
+  const { data: cambios, error } = await sb.from("cambios_neumaticos")
+    .select("id_cambio,equipo_id,bultero_id,fecha,creado_en").is("hora_salida", null).in("equipo_id", equipoIds);
+  if (error) throw error;
+  const ahora = Date.now();
+  let cerrados = 0;
+  for (const c of (cambios || [])) {
+    const horas = (ahora - new Date(c.creado_en).getTime()) / 3600000;
+    if (horas <= 8) continue;
+    try { await cerrarCambioAbandonado(c, "Cerrada automáticamente: sin actividad por más de 8hs"); cerrados++; }
+    catch (e) { console.error("No se pudo cerrar la HC abandonada", c.id_cambio, e); }
+  }
+  return cerrados;
+}
+
 async function cerrarJornadaConResumen({ user, clienteId, fecha, horaCierre, motivoSinCierre }) {
   const { conteos, stock, detalle, cierreId } = await construirResumenJornada(user.id, clienteId, fecha);
+  // Objetivo 1: si el mecanico cierra la jornada con una HC todavia abierta
+  // (hora_salida null), cerrarla sola en vez de dejarla "en_proceso" para
+  // siempre -- el cierre de jornada ES la senal explicita de que se dejo de
+  // trabajar, no hace falta esperar las 8hs del chequeo periodico.
+  try {
+    const { data: abiertos } = await sb.from("cambios_neumaticos")
+      .select("id_cambio,equipo_id,bultero_id,fecha,creado_en").eq("bultero_id", user.id).eq("fecha", fecha).is("hora_salida", null);
+    for (const c of (abiertos || [])) await cerrarCambioAbandonado(c, "Cerrada automáticamente: cierre de jornada");
+  } catch (e) { console.error("No se pudieron cerrar las hojas de cambio abiertas al cerrar jornada", e); }
   const update = { cerrado: true, hora_cierre: horaCierre, motivo_sin_cierre: motivoSinCierre || null, ...conteos, ...stock };
   if (cierreId) {
     await sb.from("cierre_dia").update(update).eq("id", cierreId);

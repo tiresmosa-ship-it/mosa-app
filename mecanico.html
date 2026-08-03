@@ -2468,9 +2468,64 @@ function MecanicoApp({ user }) {
     const turno = getTurno();
     if (turno && turno.fecha === todayISO()) {
       setClienteId(turno.clienteId); setEmpresaConfirmada(true); setCheckDone(!!turno.checkDone);
+    } else if (devModeActivo()) {
+      // Modo dev sin turno guardado todavia: saltea empresa+check diario
+      // (misma empresa/fecha que usa un turno real, para que el resto del
+      // flujo -- horas extras, cache de equipos, etc. -- no note la diferencia).
+      const t = { clienteId: "la_portada", fecha: todayISO(), checkDone: true };
+      setTurno(t);
+      setClienteId(t.clienteId); setEmpresaConfirmada(true); setCheckDone(true);
     }
   }, []);
   useEffect(() => { if (clienteId) db.fetchConfig(clienteId).then(setCfg).catch(() => setCfg(getCache(LS.cfg(clienteId), DEFAULT_CFG))); }, [clienteId]);
+  // Modo dev: entrar directo a la Hoja de Cambio de un equipo, saltando
+  // Auditoria. Reusa las mismas funciones que el flujo real -- si el equipo
+  // ya tiene un instructivo 'en_proceso' de hoy lo retoma (fetchRecetaEnProcesoHoy,
+  // igual que "Continuar hoja de cambio"); si no, crea uno real via
+  // construirYGuardarAuditoria con posData vacio (0 tareas, no inventa lecturas
+  // de auditoria) para tener un recetaIdInicial valido. El mapa siempre se
+  // reconstruye desde `neumaticos` (construirPosDataDesdeEquipo), asi que
+  // refleja el estado real del equipo, invente o no la receta.
+  const entrarDevHC = useCallback(async (patenteOrId) => {
+    if (!clienteId) { console.error("[dev] todavia no hay empresa/cliente activo"); return; }
+    const target = (patenteOrId || "JFTH64").trim();
+    const esId = /^[0-9a-f-]{36}$/i.test(target);
+    const { data: eq, error: eEq } = await sb.from("equipos").select("*").eq("cliente_id", clienteId)
+      .eq(esId ? "id_equipo" : "patente", target).maybeSingle();
+    if (eEq || !eq) { console.error("[dev] no se encontro el equipo", target, eEq); return; }
+    const axleCfg = axleConfigFor(eq);
+    try {
+      const posData = await construirPosDataDesdeEquipo(eq.id_equipo, cfg, axleCfg, eq);
+      let receta = await db.fetchRecetaEnProcesoHoy(eq.id_equipo);
+      if (!receta) {
+        const res = await construirYGuardarAuditoria({
+          user, clienteId, equipo: eq, cfg, posData: {}, axleCfg, km: eq.kilometros || 0,
+          checklist: [], recsInfo: { recs: [] }, discrepanciasNeumaticos: [], recetaEstado: "en_proceso"
+        });
+        syncQueue();
+        receta = { id: res.recetaId, posiciones_alerta: {} };
+      }
+      const pa = receta.posiciones_alerta || {};
+      const recs = Array.isArray(pa.recomendaciones) ? pa.recomendaciones : [];
+      const extras = Array.isArray(pa.tareas_extra) ? pa.tareas_extra : [];
+      const checklist = [
+        ...recs.map(r => ({ id: r.id || uuid(), texto: r.texto, done: !!r.done, extra: false })),
+        ...extras.map(t => ({ id: uuid(), texto: t.texto, done: !!t.done, extra: true, origen: t.origen || null }))
+      ];
+      const discrepNeus = Array.isArray(pa.discrepancias_neumaticos) ? pa.discrepancias_neumaticos : [];
+      const recsInfoResumen = { recs: recs.map(r => ({ id: r.id, key: r.key, texto: r.texto })) };
+      setFlow({ stage: "cambio", equipo: eq, axleCfg, posData, checklist, recetaIdInicial: receta.id, pendiente: null, discrepanciasNeumaticos: discrepNeus, recsInfo: recsInfoResumen });
+      console.log(`[dev] Hoja de cambio abierta para ${eq.patente} (${eq.numero_interno || "-"})`);
+    } catch (e) { console.error("[dev] no se pudo entrar directo a la hoja de cambio", e); }
+  }, [clienteId, cfg, user]);
+  useEffect(() => { window.entrarDevHC = entrarDevHC; return () => { delete window.entrarDevHC; }; }, [entrarDevHC]);
+  const devAutoEntrado = useRef(false);
+  useEffect(() => {
+    if (!devModeActivo() || !clienteId || !checkDone || flow || devAutoEntrado.current) return;
+    devAutoEntrado.current = true;
+    const params = new URLSearchParams(location.search);
+    entrarDevHC(params.get("equipo_id") || params.get("equipo") || "JFTH64");
+  }, [clienteId, checkDone, flow, entrarDevHC]);
   // Bug 1 (persistencia HC): si el mecanico recarga la pagina con una hoja de
   // cambio a medias, retomarla automaticamente en vez de volver al menu.
   // Se detecta buscando una auditorias_receta en estado 'en_proceso' de HOY
@@ -2688,11 +2743,24 @@ function PerfilScreen({ user }) {
   );
 }
 
+// Modo Dev/Bypass para testing: ?dev=true en la URL o localStorage
+// mosa_dev_mode='true'. Solo afecta el arranque de la pagina (login + salto
+// directo a la HC de un equipo) — el resto del flujo (check diario real,
+// auditoria real, sync queue, etc.) no se toca ni se simula, se usan los
+// mismos datos/funciones reales que en produccion. NUNCA se activa solo.
+function devModeActivo() {
+  try {
+    const params = new URLSearchParams(location.search);
+    return params.get("dev") === "true" || localStorage.getItem("mosa_dev_mode") === "true";
+  } catch (e) { return false; }
+}
+
 /* =====================================================================
    ENTRADA DE LA PAGINA
    Guarda de sesion: solo mecanicos con sesion valida llegan a MecanicoApp;
    cualquier otro caso (sin sesion, rol distinto, usuario desactivado)
-   redirige a index.html.
+   redirige a index.html. Excepcion: modo dev sin sesion cacheada -> loguea
+   automaticamente al mecanico de prueba 'carlos' (usuario real de la DB).
 ===================================================================== */
 function MecanicoPage() {
   const [user, setUser] = useState(null);
@@ -2700,7 +2768,17 @@ function MecanicoPage() {
 
   useEffect(() => {
     const cached = getSession();
-    if (!cached || cached.rol !== "mecanico") { location.replace("index.html"); return; }
+    if (!cached || cached.rol !== "mecanico") {
+      if (devModeActivo()) {
+        sb.from("usuarios").select("*").eq("usuario", "carlos").eq("rol", "mecanico").maybeSingle()
+          .then(({ data }) => {
+            if (!data) { console.error("[dev] no se encontro el usuario 'carlos' (rol mecanico) en la DB"); location.replace("index.html"); return; }
+            setSession(data); setUser(data); setChecking(false);
+          }).catch(e => { console.error("[dev] no se pudo loguear al mecanico de prueba", e); location.replace("index.html"); });
+        return;
+      }
+      location.replace("index.html"); return;
+    }
     db.fetchUsuario(cached.id).then(fresh => {
       if (!fresh || !fresh.activo || fresh.rol !== "mecanico") { clearSession(); location.replace("index.html"); return; }
       setSession(fresh); setUser(fresh); setChecking(false);
