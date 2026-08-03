@@ -1087,15 +1087,34 @@ function Instructivo({ equipo, axleCfg, posData, recsInfo, checklist, setCheckli
    Un tap corto (sin arrastre) sobre un neumático montado solo abre el
    modal de información/intervenciones.
 ===================================================================== */
-function RetiroModal({ pos, fuego, patente, onClose, onConfirm }) {
+function RetiroModal({ pos, fuego, patente, mmActual, onClose, onConfirm }) {
   // Dos pasos: 1) confirmacion simple, 2) motivo (desgaste normal pide mm,
   // otro pide texto libre obligatorio; daño no pide campo extra pero ambos
   // daño/otro generan alerta de baja prematura al confirmar, ver CambioForm).
   const [step, setStep] = useState("confirm");
   const [sel, setSel] = useState("desgaste_normal");
-  const [mm, setMm] = useState("");
+  // Requerimiento 1: precargado con el mm real conocido de esta posicion (no
+  // en blanco) para que la validacion de "<=3mm para retirar por desgaste"
+  // salte de entrada en vez de depender de que el mecanico lo tipee bien.
+  // Sigue siendo editable por si el mecanico mide de nuevo al momento del retiro.
+  const [mm, setMm] = useState(mmActual != null ? String(mmActual) : "");
   const [justificacion, setJustificacion] = useState("");
+  const [errorMM, setErrorMM] = useState("");
   const puedeConfirmar = sel === "desgaste_normal" ? mm.trim() !== "" : sel === "otro" ? justificacion.trim() !== "" : true;
+
+  // Requerimiento 1: un retiro por desgaste solo se permite con <=3mm — con
+  // mas profundidad el neumatico todavia tiene vida util.
+  function confirmar() {
+    if (sel === "desgaste_normal") {
+      const v = parseFloat(mm);
+      if (!isNaN(v) && v > 3) {
+        setErrorMM(`Acción no permitida: el neumático posee ${v}mm de profundidad remanente (mayor a 3mm). Aún conserva vida útil y no se puede retirar por desgaste.`);
+        return;
+      }
+    }
+    setErrorMM("");
+    onConfirm({ sel, mm, justificacion });
+  }
 
   if (step === "confirm") {
     return (
@@ -1125,7 +1144,7 @@ function RetiroModal({ pos, fuego, patente, onClose, onConfirm }) {
       </div>
       {sel === "desgaste_normal" && (
         <Field label="MM al momento del retiro" required>
-          <TextInput type="number" inputMode="decimal" value={mm} onChange={e => setMm(e.target.value)} placeholder="Ej: 3" />
+          <TextInput type="number" inputMode="decimal" value={mm} onChange={e => { setMm(e.target.value); setErrorMM(""); }} placeholder="Ej: 3" />
         </Field>
       )}
       {sel === "otro" && (
@@ -1133,7 +1152,8 @@ function RetiroModal({ pos, fuego, patente, onClose, onConfirm }) {
           <TextArea value={justificacion} onChange={e => setJustificacion(e.target.value)} placeholder="Describí el motivo del retiro" />
         </Field>
       )}
-      <Button variant="danger" className="w-full mt-5" disabled={!puedeConfirmar} onClick={() => onConfirm({ sel, mm, justificacion })}>Confirmar retiro</Button>
+      {errorMM && <p className="text-[12.5px] font-bold text-[#B91C1C] bg-[#FEE2E2] rounded-xl px-3 py-2.5 mb-1">{errorMM}</p>}
+      <Button variant="danger" className="w-full mt-5" disabled={!puedeConfirmar} onClick={confirmar}>Confirmar retiro</Button>
     </Modal>
   );
 }
@@ -1219,6 +1239,19 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
   function logMovimiento(texto, detalle) {
     setMovimientos(m => [...m, { id: uuid(), creado_en: new Date().toISOString(), texto, detalle: detalle || null }]);
   }
+  // Requerimiento 2: cantidad en vivo de cada bodega en los botones de
+  // entrada (ej. "Nuevo (10)") — se recarga cada vez que un montaje exitoso
+  // descuenta stock, para no quedar desincronizado del numero real.
+  const [stockBodega, setStockBodega] = useState({ nuevo: null, transito: null, recauchado: null });
+  function refrescarStockBodega() {
+    Promise.all(["nuevo", "transito", "recauchado"].map(b => fetchNeumaticosBodega(clienteId, b).then(l => l.length).catch(() => null)))
+      .then(([nuevo, transito, recauchado]) => setStockBodega({ nuevo, transito, recauchado }));
+  }
+  useEffect(() => {
+    refrescarStockBodega();
+    window.addEventListener("mosa-sync-done", refrescarStockBodega);
+    return () => window.removeEventListener("mosa-sync-done", refrescarStockBodega);
+  }, []);
   useEffect(() => {
     if (!sesionActiva) return;
     let cancel = false;
@@ -1425,6 +1458,11 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
       });
       syncQueue();
     }
+    // Requerimiento 2: descuento optimista en el boton de la bodega usada —
+    // el numero real se re-confirma con refrescarStockBodega() apenas
+    // sincroniza (por si el montaje vino de fuera de stock y no correspondia
+    // descontar nada, o de una fila que ya no contaba en el listado).
+    if (data.deBodega) setStockBodega(s => ({ ...s, [tipo]: s[tipo] != null ? Math.max(0, s[tipo] - 1) : s[tipo] }));
     pushToast("✓ Montaje registrado");
     logMovimiento(`Entrada pos ${pos} → ${tipo === "nuevo" ? "Nuevo" : tipo === "transito" ? "Tránsito" : "Recauchado"}`, `N° fuego: ${data.numero_fuego}`);
     setMontaje(null);
@@ -1682,11 +1720,11 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
           <p className="text-[11.5px] font-bold text-muted tracking-wide uppercase mb-1.5">Entrada · arrastrá al mapa</p>
           <div className="grid grid-cols-3 gap-2">
             <button onPointerDown={(e) => onPointerDownEntrada("nuevo", e)} onPointerMove={onDragMove} onPointerUp={onDragEnd} onPointerCancel={onDragEnd}
-              style={{ touchAction: "none" }} className="h-12 rounded-2xl text-[13.5px] font-bold bg-ink text-white">Nuevo</button>
+              style={{ touchAction: "none" }} className="h-12 rounded-2xl text-[13.5px] font-bold bg-ink text-white">Nuevo{stockBodega.nuevo != null ? ` (${stockBodega.nuevo})` : ""}</button>
             <button onPointerDown={(e) => onPointerDownEntrada("transito", e)} onPointerMove={onDragMove} onPointerUp={onDragEnd} onPointerCancel={onDragEnd}
-              style={{ touchAction: "none" }} className="h-12 rounded-2xl text-[13.5px] font-bold bg-[#F3F4F6]">Tránsito</button>
+              style={{ touchAction: "none" }} className="h-12 rounded-2xl text-[13.5px] font-bold bg-[#F3F4F6]">Tránsito{stockBodega.transito != null ? ` (${stockBodega.transito})` : ""}</button>
             <button onPointerDown={(e) => onPointerDownEntrada("recauchado", e)} onPointerMove={onDragMove} onPointerUp={onDragEnd} onPointerCancel={onDragEnd}
-              style={{ touchAction: "none" }} className="h-12 rounded-2xl text-[13.5px] font-bold bg-[#F3F4F6]">Recauchado</button>
+              style={{ touchAction: "none" }} className="h-12 rounded-2xl text-[13.5px] font-bold bg-[#F3F4F6]">Recauchado{stockBodega.recauchado != null ? ` (${stockBodega.recauchado})` : ""}</button>
           </div>
         </div>
         <div>
@@ -1758,6 +1796,7 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
 
       {retiroSel && posData[retiroSel.pos] && (
         <RetiroModal pos={retiroSel.pos} fuego={posData[retiroSel.pos].numero_fuego} patente={equipo.patente}
+          mmActual={posData[retiroSel.pos].minMM}
           onClose={() => setRetiroSel(null)}
           onConfirm={(payload) => confirmarRetiro(retiroSel.pos, payload)} />
       )}
@@ -1880,7 +1919,11 @@ function TipoNeumaticoField({ equipo, axleCfg, pos, tipo, onChange, onIncorrecto
   );
 }
 
-function SinStockRecauchadoModal({ equipo, clienteId, user, onClose }) {
+const BODEGA_LABEL = { nuevo: "Nuevo", transito: "Tránsito", recauchado: "Recauchado" };
+// Requerimiento 4: bodega sin stock — bloquea el montaje directo y ofrece
+// avisar al supervisor (alerta 'stock_minimo') o seguir igual con un
+// formulario manual (deja constancia via alerta 'neumatico_no_registrado').
+function SinStockModal({ tipo, equipo, clienteId, user, onClose, onMontarFueraDeStock }) {
   const [avisado, setAvisado] = useState(false);
   async function avisar() {
     const cliente = await db.fetchCliente(clienteId).catch(() => null);
@@ -1888,8 +1931,8 @@ function SinStockRecauchadoModal({ equipo, clienteId, user, onClose }) {
       id: uuid(), tipo: "alerta", clienteId, ts: Date.now(), data: {
         id: uuid(), cliente_id: clienteId, equipo_id: equipo.id_equipo, mecanico_id: user.id,
         tipo: "stock_minimo", severidad: "amarillo",
-        titulo: `Sin stock de recauchados — ${cliente ? cliente.nombre : clienteId}`,
-        descripcion: `El mecánico ${user.nombre} intentó montar un recauchado pero no hay stock`,
+        titulo: `Sin stock de ${BODEGA_LABEL[tipo].toLowerCase()} — ${cliente ? cliente.nombre : clienteId}`,
+        descripcion: `El mecánico ${user.nombre} intentó montar un neumático de bodega "${BODEGA_LABEL[tipo]}" pero no hay stock.`,
         leida_mecanico: true, leida_admin: false, leida_superadmin: false
       }
     });
@@ -1897,18 +1940,18 @@ function SinStockRecauchadoModal({ equipo, clienteId, user, onClose }) {
     setAvisado(true);
   }
   return (
-    <Modal title="Sin stock" onClose={onClose}>
-      <p className="text-[14px] text-[#374151] mb-5">No hay neumáticos recauchados en stock.</p>
+    <Modal title="Bodega sin stock" onClose={onClose}>
+      <p className="text-[14px] text-[#374151] mb-5">No hay neumáticos registrados en la bodega "{BODEGA_LABEL[tipo]}".</p>
       {avisado ? (
         <p className="text-[13px] font-bold text-[#15803D] mb-3">✓ Se avisó al administrador</p>
       ) : (
-        <Button className="w-full mb-3" onClick={avisar}>📢 Avisar al administrador</Button>
+        <Button className="w-full mb-3" onClick={avisar}>📢 Notificar falta de stock al supervisor</Button>
       )}
-      <Button variant="subtle" className="w-full" onClick={onClose}>Cerrar</Button>
+      <Button variant="subtle" className="w-full mb-3" onClick={onMontarFueraDeStock}>Montar neumático fuera de stock</Button>
+      <Button variant="ghost" className="w-full" onClick={onClose}>Cerrar</Button>
     </Modal>
   );
 }
-
 function MontajeModal({ tipo, pos, equipo, clienteId, cfg, axleCfg, user, onClose, onConfirm }) {
   const [fuego, setFuego] = useState("");
   const [tipoNeumatico, setTipoNeumatico] = useState("");
@@ -1927,60 +1970,44 @@ function MontajeModal({ tipo, pos, equipo, clienteId, cfg, axleCfg, user, onClos
   const [subiendoFoto, setSubiendoFoto] = useState(false);
   const [fotoError, setFotoError] = useState("");
   const [search, setSearch] = useState("");
-  // Fix 2: para recauchado, primero se pregunta si tiene N de fuego marcado
-  // (null = sin contestar) — el buscador solo aparece si contesta que si.
-  // Para transito, el buscador es siempre el primer paso (sin pregunta previa).
-  const [fuegoMarcado, setFuegoMarcado] = useState(tipo === "recauchado" ? null : true);
-  const [buscando, setBuscando] = useState(tipo === "transito" || tipo === "nuevo");
-  const [opciones, setOpciones] = useState(null); // null = cargando
-  // Fix 2/4: registro del sistema del neumatico elegido en el buscador —
-  // se guarda aparte (no se precarga en los campos) solo para validar
-  // marca/modelo contra lo que tipee el mecanico al confirmar.
+  // Requerimiento 3: "¿Tiene N° de fuego?" es ahora la primera pregunta para
+  // los 3 tipos (nuevo/transito/recauchado), no solo recauchado como antes.
+  // null = sin contestar, true = si (buscador sobre la bodega), false = no
+  // (se asigna automaticamente el primer neumatico disponible de esa bodega,
+  // sin pedirle al mecanico que elija uno especifico).
+  const [fuegoMarcado, setFuegoMarcado] = useState(null);
+  const [opciones, setOpciones] = useState(null); // null = cargando la bodega
+  // Registro del sistema del neumatico elegido/asignado — se guarda aparte
+  // (no se precarga en los campos) para poder validar marca/modelo contra lo
+  // que tipee el mecanico, y para saber si hay que descontar stock de una
+  // fila real o si es un montaje manual (Caso B / fuera de stock).
   const [seleccionado, setSeleccionado] = useState(null);
   const [errorValidacion, setErrorValidacion] = useState("");
+  // Requerimiento 4: se llega aca al confirmar "Montar neumatico fuera de
+  // stock" en SinStockModal, o al usar el escape "cargar manualmente" del
+  // buscador con stock (Caso B) — en ambos casos se genera un fuego sugerido
+  // y se arma la alerta correspondiente al confirmar.
+  const [manual, setManual] = useState(false);
 
-  // Bug 2 (HC): montar "nuevo" tenia que ofrecer elegir de la bodega 'nuevo'
-  // igual que transito/recauchado (asi el stock se descuenta de verdad, ver
-  // actualizarNeumaticoEntra) en vez de generar siempre un fuego nuevo de la
-  // nada. Se filtra por el tipo esperado de la posicion (direccional/
-  // traccional/eje_libre) para no ofrecer, p.ej., un direccional en un eje
-  // traccional. Si no hay stock de ese tipo, sinStockNuevo cae al flujo viejo
-  // (fuego sugerido + carga manual).
-  const [sinStockNuevo, setSinStockNuevo] = useState(false);
   useEffect(() => {
-    if (tipo !== "nuevo") return;
-    const tipoEsperado = tipoNeumaticoEsperado(equipo, axleCfg, pos);
-    fetchNeumaticosBodega(clienteId, "nuevo")
-      .then(list => setOpciones(list.filter(o => !tipoEsperado || !o.tipo || o.tipo === tipoEsperado)))
+    // Requerimiento 3 nota: para "nuevo" se filtra por el tipo esperado de la
+    // posicion (direccional/traccional/eje_libre) para no ofrecer, p.ej., un
+    // direccional en un eje traccional — no aplica a transito/recauchado.
+    const tipoEsperado = tipo === "nuevo" ? tipoNeumaticoEsperado(equipo, axleCfg, pos) : null;
+    fetchNeumaticosBodega(clienteId, tipo)
+      .then(list => setOpciones(tipoEsperado ? list.filter(o => !o.tipo || o.tipo === tipoEsperado) : list))
       .catch(() => setOpciones([]));
   }, []);
-  // Si no hay stock de "nuevo" para el tipo esperado, cae sola al flujo viejo
-  // (fuego sugerido + carga manual) en vez de dejar al mecanico mirando un
-  // buscador vacio.
+  // "No tiene fuego" + hay stock: se asigna solo el primero disponible (el
+  // mecanico no tiene que buscarlo/elegirlo, solo confirmar/ajustar datos).
   useEffect(() => {
-    if (tipo === "nuevo" && !sinStockNuevo && opciones !== null && opciones.length === 0) setSinStockNuevo(true);
-  }, [opciones]);
-  useEffect(() => {
-    if (tipo !== "nuevo" || !sinStockNuevo) return;
-    generarNumeroFuegoSugerido(clienteId, cfg, equipo.numero_interno, pos, todayISO())
-      .then(sug => setFuego(f => (f ? f : sug)))
-      .catch(() => {});
-  }, [sinStockNuevo]);
-  function elegirNuevoSinStock() { setSinStockNuevo(true); setBuscando(false); setSeleccionado(null); }
+    if (fuegoMarcado === false && !manual && opciones && opciones.length && !seleccionado) elegirDeLista(opciones[0]);
+  }, [fuegoMarcado, opciones]);
 
-  useEffect(() => {
-    if (tipo === "transito") fetchNeumaticosBodega(clienteId, "transito").then(setOpciones).catch(() => setOpciones([]));
-  }, []);
-  // Fix 2: el buscador de recauchados recien se carga despues de que el
-  // mecanico contesta "Si tiene N de fuego" — y solo trae los que SI tienen
-  // numero_fuego registrado (los sin fuego se cargan por el otro camino).
-  useEffect(() => {
-    if (tipo === "recauchado" && fuegoMarcado === true && opciones === null) {
-      fetchNeumaticosBodega(clienteId, "recauchado")
-        .then(list => setOpciones((list || []).filter(o => o.numero_fuego)))
-        .catch(() => setOpciones([]));
-    }
-  }, [fuegoMarcado]);
+  async function generarFuegoManual() {
+    try { const sug = await generarNumeroFuegoSugerido(clienteId, cfg, equipo.numero_interno, pos, todayISO()); setFuego(f => (f ? f : sug)); } catch (e) {}
+  }
+  function irAManual() { setManual(true); setSeleccionado(null); generarFuegoManual(); }
 
   const filtradas = (opciones || []).filter(o => {
     if (!search) return true;
@@ -1991,28 +2018,36 @@ function MontajeModal({ tipo, pos, equipo, clienteId, cfg, axleCfg, user, onClos
   function elegirDeLista(o) {
     setSeleccionado(o);
     setErrorValidacion("");
-    setMarca(""); setModelo(""); // Fix 2/4: vacios, el mecanico los tipea de nuevo mirando el neumatico fisico
-    setBuscando(false);
-    if (tipo === "transito") setFuego(o.numero_fuego);
-    else setFuego(o.numero_fuego); // recauchado con fuego marcado: ya viene de la lista, no se pide de nuevo
-  }
-  async function elegirSinFuego() {
-    setFuegoMarcado(false);
-    setBuscando(false);
-    setSeleccionado(null);
-    try { const sug = await generarNumeroFuegoSugerido(clienteId, cfg, equipo.numero_interno, pos, todayISO()); setFuego(sug); } catch (e) {}
+    setManual(false);
+    setMarca(""); setModelo(""); // el mecanico los tipea de nuevo mirando el neumatico fisico
+    setFuego(o.numero_fuego);
   }
   function confirmarMontaje() {
-    // Fix 2/4: si vino de un neumatico elegido en el buscador, validar
-    // marca/modelo contra el registro del sistema — bloqueante, sin revelar
-    // el valor correcto (solo dice que difiere).
+    // Si vino de un neumatico elegido en el buscador, validar marca/modelo
+    // contra el registro del sistema — bloqueante, sin revelar el valor
+    // correcto (solo dice que difiere).
     if (seleccionado) {
       const sisMarca = normStr(seleccionado.marca), sisModelo = normStr(seleccionado.modelo);
       const inMarca = normStr(marca), inModelo = normStr(modelo);
       const difiere = (sisMarca && sisMarca !== inMarca) || (sisModelo && sisModelo !== inModelo);
       if (difiere) { setErrorValidacion("La marca/modelo que ingresaste difiere del registro del sistema. Revisá los datos e intentá de nuevo."); return; }
     }
-    onConfirm({ numero_fuego: fuego, marca, modelo, marcaModeloNoRegistrado, medida, psi, mm, fotoUrl });
+    // Requerimiento 3 (Caso B) / Requerimiento 4 (fuera de stock): montaje
+    // manual, sin vincular a una fila existente de la bodega — avisa al
+    // Admin que ese fuego no estaba registrado ahi.
+    if (manual) {
+      pushQueue({
+        id: uuid(), tipo: "alerta", clienteId, ts: Date.now(), data: {
+          id: uuid(), cliente_id: clienteId, equipo_id: equipo.id_equipo, mecanico_id: user.id,
+          tipo: "neumatico_no_registrado", severidad: "amarillo",
+          titulo: `Neumático no registrado — ${equipo.patente} pos ${pos}`,
+          descripcion: `Se montó un neumático con marca de fuego ${fuego} que no se encontraba registrado en la bodega "${BODEGA_LABEL[tipo]}".`,
+          posicion: pos, leida_mecanico: true, leida_admin: false, leida_superadmin: false
+        }
+      });
+      syncQueue();
+    }
+    onConfirm({ numero_fuego: fuego, marca, modelo, marcaModeloNoRegistrado, medida, psi, mm, fotoUrl, deBodega: !manual });
   }
 
   async function onFotoChange(e) {
@@ -2042,28 +2077,29 @@ function MontajeModal({ tipo, pos, equipo, clienteId, cfg, axleCfg, user, onClos
     syncQueue();
   }
 
-  // Fix 2: recauchado — preguntar PRIMERO si tiene N de fuego marcado, antes
-  // de mostrar cualquier buscador (antes era al reves).
-  if (tipo === "recauchado" && fuegoMarcado === null) {
+  // Requerimiento 3: "¿Tiene N° de fuego?" antes que cualquier otra cosa,
+  // para los 3 tipos (antes solo se preguntaba en recauchado).
+  if (fuegoMarcado === null) {
     return (
       <Modal title="N° de fuego" onClose={onClose}>
         <p className="text-[14px] text-[#374151] mb-5">¿Este neumático tiene N° de fuego marcado?</p>
         <div className="space-y-3">
-          <Button className="w-full" onClick={() => { setFuegoMarcado(true); setBuscando(true); }}>Sí, tiene N° de fuego</Button>
-          <Button variant="subtle" className="w-full" onClick={elegirSinFuego}>No tiene N° de fuego</Button>
+          <Button className="w-full" onClick={() => setFuegoMarcado(true)}>Sí, tiene N° de fuego</Button>
+          <Button variant="subtle" className="w-full" onClick={() => setFuegoMarcado(false)}>No tiene N° de fuego</Button>
         </div>
       </Modal>
     );
   }
 
-  // HC-7: bodega recauchado sin stock -> bloquea antes de mostrar el buscador
-  // (solo aplica al camino "si tiene fuego", que es el que depende del stock).
-  if (tipo === "recauchado" && fuegoMarcado === true && opciones !== null && opciones.length === 0) {
-    return <SinStockRecauchadoModal equipo={equipo} clienteId={clienteId} user={user} onClose={onClose} />;
+  // Requerimiento 4: bodega sin stock -> bloquea antes de mostrar el
+  // buscador/auto-asignacion, salvo que ya haya elegido seguir igual
+  // ("Montar neumático fuera de stock", manual=true).
+  if (!manual && opciones !== null && opciones.length === 0) {
+    return <SinStockModal tipo={tipo} equipo={equipo} clienteId={clienteId} user={user} onClose={onClose} onMontarFueraDeStock={irAManual} />;
   }
-  if (buscando && (tipo === "transito" || (tipo === "recauchado" && fuegoMarcado === true) || (tipo === "nuevo" && !sinStockNuevo))) {
-    const tituloBuscador = tipo === "transito" ? "Montar desde tránsito" : tipo === "nuevo" ? "Montar nuevo — bodega" : "Montar recauchado";
-    if (opciones === null || opciones.length === 0) return <Modal title={tituloBuscador} onClose={onClose}><div className="flex justify-center py-10"><span className="spinner" /></div></Modal>;
+  if (fuegoMarcado === true && !manual && !seleccionado) {
+    const tituloBuscador = `Montar ${BODEGA_LABEL[tipo].toLowerCase()} — bodega`;
+    if (opciones === null) return <Modal title={tituloBuscador} onClose={onClose}><div className="flex justify-center py-10"><span className="spinner" /></div></Modal>;
     return (
       <Modal title={tituloBuscador} onClose={onClose}>
         <TextInput placeholder="Buscar por N° fuego, marca o modelo" value={search} onChange={e => setSearch(e.target.value)} className="mb-3" />
@@ -2077,11 +2113,14 @@ function MontajeModal({ tipo, pos, equipo, clienteId, cfg, axleCfg, user, onClos
           ))}
           {filtradas.length === 0 && <p className="text-center text-muted text-sm py-6">No hay neumáticos que coincidan.</p>}
         </div>
-        {tipo === "nuevo" && (
-          <button onClick={elegirNuevoSinStock} className="w-full text-center text-[13px] font-bold text-muted mt-4 py-2">No está en la lista — cargar manualmente</button>
-        )}
+        {/* Requerimiento 3, Caso B: el fuego que tiene el mecanico no esta en
+            la bodega — sigue manual y se avisa al Admin al confirmar. */}
+        <button onClick={irAManual} className="w-full text-center text-[13px] font-bold text-muted mt-4 py-2">No está en la lista — cargar manualmente</button>
       </Modal>
     );
+  }
+  if ((fuegoMarcado === false || manual) && !seleccionado && !fuego && opciones === null) {
+    return <Modal title="Montar neumático" onClose={onClose}><div className="flex justify-center py-10"><span className="spinner" /></div></Modal>;
   }
 
   const titulo = tipo === "nuevo" ? "Montar neumático nuevo" : tipo === "transito" ? "Confirmar montaje" : "Montar recauchado";
@@ -2093,11 +2132,16 @@ function MontajeModal({ tipo, pos, equipo, clienteId, cfg, axleCfg, user, onClos
   return (
     <Modal title={titulo} onClose={onClose}>
       <div className="space-y-4">
+        {manual && <p className="text-[12.5px] font-semibold text-[#92400E] bg-[#FEF3C7] rounded-xl px-3 py-2.5">⚠ Montaje manual — se va a avisar al administrador que este fuego no estaba registrado en bodega.</p>}
         {tipo === "nuevo" && (
           <TipoNeumaticoField equipo={equipo} axleCfg={axleCfg} pos={pos} tipo={tipoNeumatico} onChange={setTipoNeumatico} onIncorrecto={elegirTipoIncorrecto} />
         )}
-        <Field label="N° de fuego" required hint={tipo === "nuevo" ? "Sugerido automáticamente, podés modificarlo (solo números)" : tipo === "recauchado" && fuegoMarcado === false ? "Sugerido automáticamente, podés modificarlo" : null}>
-          <TextInput inputMode="numeric" value={fuego} onChange={e => setFuego(e.target.value.replace(/[^0-9]/g, ""))} className="font-extrabold" disabled={tipo === "transito" || (tipo === "recauchado" && !!seleccionado)} />
+        {/* El fuego solo se bloquea cuando el mecanico lo eligio a mano de la
+            lista (confirmando que coincide con el neumatico fisico). Si vino
+            de "No tiene N° de fuego" (auto-asignado) o es manual, se deja
+            editable — el mecanico puede corregirlo. */}
+        <Field label="N° de fuego" required hint={manual ? "Sugerido automáticamente, podés modificarlo (solo números)" : fuegoMarcado === false ? "Asignado automáticamente, podés modificarlo" : null}>
+          <TextInput inputMode="numeric" value={fuego} onChange={e => setFuego(e.target.value.replace(/[^0-9]/g, ""))} className="font-extrabold" disabled={fuegoMarcado === true && !manual && !!seleccionado} />
         </Field>
         <div className="grid grid-cols-2 gap-3">
           <MarcaModeloAuditoriaField clienteId={clienteId} marca={marca} modelo={modelo}
