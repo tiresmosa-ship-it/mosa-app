@@ -389,6 +389,7 @@ function AlertasPanelLateral({ onClose, empresaCtl, adminUser, setView }) {
   async function marcarEnProc(a) { await marcarAlertaEnProceso(a.id, adminUser.id); cargar(); }
   async function marcarResuelta(a) { await marcarAlertaResuelta(a.id, adminUser.id, null); cargar(); }
   async function ignorar(a) { await adminDb.marcarAlertaLeida(a.id); await marcarAlertaResuelta(a.id, adminUser.id, null); cargar(); }
+  async function aprobarHerramienta(a) { try { await aprobarHerramientaNueva(a, adminUser.id); cargar(); } catch (e) { console.error("No se pudo sumar la herramienta al catálogo", e); } }
 
   const tabs = [["rojo", "🔴 Urgentes"], ["amarillo", "🟡 Revisión"], ["info", "ℹ️ Info"]];
   const lista = porNivel[tab];
@@ -412,7 +413,7 @@ function AlertasPanelLateral({ onClose, empresaCtl, adminUser, setView }) {
           <div className="space-y-2">
             {lista.map(a => (
               <AlertaCard key={a.id} a={a} onVer={navegar} onMarcarLeida={marcarLeida} onMarcarEnProceso={marcarEnProc}
-                onMarcarResuelta={marcarResuelta} onIgnorar={ignorar} onAbrirMecanico={navegar} onNavegar={navegar} />
+                onMarcarResuelta={marcarResuelta} onIgnorar={ignorar} onAbrirMecanico={navegar} onNavegar={navegar} onAprobarHerramienta={aprobarHerramienta} />
             ))}
             {!lista.length && <p className="text-center text-muted text-[13px] py-10">Sin alertas en este nivel.</p>}
           </div>
@@ -3926,7 +3927,8 @@ const ALERTA_TIPO_GRUPOS = [
   { id: "discrepancias", label: "Discrepancias", tipos: ["discrepancia_inventario", "neumatico_no_registrado"] },
   { id: "instructivos", label: "Instructivos", tipos: ["instructivo"] },
   { id: "cierres", label: "Cierres", tipos: ["cierre_dia"] },
-  { id: "desbloqueos", label: "Desbloqueos", tipos: ["solicitud_desbloqueo", "desbloqueo_aprobado"] }
+  { id: "desbloqueos", label: "Desbloqueos", tipos: ["solicitud_desbloqueo", "desbloqueo_aprobado"] },
+  { id: "herramientas", label: "Herramientas", tipos: ["herramienta_nueva"] }
 ];
 const SEVERIDAD_RANK = { rojo: 0, amarillo: 1, info: 2 };
 function ordenarAlertas(lista) {
@@ -4113,13 +4115,14 @@ function BannerVolverAlertas({ setView }) {
   );
 }
 
-function AlertaCard({ a, empresaLabel, onVer, onMarcarLeida, onMarcarEnProceso, onMarcarResuelta, onIgnorar, onAbrirMecanico, onNavegar }) {
+function AlertaCard({ a, empresaLabel, onVer, onMarcarLeida, onMarcarEnProceso, onMarcarResuelta, onIgnorar, onAbrirMecanico, onNavegar, onAprobarHerramienta }) {
   const equipoLabel = a.equipo ? `${a.equipo.patente}${a.equipo.numero_interno ? ` (${a.equipo.numero_interno})` : ""}` : null;
   const mecanicoLabel = a.mecanico ? `${a.mecanico.nombre} ${a.mecanico.apellido || ""}`.trim() : null;
   const esDesbloqueo = a.tipo === "solicitud_desbloqueo";
   const esDiscNeu = a.tipo === "neumatico_no_registrado";
   const esDiscInv = a.tipo === "discrepancia_inventario";
   const esCierre = a.tipo === "cierre_dia";
+  const esHerramientaNueva = a.tipo === "herramienta_nueva";
   const nivel = nivelDeAlerta(a.tipo) || (a.severidad === "rojo" ? "rojo" : a.severidad === "amarillo" ? "amarillo" : "info");
   const esInfo = nivel === "info";
   const tieneResolucionDedicada = esDesbloqueo || esDiscNeu || esDiscInv;
@@ -4161,6 +4164,9 @@ function AlertaCard({ a, empresaLabel, onVer, onMarcarLeida, onMarcarEnProceso, 
           )}
           {(esDiscNeu || esDiscInv || esCierre) && (
             <button onClick={() => onVer(a)} className="text-[12px] font-bold text-ink px-3 py-1.5 rounded-full bg-[#F3F4F6]">{esCierre ? "Ver reporte" : "Ver detalle"}</button>
+          )}
+          {esHerramientaNueva && estado !== "resuelta" && (
+            <button onClick={() => onAprobarHerramienta(a)} className="text-[12px] font-bold text-white px-3 py-1.5 rounded-full bg-ink">➕ Sumar a Bodega / Catálogo</button>
           )}
           {!esInfo && !esDesbloqueo && estado === "nueva" && <button onClick={() => onMarcarLeida(a)} className="text-[12px] font-bold text-ink px-3 py-1.5 rounded-full bg-[#F3F4F6]">👁 Marcar vista</button>}
           {!esInfo && !esDesbloqueo && (estado === "nueva" || estado === "vista") && <button onClick={() => onMarcarEnProceso(a)} className="text-[12px] font-bold text-ink px-3 py-1.5 rounded-full bg-[#F3F4F6]">⚙ En proceso</button>}
@@ -4303,6 +4309,16 @@ function AlertasAdminView({ empresaCtl, adminUser, setView }) {
     setMecanicoAccion(null);
     cargar();
   }
+  // Requerimiento 3: aprobar una herramienta declarada en terreno -- la suma
+  // al catalogo de la empresa (herramientas_inventario) y resuelve la alerta.
+  async function aprobarHerramienta(a) {
+    try {
+      await aprobarHerramientaNueva(a, adminUser.id);
+      setAlertas(as => as.map(x => x.id === a.id ? { ...x, leida_admin: true, estado: "resuelta" } : x));
+      const nombre = (a.datos_extra && a.datos_extra.nombre_herramienta) || a.titulo;
+      pushToast(`✓ Herramienta "${nombre}" agregada al catálogo oficial. Aparecerá en los próximos Check Diarios.`);
+    } catch (e) { console.error("No se pudo sumar la herramienta al catálogo", e); pushToast("✕ No se pudo sumar la herramienta", "red"); }
+  }
 
   return (
     <div>
@@ -4340,7 +4356,7 @@ function AlertasAdminView({ empresaCtl, adminUser, setView }) {
           {filtradas.map(a => (
             <AlertaCard key={a.id} a={a} empresaLabel={empresaLabel(a)} onVer={verDetalleAlerta}
               onMarcarLeida={marcarLeida} onMarcarEnProceso={marcarEnProceso} onIgnorar={ignorarDesbloqueo} onAbrirMecanico={abrirMecanico}
-              onMarcarResuelta={marcarResueltaManual} onNavegar={(al) => irAResolucion(al, setView)} />
+              onMarcarResuelta={marcarResueltaManual} onNavegar={(al) => irAResolucion(al, setView)} onAprobarHerramienta={aprobarHerramienta} />
           ))}
           {!filtradas.length && <p className="text-center text-muted py-10 text-sm">Sin alertas que coincidan.</p>}
         </div>

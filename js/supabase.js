@@ -1084,6 +1084,16 @@ async function compararInventarioNeumaticos(clienteId, checkTotales) {
   return diffs;
 }
 
+// Requerimiento 2: catalogo de herramientas de la empresa para el Paso 3 del
+// Check Diario -- reusa herramientas_inventario (mismo catalogo que
+// administra Maestros > Herramientas en el Admin), en vez de la lista
+// hardcodeada TOOLS_CHECKLIST. Devuelve solo los nombres, en el mismo orden
+// que antes (alfabetico) para que el checklist se vea estable.
+async function fetchHerramientasCatalogo(clienteId) {
+  const { data, error } = await sb.from("herramientas_inventario").select("nombre").eq("cliente_id", clienteId).eq("activo", true).order("nombre");
+  if (error) throw error;
+  return (data || []).map(h => h.nombre);
+}
 // Compara el conteo fisico de herramientas contra herramientas_inventario. Si
 // el cliente no tiene ninguna herramienta cargada en esa tabla todavia, no hay
 // nada contra que comparar: se devuelve [] sin generar discrepancias ni error.
@@ -1899,7 +1909,7 @@ const NIVELES_ALERTA = {
   },
   info: {
     nivel: 3, label: "Informativas",
-    tipos: ["cierre_dia", "rotacion_recomendada", "desbloqueo_aprobado", "discrepancia_resuelta"]
+    tipos: ["cierre_dia", "rotacion_recomendada", "desbloqueo_aprobado", "discrepancia_resuelta", "herramienta_nueva"]
   }
 };
 // escalada_sin_resolver/recordatorio_admin no entran en ningun nivel fijo de
@@ -1932,6 +1942,19 @@ async function marcarAlertaResuelta(id, adminUserId, justificacion) {
   if (justificacion) update.justificacion_admin = justificacion;
   await sb.from("alertas").update(update).eq("id", id);
   notificarAlertasCambiaron();
+}
+// Requerimiento 3: aprobar una herramienta declarada en terreno (alerta
+// 'herramienta_nueva') -- la suma al catalogo de la empresa (herramientas_inventario,
+// mismo catalogo que gestiona Maestros > Herramientas y que lee el Check
+// Diario) y resuelve la alerta en un solo paso.
+async function aprobarHerramientaNueva(alerta, adminUserId) {
+  const extra = alerta.datos_extra || {};
+  const nombre = extra.nombre_herramienta || alerta.titulo;
+  const cantidad = extra.cantidad != null ? extra.cantidad : 0;
+  const clienteId = extra.empresa_id || alerta.cliente_id;
+  const { error } = await sb.from("herramientas_inventario").insert({ id: uuid(), cliente_id: clienteId, nombre, cantidad, activo: true, fecha_ingreso: todayISO() });
+  if (error) throw error;
+  await marcarAlertaResuelta(alerta.id, adminUserId, null);
 }
 
 /* =====================================================================

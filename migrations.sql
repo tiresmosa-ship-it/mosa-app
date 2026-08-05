@@ -658,3 +658,18 @@ ALTER TABLE neumaticos ADD COLUMN IF NOT EXISTS checkpoint BOOLEAN NOT NULL DEFA
 -- (creadas a mano en algun momento) pero el codigo nunca las escribia -- ver
 -- CheckDiario.continuar() en mecanico.html.
 ALTER TABLE check_diario ADD COLUMN IF NOT EXISTS herramientas_extra JSONB NOT NULL DEFAULT '[]'::jsonb;
+
+-- 38) alertas.tipo tenia de nuevo un CHECK constraint con una lista fija
+-- (restaurado a mano en algun momento despues del bloque 15) que rechaza el
+-- nuevo tipo 'herramienta_nueva' (alerta de herramienta declarada en terreno
+-- por el mecanico que no esta en el catalogo, ver Check Diario Paso 3 en
+-- mecanico.html). Mismo criterio que en el bloque 15: se saca la restriccion
+-- en vez de tener que ampliarla cada vez que se agrega un tipo de alerta.
+ALTER TABLE alertas DROP CONSTRAINT IF EXISTS alertas_tipo_check;
+
+-- 39) alertas.datos_extra (JSONB) -- payload estructurado para alertas que
+-- necesitan mas datos de los que caben en titulo/descripcion (por ahora,
+-- 'herramienta_nueva': nombre_herramienta/cantidad/empresa_id, para que el
+-- boton "Sumar a Catalogo" del Admin no tenga que parsear el texto libre de
+-- la descripcion).
+ALTER TABLE alertas ADD COLUMN IF NOT EXISTS datos_extra JSONB;

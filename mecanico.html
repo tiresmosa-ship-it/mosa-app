@@ -388,34 +388,50 @@ function CheckDiario({ user, clienteId, onDone }) {
   })();
 
   const [step, setStep] = useState(draftInicial ? draftInicial.step : 1);
+  // Requerimiento 2: catalogo dinamico (herramientas_inventario de la
+  // empresa) en vez de TOOLS_CHECKLIST hardcodeado. Arranca con lo que haya
+  // en el borrador o con TOOLS_CHECKLIST como fallback instantaneo (evita
+  // pantalla vacia mientras se resuelve el fetch), y se actualiza apenas
+  // llega la respuesta del servidor.
+  const [catalogo, setCatalogo] = useState(() => (draftInicial && draftInicial.catalogo) || TOOLS_CHECKLIST);
   const [stockNeu, setStockNeu] = useState(() => draftInicial ? draftInicial.stockNeu :
     Object.fromEntries(BODEGAS_NEU.map(b => [b.key, Object.fromEntries(TIPOS_NEU.map(t => [t.key, { value: 0, checked: false }]))])));
   const [stockPatio, setStockPatio] = useState(() => draftInicial ? draftInicial.stockPatio :
     Object.fromEntries(PATIO_FIELDS.map(f => [f.key, { value: 0, checked: false }])));
   const [tools, setTools] = useState(() => draftInicial ? draftInicial.tools :
-    Object.fromEntries(TOOLS_CHECKLIST.map(t => [t, { checked: false, cantidad: 0 }])));
+    Object.fromEntries(catalogo.map(t => [t, { checked: false, cantidad: 0 }])));
   const [toolsExtra, setToolsExtra] = useState(() => draftInicial ? draftInicial.toolsExtra : []);
   const [saving, setSaving] = useState(false);
   const [discrepancias, setDiscrepancias] = useState(null); // null = no evaluado, [] = sin diferencias, [...] = con diferencias
   const [observacion, setObservacion] = useState("");
   const [pushToast, toastNode] = useToasts();
 
+  useEffect(() => {
+    fetchHerramientasCatalogo(clienteId).then(list => {
+      if (!list || !list.length) return;
+      setCatalogo(list);
+      // Agrega entradas nuevas al checklist sin pisar lo que el mecanico ya
+      // marco (por si el catalogo cambio mientras tenia el check a medias).
+      setTools(s => { const next = { ...s }; list.forEach(n => { if (!next[n]) next[n] = { checked: false, cantidad: 0 }; }); return next; });
+    }).catch(e => console.error("No se pudo cargar el catálogo de herramientas", e));
+  }, [clienteId]);
+
   // Guarda el borrador en localStorage en cada cambio -- si el mecanico sale
   // sin terminar, al volver hoy lo encuentra tal cual lo dejo.
   useEffect(() => {
-    try { localStorage.setItem(CHECK_DIARIO_DRAFT_KEY(clienteId), JSON.stringify({ fecha: todayISO(), step, stockNeu, stockPatio, tools, toolsExtra })); } catch (e) {}
-  }, [step, stockNeu, stockPatio, tools, toolsExtra, clienteId]);
+    try { localStorage.setItem(CHECK_DIARIO_DRAFT_KEY(clienteId), JSON.stringify({ fecha: todayISO(), step, catalogo, stockNeu, stockPatio, tools, toolsExtra })); } catch (e) {}
+  }, [step, catalogo, stockNeu, stockPatio, tools, toolsExtra, clienteId]);
 
   const stockNeuFilled = BODEGAS_NEU.reduce((n, b) => n + TIPOS_NEU.filter(t => stockNeu[b.key][t.key].checked).length, 0);
   const stockNeuTotal = BODEGAS_NEU.length * TIPOS_NEU.length;
-  const toolsFilled = TOOLS_CHECKLIST.filter(t => tools[t].checked).length;
+  const toolsFilled = catalogo.filter(t => tools[t] && tools[t].checked).length;
   const stockPatioFilled = PATIO_FIELDS.filter(f => stockPatio[f.key].checked).length;
-  const totalItems = TOOLS_CHECKLIST.length + stockNeuTotal + PATIO_FIELDS.length;
+  const totalItems = catalogo.length + stockNeuTotal + PATIO_FIELDS.length;
   const itemsCompletos = toolsFilled + stockNeuFilled + stockPatioFilled;
   const progress = Math.round((itemsCompletos / totalItems) * 100);
   const paso1Completo = stockNeuFilled === stockNeuTotal;
   const paso2Completo = stockPatioFilled === PATIO_FIELDS.length;
-  const paso3Completo = toolsFilled === TOOLS_CHECKLIST.length;
+  const paso3Completo = toolsFilled === catalogo.length;
   const complete = paso1Completo && paso2Completo && paso3Completo;
 
   function setStockNeuVal(bKey, tKey, v) { setStockNeu(s => ({ ...s, [bKey]: { ...s[bKey], [tKey]: { value: v, checked: true } } })); }
@@ -434,7 +450,7 @@ function CheckDiario({ user, clienteId, onDone }) {
     const horaInicio = nowHM();
     const totalBodega = (bKey) => TIPOS_NEU.reduce((n, t) => n + (stockNeu[bKey][t.key].value || 0), 0);
     const totales = { nuevo: totalBodega("nuevos"), transito: totalBodega("transito"), recauchado: totalBodega("recauchados"), reparacion: totalBodega("reparar") };
-    const toolsCounted = Object.fromEntries(TOOLS_CHECKLIST.map(t => [t, tools[t].cantidad]));
+    const toolsCounted = Object.fromEntries(catalogo.map(t => [t, tools[t].cantidad]));
     const discNeu = {};
     BODEGAS_NEU.forEach(b => TIPOS_NEU.forEach(t => { discNeu[`neu_${t.col}_${b.col}`] = stockNeu[b.key][t.key].value || 0; }));
     const data = {
@@ -445,9 +461,24 @@ function CheckDiario({ user, clienteId, onDone }) {
       llantas_am_aluminio: stockPatio.llantas_am_aluminio.value, llantas_am_fierro: stockPatio.llantas_am_fierro.value,
       llantas_eu_aluminio: stockPatio.llantas_eu_aluminio.value, llantas_eu_fierro: stockPatio.llantas_eu_fierro.value,
       herramientas_extra: toolsExtra.filter(x => x.nombre.trim()).map(x => ({ nombre: x.nombre.trim(), cantidad: x.cantidad || 0 })),
-      checklist: TOOLS_CHECKLIST.map(t => ({ herramienta: t, cantidad: tools[t].cantidad }))
+      checklist: catalogo.map(t => ({ herramienta: t, cantidad: tools[t].cantidad }))
     };
     pushQueue({ id: uuid(), tipo: "novedad", clienteId, ts: Date.now(), data });
+    // Requerimiento 2.2: una herramienta que el mecanico agrego a mano y que
+    // no esta en el catalogo oficial le dispara una alerta al Admin para que
+    // la revise y la sume (o no) al catalogo — ver aprobarHerramientaNueva.
+    data.herramientas_extra.forEach(h => {
+      pushQueue({
+        id: uuid(), tipo: "alerta", clienteId, ts: Date.now(), data: {
+          id: uuid(), cliente_id: clienteId, equipo_id: null, mecanico_id: user.id,
+          tipo: "herramienta_nueva", severidad: "amarillo", estado: "nueva",
+          titulo: "Nueva herramienta declarada en terreno",
+          descripcion: `El mecánico ${user.nombre} agregó la herramienta "${h.nombre}" (Cantidad: ${h.cantidad}) en el Check Diario del ${formatDateLong()}.`,
+          datos_extra: { nombre_herramienta: h.nombre, cantidad: h.cantidad, empresa_id: clienteId },
+          leida_mecanico: true, leida_admin: false, leida_superadmin: false
+        }
+      });
+    });
     syncQueue();
     setTurno({ clienteId, fecha: todayISO(), checkDone: true });
     localStorage.setItem("check_completado_hoy", "true");
@@ -571,7 +602,7 @@ function CheckDiario({ user, clienteId, onDone }) {
           <p className="font-bold text-[15px] mb-2">Paso 3 · Checklist de herramientas</p>
           <p className="text-[12.5px] text-muted mb-3">Marcá el check para confirmar que revisaste la herramienta, aunque tengas 0.</p>
           <div className="space-y-2 mb-4">
-            {TOOLS_CHECKLIST.map(t => (
+            {catalogo.map(t => tools[t] && (
               <div key={t} className={cx("bg-white rounded-2xl border shadow-card px-4 py-3 flex items-center gap-3", tools[t].checked ? "border-bd" : "border-[#F59E0B]")}>
                 <button type="button" onClick={() => toggleTool(t)} className={cx("w-7 h-7 rounded-lg flex items-center justify-center shrink-0 border", tools[t].checked ? "bg-ink border-ink" : "bg-white border-[#D1D5DB]")}>
                   {tools[t].checked && <Icon.check width="15" height="15" className="text-white" />}
@@ -605,7 +636,7 @@ function CheckDiario({ user, clienteId, onDone }) {
           <Button className="w-full" disabled={!complete || saving} onClick={continuar}>
             {saving ? <span className="spinner" /> : "Finalizar e Iniciar Jornada"}
           </Button>
-          {!complete && <p className="text-center text-[12px] text-muted mt-2">Completá el conteo de neumáticos, llantas y confirmá las {TOOLS_CHECKLIST.length} herramientas</p>}
+          {!complete && <p className="text-center text-[12px] text-muted mt-2">Completá el conteo de neumáticos, llantas y confirmá las {catalogo.length} herramientas</p>}
         </div>
       )}
     </div>

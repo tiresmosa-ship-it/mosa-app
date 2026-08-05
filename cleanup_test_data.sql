@@ -132,3 +132,8 @@ SELECT
   (SELECT count(*) FROM alertas) AS alertas,
   (SELECT count(*) FROM intervenciones) AS intervenciones,
   (SELECT count(*) FROM movimientos_bodega) AS movimientos;
+
+-- Prueba en vivo del flujo herramienta_nueva (catalogo dinamico de
+-- herramientas + alerta + boton "Sumar a Catalogo" del Admin).
+DELETE FROM herramientas_inventario WHERE nombre = 'Llave de impacto' AND cliente_id = 'la_portada';
+DELETE FROM alertas WHERE tipo = 'herramienta_nueva' AND titulo = 'Nueva herramienta declarada en terreno';
