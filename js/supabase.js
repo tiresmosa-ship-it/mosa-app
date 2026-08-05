@@ -147,6 +147,20 @@ function ladoDePosicion(cfg, pos) {
   const mitad = Math.ceil(row.positions.length / 2);
   return idx < mitad ? "izq" : "der";
 }
+// Alargadera (extensor de valvula): solo tiene sentido en el neumatico
+// INTERNO de una rueda doble (dupla) -- el externo se regula directo, sin
+// extensor. Una fila de eje es "dupla" cuando tiene 4 posiciones (2 duplas,
+// una por lado); los 2 internos son los del medio de la fila (indices 1 y 2).
+// Para 4x2/6x2/6x4 esto da exactamente [4,5] en el eje tractor y [8,9] en el
+// segundo eje trasero (6x2/6x4) -- coincide con la matriz pedida. Para semi
+// (filas de a 4 por eje: [1,2,3,4],[5,6,7,8],[9,10,11,12]) da [2,3,6,7,10,11].
+// Las filas D (direccional, 2 posiciones) y auxilio (1 posicion) nunca son duplas.
+function esPosicionInterna(axleCfg, pos) {
+  const row = axleCfg && axleCfg.rows.find(r => r.positions.includes(pos));
+  if (!row || row.positions.length !== 4) return false;
+  const idx = row.positions.indexOf(pos);
+  return idx === 1 || idx === 2;
+}
 
 /* =====================================================================
    UTILIDADES

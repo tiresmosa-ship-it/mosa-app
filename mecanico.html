@@ -2117,6 +2117,9 @@ function TireInfoModal({ pos, data, cfg, equipo, axleCfg, onClose, onRegularPsi,
   // solo para consulta, sin las acciones de la hoja de cambio — se pasan
   // los handlers en undefined y se ocultan los botones correspondientes.
   const soloConsulta = !onRegularPsi && !onRetorqueo && !onReparacion;
+  // Requerimiento: la alargadera solo aplica al neumatico interno de una
+  // rueda doble (dupla) -- en direccionales/externos no se muestra el check.
+  const mostrarAlargadera = onToggleAlargadera && esPosicionInterna(axleCfg, pos);
   return (
     <Modal title={`Posición P${pos}`} onClose={onClose}>
       <div className="mb-4">
@@ -2148,9 +2151,9 @@ function TireInfoModal({ pos, data, cfg, equipo, axleCfg, onClose, onRegularPsi,
       </div>
       {/* Requerimiento 2: alargadera/checkpoint colocados en esta posicion —
           solo en la HC (no en la revision de solo consulta previa). */}
-      {(onToggleAlargadera || onToggleCheckpoint) && (
+      {(mostrarAlargadera || onToggleCheckpoint) && (
         <div className="space-y-2 mb-4">
-          {onToggleAlargadera && (
+          {mostrarAlargadera && (
             <div className="flex items-center justify-between bg-[#F9FAFB] rounded-xl px-3 py-2.5">
               <p className="text-[13px] font-bold">🔘 Alargadera colocada</p>
               <div className="flex gap-1.5">
