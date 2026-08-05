@@ -1297,6 +1297,8 @@ function HistorialEventoCard({ item, equipo, expandido, onToggle }) {
 function TareasPendientesSeccion({ equipo, adminUser, pushToast }) {
   const [tareas, setTareas] = useState(null);
   const [reasignando, setReasignando] = useState(null);
+  const [nuevaTarea, setNuevaTarea] = useState("");
+  const [agregando, setAgregando] = useState(false);
 
   function cargar() {
     db.fetchTareasPendientesEquipo(equipo.id_equipo).then(setTareas).catch(e => { console.error("No se pudo cargar tareas pendientes", e); setTareas([]); });
@@ -1311,6 +1313,18 @@ function TareasPendientesSeccion({ equipo, adminUser, pushToast }) {
       cargar();
     } catch (e) { console.error("No se pudo reasignar la tarea", e); pushToast("✕ No se pudo reasignar", "red"); }
     setReasignando(null);
+  }
+
+  async function agregarTarea() {
+    if (!nuevaTarea.trim()) return;
+    setAgregando(true);
+    try {
+      const res = await db.agregarTareaEquipo(equipo.id_equipo, nuevaTarea.trim(), adminUser);
+      pushToast(res.inyectada ? "✓ Tarea agregada a la Hoja de Cambio activa de hoy" : "✓ Tarea agregada como pendiente para este equipo");
+      setNuevaTarea("");
+      cargar();
+    } catch (e) { console.error("No se pudo agregar la tarea", e); pushToast(e.message || "✕ No se pudo agregar la tarea", "red"); }
+    setAgregando(false);
   }
 
   const TIPO_LABEL = { sistema: "Sistema", admin: "Admin", mecanico: "Mecánico" };
@@ -1349,6 +1363,10 @@ function TareasPendientesSeccion({ equipo, adminUser, pushToast }) {
           </table>
         </div>
       )}
+      <div className="flex gap-2 mb-4">
+        <TextInput placeholder="Agregar tarea para este equipo" value={nuevaTarea} onChange={e => setNuevaTarea(e.target.value)} onKeyDown={e => { if (e.key === "Enter") agregarTarea(); }} className="h-9 text-[12.5px]" />
+        <Button variant="subtle" className="h-9 px-3 text-[12.5px]" disabled={agregando} onClick={agregarTarea}>{agregando ? <span className="spinner" /> : "+ Agregar tarea"}</Button>
+      </div>
     </div>
   );
 }

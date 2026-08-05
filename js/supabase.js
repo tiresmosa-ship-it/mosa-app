@@ -511,6 +511,36 @@ const db = {
   // mismo (HACER_HOY, visible de inmediato); si no hay sesion activa, se deja
   // marcada para que el arrastre automatico de la proxima auditoria la traiga
   // sola (ver construirYGuardarAuditoria).
+  // Agregar una tarea nueva a un equipo desde la ficha del equipo (Admin/SuperAdmin),
+  // sin depender de la pestaña "Instructivos" (que solo lista auditorias de HOY).
+  // Si el equipo tiene una HC en curso hoy, se inyecta directo como HACER_HOY
+  // (visible al toque para el mecanico); si no, se guarda como PENDIENTE en la
+  // ultima auditoria_receta del equipo para que quede en la tabla de pendientes
+  // y el admin la pueda "Reasignar a hoy" cuando corresponda.
+  async agregarTareaEquipo(equipoId, texto, adminUser) {
+    const creadoPor = adminUser ? `${adminUser.nombre} ${adminUser.apellido || ""}`.trim() : "Admin";
+    const receta = await db.fetchRecetaEnProcesoHoy(equipoId);
+    if (receta) {
+      const pa = receta.posiciones_alerta || {};
+      const extras = Array.isArray(pa.tareas_extra) ? pa.tareas_extra : [];
+      const nuevaTarea = { id: uuid(), texto, done: false, tipo_origen: "admin", creado_por: creadoPor, fecha_origen: todayISO(), estado: "HACER_HOY" };
+      const { error } = await sb.from("auditorias_receta").update({ posiciones_alerta: { ...pa, tareas_extra: [...extras, nuevaTarea] } }).eq("id", receta.id);
+      if (error) throw error;
+      return { inyectada: true };
+    }
+    const { data: auds, error: eAud } = await sb.from("auditorias").select("id_auditoria,fecha").eq("equipo_id", equipoId).order("fecha", { ascending: false }).limit(1);
+    if (eAud) throw eAud;
+    if (!auds || !auds.length) throw new Error("Este equipo todavia no tiene ninguna auditoria registrada.");
+    const { data: recetaUltima, error: eRec } = await sb.from("auditorias_receta").select("id,posiciones_alerta").eq("auditoria_id", auds[0].id_auditoria).order("creado_en", { ascending: false }).limit(1).maybeSingle();
+    if (eRec) throw eRec;
+    if (!recetaUltima) throw new Error("Este equipo todavia no tiene ningun instructivo registrado.");
+    const pa = recetaUltima.posiciones_alerta || {};
+    const diferidas = Array.isArray(pa.tareas_diferidas) ? pa.tareas_diferidas : [];
+    const nuevaDiferida = { id: uuid(), texto, tipo_origen: "admin", creado_por: creadoPor, fecha_origen: todayISO(), estado: "PENDIENTE" };
+    const { error } = await sb.from("auditorias_receta").update({ posiciones_alerta: { ...pa, tareas_diferidas: [...diferidas, nuevaDiferida] } }).eq("id", recetaUltima.id);
+    if (error) throw error;
+    return { inyectada: false };
+  },
   async reasignarTareaAHoy(equipoId, tarea, adminUser) {
     const receta = await db.fetchRecetaEnProcesoHoy(equipoId);
     const { data: origenRow, error: eOrigen } = await sb.from("auditorias_receta").select("posiciones_alerta").eq("id", tarea.receta_id).maybeSingle();
@@ -2361,25 +2391,31 @@ async function resolverDiscrepanciaAuditoria(discrepancia, aprobar, justificacio
 }
 
 async function fetchInstructivosHoy(clienteId) {
-  let q = sb.from("auditorias_receta").select("*");
-  q = filtroCliente(q, clienteId);
-  const { data: recetas, error } = await q;
-  if (error) throw error;
+  // Ojo timezone (gotcha ya documentado en el proyecto): antes esto filtraba
+  // por receta.creado_en (timestamptz UTC) recortado a fecha y comparado
+  // contra todayISO() (fecha LOCAL de Chile) -> una auditoria hecha de noche
+  // en Chile cae en el dia UTC siguiente y desaparecia de "Instructivos del
+  // dia" sin ningun error visible. auditorias.fecha ya viene en la fecha
+  // local (todayISO() al crearla), asi que hay que filtrar por ahi.
   const hoy = todayISO();
-  const hoyRecetas = (recetas || []).filter(r => (r.creado_en || "").slice(0, 10) === hoy);
-  if (!hoyRecetas.length) return [];
-  const auditoriaIds = hoyRecetas.map(r => r.auditoria_id);
-  const { data: auds } = await sb.from("auditorias").select("id_auditoria,equipo_id,bultero_id,fecha,creado_en").in("id_auditoria", auditoriaIds);
-  const audMap = {}; (auds || []).forEach(a => { audMap[a.id_auditoria] = a; });
-  const equipoIds = [...new Set((auds || []).map(a => a.equipo_id))].filter(Boolean);
-  const mecIds = [...new Set((auds || []).map(a => a.bultero_id))].filter(Boolean);
+  let qa = sb.from("auditorias").select("id_auditoria,equipo_id,bultero_id,fecha,creado_en").eq("fecha", hoy);
+  qa = filtroCliente(qa, clienteId);
+  const { data: auds, error: e1 } = await qa;
+  if (e1) throw e1;
+  if (!auds || !auds.length) return [];
+  const auditoriaIds = auds.map(a => a.id_auditoria);
+  const { data: recetas, error: e2 } = await sb.from("auditorias_receta").select("*").in("auditoria_id", auditoriaIds);
+  if (e2) throw e2;
+  const audMap = {}; auds.forEach(a => { audMap[a.id_auditoria] = a; });
+  const equipoIds = [...new Set(auds.map(a => a.equipo_id))].filter(Boolean);
+  const mecIds = [...new Set(auds.map(a => a.bultero_id))].filter(Boolean);
   const [{ data: eqs }, { data: mecs }] = await Promise.all([
     equipoIds.length ? sb.from("equipos").select("id_equipo,patente,numero_interno").in("id_equipo", equipoIds) : Promise.resolve({ data: [] }),
     mecIds.length ? sb.from("usuarios").select("id,nombre,apellido").in("id", mecIds) : Promise.resolve({ data: [] })
   ]);
   const eqMap = {}; (eqs || []).forEach(e => { eqMap[e.id_equipo] = e; });
   const mecMap = {}; (mecs || []).forEach(m => { mecMap[m.id] = m; });
-  return hoyRecetas.map(r => {
+  return (recetas || []).map(r => {
     const a = audMap[r.auditoria_id] || {};
     return { ...r, equipo: eqMap[a.equipo_id] || null, mecanico: mecMap[a.bultero_id] || null, hora: (a.creado_en || "").slice(11, 16) };
   }).sort((x, y) => (y.creado_en || "").localeCompare(x.creado_en || ""));
