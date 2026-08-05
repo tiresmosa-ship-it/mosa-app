@@ -358,62 +358,100 @@ function Stepper({ value, onChange }) {
   );
 }
 
+// Requerimiento 2: bodegas discriminadas por tipo de neumatico -- las columnas
+// neu_dir_*/neu_trac_*/neu_libre_* ya existian en check_diario pero el codigo
+// nunca las escribia. BODEGAS_NEU son los 4 recuadros del Paso 1; TIPOS_NEU
+// son las 3 filas dentro de cada recuadro.
+const BODEGAS_NEU = [
+  { key: "nuevos", label: "Nuevos", col: "nuevo" },
+  { key: "transito", label: "Tránsito", col: "transito" },
+  { key: "reparar", label: "Reparación", col: "reparar" },
+  { key: "recauchados", label: "Recauchados", col: "recauchado" }
+];
+const TIPOS_NEU = [
+  { key: "direccional", label: "🔹 Direccional", col: "dir" },
+  { key: "traccional", label: "🔹 Traccional", col: "trac" },
+  { key: "eje_libre", label: "🔹 Eje Libre / Auxilio", col: "libre" }
+];
+const CHECK_DIARIO_DRAFT_KEY = (clienteId) => `mosa_checkdiario_draft_${clienteId}`;
+
 function CheckDiario({ user, clienteId, onDone }) {
-  const [stock, setStock] = useState(() => Object.fromEntries(ALL_STOCK_FIELDS.map(f => [f.key, { value: 0, checked: false }])));
-  const [tools, setTools] = useState(() => Object.fromEntries(TOOLS_CHECKLIST.map(t => [t, { checked: false, cantidad: 0 }])));
+  // Requerimiento 3.3: restaurar el borrador (paso + conteos) si el mecanico
+  // dejo el check a medias hoy y refresco/volvio a entrar.
+  const draftInicial = (() => {
+    try {
+      const raw = localStorage.getItem(CHECK_DIARIO_DRAFT_KEY(clienteId));
+      if (!raw) return null;
+      const d = JSON.parse(raw);
+      return d && d.fecha === todayISO() ? d : null;
+    } catch (e) { return null; }
+  })();
+
+  const [step, setStep] = useState(draftInicial ? draftInicial.step : 1);
+  const [stockNeu, setStockNeu] = useState(() => draftInicial ? draftInicial.stockNeu :
+    Object.fromEntries(BODEGAS_NEU.map(b => [b.key, Object.fromEntries(TIPOS_NEU.map(t => [t.key, { value: 0, checked: false }]))])));
+  const [stockPatio, setStockPatio] = useState(() => draftInicial ? draftInicial.stockPatio :
+    Object.fromEntries(PATIO_FIELDS.map(f => [f.key, { value: 0, checked: false }])));
+  const [tools, setTools] = useState(() => draftInicial ? draftInicial.tools :
+    Object.fromEntries(TOOLS_CHECKLIST.map(t => [t, { checked: false, cantidad: 0 }])));
+  const [toolsExtra, setToolsExtra] = useState(() => draftInicial ? draftInicial.toolsExtra : []);
   const [saving, setSaving] = useState(false);
   const [discrepancias, setDiscrepancias] = useState(null); // null = no evaluado, [] = sin diferencias, [...] = con diferencias
   const [observacion, setObservacion] = useState("");
   const [pushToast, toastNode] = useToasts();
 
-  const toolsFilled = TOOLS_CHECKLIST.filter(t => tools[t].checked).length;
-  const stockFilled = ALL_STOCK_FIELDS.filter(f => stock[f.key].checked).length;
-  const totalItems = TOOLS_CHECKLIST.length + ALL_STOCK_FIELDS.length;
-  const progress = Math.round(((toolsFilled + stockFilled) / totalItems) * 100);
-  const complete = toolsFilled === TOOLS_CHECKLIST.length && stockFilled === ALL_STOCK_FIELDS.length;
+  // Guarda el borrador en localStorage en cada cambio -- si el mecanico sale
+  // sin terminar, al volver hoy lo encuentra tal cual lo dejo.
+  useEffect(() => {
+    try { localStorage.setItem(CHECK_DIARIO_DRAFT_KEY(clienteId), JSON.stringify({ fecha: todayISO(), step, stockNeu, stockPatio, tools, toolsExtra })); } catch (e) {}
+  }, [step, stockNeu, stockPatio, tools, toolsExtra, clienteId]);
 
-  function setStockVal(key, v) { setStock(s => ({ ...s, [key]: { value: v, checked: true } })); }
-  function toggleStock(key) { setStock(s => ({ ...s, [key]: { ...s[key], checked: !s[key].checked } })); }
+  const stockNeuFilled = BODEGAS_NEU.reduce((n, b) => n + TIPOS_NEU.filter(t => stockNeu[b.key][t.key].checked).length, 0);
+  const stockNeuTotal = BODEGAS_NEU.length * TIPOS_NEU.length;
+  const toolsFilled = TOOLS_CHECKLIST.filter(t => tools[t].checked).length;
+  const stockPatioFilled = PATIO_FIELDS.filter(f => stockPatio[f.key].checked).length;
+  const totalItems = TOOLS_CHECKLIST.length + stockNeuTotal + PATIO_FIELDS.length;
+  const itemsCompletos = toolsFilled + stockNeuFilled + stockPatioFilled;
+  const progress = Math.round((itemsCompletos / totalItems) * 100);
+  const paso1Completo = stockNeuFilled === stockNeuTotal;
+  const paso2Completo = stockPatioFilled === PATIO_FIELDS.length;
+  const paso3Completo = toolsFilled === TOOLS_CHECKLIST.length;
+  const complete = paso1Completo && paso2Completo && paso3Completo;
+
+  function setStockNeuVal(bKey, tKey, v) { setStockNeu(s => ({ ...s, [bKey]: { ...s[bKey], [tKey]: { value: v, checked: true } } })); }
+  function toggleStockNeu(bKey, tKey) { setStockNeu(s => ({ ...s, [bKey]: { ...s[bKey], [tKey]: { ...s[bKey][tKey], checked: !s[bKey][tKey].checked } } })); }
+  function setStockPatioVal(key, v) { setStockPatio(s => ({ ...s, [key]: { value: v, checked: true } })); }
+  function toggleStockPatio(key) { setStockPatio(s => ({ ...s, [key]: { ...s[key], checked: !s[key].checked } })); }
   function setToolQty(t, v) { setTools(s => ({ ...s, [t]: { checked: true, cantidad: v } })); }
   function toggleTool(t) { setTools(s => ({ ...s, [t]: { ...s[t], checked: !s[t].checked } })); }
-
-  function renderSeccion(titulo, fields) {
-    return (
-      <>
-        <p className="font-bold text-[15px] mb-2">{titulo}</p>
-        <div className="space-y-2 mb-4">
-          {fields.map(f => (
-            <div key={f.key} className={cx("bg-white rounded-2xl border shadow-card px-4 py-3 flex items-center gap-3", stock[f.key].checked ? "border-bd" : "border-[#F59E0B]")}>
-              <button type="button" onClick={() => toggleStock(f.key)} className={cx("w-7 h-7 rounded-lg flex items-center justify-center shrink-0 border", stock[f.key].checked ? "bg-ink border-ink" : "bg-white border-[#D1D5DB]")}>
-                {stock[f.key].checked && <Icon.check width="15" height="15" className="text-white" />}
-              </button>
-              <span className="text-[14px] font-semibold text-[#1F2937] flex-1">{f.label}</span>
-              <Stepper value={stock[f.key].value} onChange={v => setStockVal(f.key, v)} />
-            </div>
-          ))}
-        </div>
-      </>
-    );
-  }
+  function agregarHerramientaExtra() { setToolsExtra(l => [...l, { id: uuid(), nombre: "", cantidad: 0 }]); }
+  function actualizarHerramientaExtra(id, campo, v) { setToolsExtra(l => l.map(x => x.id === id ? { ...x, [campo]: v } : x)); }
+  function quitarHerramientaExtra(id) { setToolsExtra(l => l.filter(x => x.id !== id)); }
 
   async function continuar() {
     setSaving(true);
     const id = uuid();
     const horaInicio = nowHM();
-    const totales = { nuevo: stock.nuevos.value, transito: stock.transito.value, recauchado: stock.recauchados.value, reparacion: stock.reparar.value };
+    const totalBodega = (bKey) => TIPOS_NEU.reduce((n, t) => n + (stockNeu[bKey][t.key].value || 0), 0);
+    const totales = { nuevo: totalBodega("nuevos"), transito: totalBodega("transito"), recauchado: totalBodega("recauchados"), reparacion: totalBodega("reparar") };
     const toolsCounted = Object.fromEntries(TOOLS_CHECKLIST.map(t => [t, tools[t].cantidad]));
+    const discNeu = {};
+    BODEGAS_NEU.forEach(b => TIPOS_NEU.forEach(t => { discNeu[`neu_${t.col}_${b.col}`] = stockNeu[b.key][t.key].value || 0; }));
     const data = {
       id, cliente_id: clienteId, empresa_id: clienteId, bultero_id: user.id, fecha: todayISO(), hora_inicio: horaInicio,
       numero_hoja: uuid().slice(0, 8), completado: true,
-      nuevos: stock.nuevos.value, transito: stock.transito.value, reparar: stock.reparar.value, recauchados: stock.recauchados.value,
-      llantas_am_aluminio: stock.llantas_am_aluminio.value, llantas_am_fierro: stock.llantas_am_fierro.value,
-      llantas_eu_aluminio: stock.llantas_eu_aluminio.value, llantas_eu_fierro: stock.llantas_eu_fierro.value,
+      nuevos: totales.nuevo, transito: totales.transito, reparar: totales.reparacion, recauchados: totales.recauchado,
+      ...discNeu,
+      llantas_am_aluminio: stockPatio.llantas_am_aluminio.value, llantas_am_fierro: stockPatio.llantas_am_fierro.value,
+      llantas_eu_aluminio: stockPatio.llantas_eu_aluminio.value, llantas_eu_fierro: stockPatio.llantas_eu_fierro.value,
+      herramientas_extra: toolsExtra.filter(x => x.nombre.trim()).map(x => ({ nombre: x.nombre.trim(), cantidad: x.cantidad || 0 })),
       checklist: TOOLS_CHECKLIST.map(t => ({ herramienta: t, cantidad: tools[t].cantidad }))
     };
     pushQueue({ id: uuid(), tipo: "novedad", clienteId, ts: Date.now(), data });
     syncQueue();
     setTurno({ clienteId, fecha: todayISO(), checkDone: true });
     localStorage.setItem("check_completado_hoy", "true");
+    try { localStorage.removeItem(CHECK_DIARIO_DRAFT_KEY(clienteId)); } catch (e) {}
 
     try {
       await marcarInicioJornada(clienteId, user.id, todayISO(), horaInicio);
@@ -465,14 +503,16 @@ function CheckDiario({ user, clienteId, onDone }) {
   return (
     <div className="min-h-screen pb-28 px-5 safe-top">
       {toastNode}
+      {/* Regla 1: header de progreso sin tocar -- mismo componente/markup de
+          siempre, ahora comun a los 3 pasos. */}
       <div className="sticky top-0 z-30 bg-white px-5 pt-14 pb-3">
         <p className="text-[14px] text-muted mb-1">{formatDateLong()}</p>
         <h1 className="text-[30px] font-extrabold leading-none">Hola, {user.nombre}</h1>
-        <p className="text-[14px] text-sub mt-2 mb-4">Para iniciar tenés que completar el check del día</p>
+        <p className="text-[14px] text-sub mt-2 mb-4">Para iniciar tenés que completar el check del día — Paso {step} de 3</p>
         <div className="bg-[#F9FAFB] rounded-[20px] p-5">
           <div className="flex items-center justify-between mb-2">
             <span className="font-bold text-[16px]">Progreso del check</span>
-            <span className="text-[13px] font-bold">{toolsFilled + stockFilled}/{totalItems}</span>
+            <span className="text-[13px] font-bold">{itemsCompletos}/{totalItems}</span>
           </div>
           <div className="h-2 rounded-full bg-[#E5E7EB] overflow-hidden">
             <div className="h-full bg-ink transition-all" style={{ width: progress + "%" }} />
@@ -480,33 +520,94 @@ function CheckDiario({ user, clienteId, onDone }) {
         </div>
       </div>
 
-      <div className="px-0 pt-4">
-        <p className="font-extrabold text-[17px] mb-3">Conteo de neumáticos</p>
-        <p className="text-[12.5px] text-muted mb-3">Marcá el check para confirmar que revisaste el ítem, aunque tengas 0.</p>
-        {renderSeccion("Neumáticos", NEUMATICO_FIELDS)}
-        {renderSeccion("Llantas en patio", PATIO_FIELDS)}
-
-        <p className="font-bold text-[15px] mb-2">Checklist de herramientas</p>
-        <p className="text-[12.5px] text-muted mb-3">Marcá el check para confirmar que revisaste la herramienta, aunque tengas 0.</p>
-        <div className="space-y-2 mb-6">
-          {TOOLS_CHECKLIST.map(t => (
-            <div key={t} className={cx("bg-white rounded-2xl border shadow-card px-4 py-3 flex items-center gap-3", tools[t].checked ? "border-bd" : "border-[#F59E0B]")}>
-              <button type="button" onClick={() => toggleTool(t)} className={cx("w-7 h-7 rounded-lg flex items-center justify-center shrink-0 border", tools[t].checked ? "bg-ink border-ink" : "bg-white border-[#D1D5DB]")}>
-                {tools[t].checked && <Icon.check width="15" height="15" className="text-white" />}
-              </button>
-              <span className="text-[14px] font-semibold text-[#1F2937] flex-1">{t}</span>
-              <Stepper value={tools[t].cantidad} onChange={v => setToolQty(t, v)} />
-            </div>
+      {step === 1 && (
+        <div className="px-0 pt-4">
+          <p className="font-extrabold text-[17px] mb-3">Paso 1 · Stock de neumáticos</p>
+          <p className="text-[12.5px] text-muted mb-3">Marcá el check para confirmar que revisaste el ítem, aunque tengas 0.</p>
+          {BODEGAS_NEU.map(b => (
+            <Card key={b.key} className="mb-4">
+              <p className="font-bold text-[15px] mb-3">{b.label}</p>
+              <div className="space-y-2">
+                {TIPOS_NEU.map(t => (
+                  <div key={t.key} className={cx("bg-white rounded-2xl border shadow-card px-4 py-3 flex items-center gap-3", stockNeu[b.key][t.key].checked ? "border-bd" : "border-[#F59E0B]")}>
+                    <button type="button" onClick={() => toggleStockNeu(b.key, t.key)} className={cx("w-7 h-7 rounded-lg flex items-center justify-center shrink-0 border", stockNeu[b.key][t.key].checked ? "bg-ink border-ink" : "bg-white border-[#D1D5DB]")}>
+                      {stockNeu[b.key][t.key].checked && <Icon.check width="15" height="15" className="text-white" />}
+                    </button>
+                    <span className="text-[14px] font-semibold text-[#1F2937] flex-1">{t.label}</span>
+                    <Stepper value={stockNeu[b.key][t.key].value} onChange={v => setStockNeuVal(b.key, t.key, v)} />
+                  </div>
+                ))}
+              </div>
+            </Card>
           ))}
+          <Button className="w-full mb-4" onClick={() => setStep(2)}>Continuar</Button>
         </div>
-      </div>
+      )}
 
-      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-bd p-4 safe-bottom">
-        <Button className="w-full" disabled={!complete || saving} onClick={continuar}>
-          {saving ? <span className="spinner" /> : "Confirmar check diario"}
-        </Button>
-        {!complete && <p className="text-center text-[12px] text-muted mt-2">Completá el conteo de neumáticos y confirmá las {TOOLS_CHECKLIST.length} herramientas</p>}
-      </div>
+      {step === 2 && (
+        <div className="px-0 pt-4">
+          <p className="font-extrabold text-[17px] mb-3">Paso 2 · Stock de llantas</p>
+          <p className="text-[12.5px] text-muted mb-3">Marcá el check para confirmar que revisaste el ítem, aunque tengas 0.</p>
+          <div className="space-y-2 mb-4">
+            {PATIO_FIELDS.map(f => (
+              <div key={f.key} className={cx("bg-white rounded-2xl border shadow-card px-4 py-3 flex items-center gap-3", stockPatio[f.key].checked ? "border-bd" : "border-[#F59E0B]")}>
+                <button type="button" onClick={() => toggleStockPatio(f.key)} className={cx("w-7 h-7 rounded-lg flex items-center justify-center shrink-0 border", stockPatio[f.key].checked ? "bg-ink border-ink" : "bg-white border-[#D1D5DB]")}>
+                  {stockPatio[f.key].checked && <Icon.check width="15" height="15" className="text-white" />}
+                </button>
+                <span className="text-[14px] font-semibold text-[#1F2937] flex-1">{f.label}</span>
+                <Stepper value={stockPatio[f.key].value} onChange={v => setStockPatioVal(f.key, v)} />
+              </div>
+            ))}
+          </div>
+          <div className="flex gap-3 mb-4">
+            <Button variant="subtle" className="flex-1" onClick={() => setStep(1)}>Volver</Button>
+            <Button className="flex-1" onClick={() => setStep(3)}>Continuar</Button>
+          </div>
+        </div>
+      )}
+
+      {step === 3 && (
+        <div className="px-0 pt-4">
+          <p className="font-bold text-[15px] mb-2">Paso 3 · Checklist de herramientas</p>
+          <p className="text-[12.5px] text-muted mb-3">Marcá el check para confirmar que revisaste la herramienta, aunque tengas 0.</p>
+          <div className="space-y-2 mb-4">
+            {TOOLS_CHECKLIST.map(t => (
+              <div key={t} className={cx("bg-white rounded-2xl border shadow-card px-4 py-3 flex items-center gap-3", tools[t].checked ? "border-bd" : "border-[#F59E0B]")}>
+                <button type="button" onClick={() => toggleTool(t)} className={cx("w-7 h-7 rounded-lg flex items-center justify-center shrink-0 border", tools[t].checked ? "bg-ink border-ink" : "bg-white border-[#D1D5DB]")}>
+                  {tools[t].checked && <Icon.check width="15" height="15" className="text-white" />}
+                </button>
+                <span className="text-[14px] font-semibold text-[#1F2937] flex-1">{t}</span>
+                <Stepper value={tools[t].cantidad} onChange={v => setToolQty(t, v)} />
+              </div>
+            ))}
+          </div>
+
+          <p className="font-bold text-[15px] mb-2">Herramientas extra</p>
+          <div className="space-y-2 mb-2">
+            {toolsExtra.map(x => (
+              <div key={x.id} className="bg-white rounded-2xl border border-bd shadow-card px-4 py-3 flex items-center gap-2">
+                <TextInput placeholder="Nombre" value={x.nombre} onChange={e => actualizarHerramientaExtra(x.id, "nombre", e.target.value)} className="h-11 flex-1" />
+                <Stepper value={x.cantidad} onChange={v => actualizarHerramientaExtra(x.id, "cantidad", v)} />
+                <button type="button" onClick={() => quitarHerramientaExtra(x.id)} className="w-9 h-9 rounded-lg bg-[#FEE2E2] flex items-center justify-center shrink-0"><Icon.trash width="15" height="15" className="text-[#B91C1C]" /></button>
+              </div>
+            ))}
+          </div>
+          <button type="button" onClick={agregarHerramientaExtra} className="w-full h-11 rounded-2xl border border-dashed border-bdstrong text-[13.5px] font-bold text-muted mb-6">+ Agregar Herramienta Extra</button>
+
+          <div className="flex gap-3 mb-4">
+            <Button variant="subtle" className="flex-1" onClick={() => setStep(2)}>Volver</Button>
+          </div>
+        </div>
+      )}
+
+      {step === 3 && (
+        <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-bd p-4 safe-bottom">
+          <Button className="w-full" disabled={!complete || saving} onClick={continuar}>
+            {saving ? <span className="spinner" /> : "Finalizar e Iniciar Jornada"}
+          </Button>
+          {!complete && <p className="text-center text-[12px] text-muted mt-2">Completá el conteo de neumáticos, llantas y confirmá las {TOOLS_CHECKLIST.length} herramientas</p>}
+        </div>
+      )}
     </div>
   );
 }
@@ -594,7 +695,7 @@ function AccionEquipo({ equipo, estadoInfo, onClose, onAuditoria, onContinuarCam
 /* =====================================================================
    MAPA DE NEUMATICOS (compartido entre Auditoria / Instructivo / Cambio)
 ===================================================================== */
-function TireCircle({ pos, filled, status, mm, psi, fuego, selected, onTap, dragHandlers, desgasteIrregular, pendienteAprobacion }) {
+function TireCircle({ pos, filled, status, mm, psi, fuego, selected, onTap, dragHandlers, desgasteIrregular, pendienteAprobacion, alargadera, checkpoint }) {
   const styles = {
     empty: "border-2 border-dashed border-[#D1D5DB] bg-[#F9FAFB] text-muted",
     ok: "border-2 border-[#D1D5DB] bg-white text-ink",
@@ -609,6 +710,12 @@ function TireCircle({ pos, filled, status, mm, psi, fuego, selected, onTap, drag
         styles[key], selected && "ring-2 ring-ink anim-blink")}>
       {filled && desgasteIrregular && <span className="absolute -top-1.5 -right-1 text-[13px] leading-none">⚠️</span>}
       {filled && pendienteAprobacion && <span className="absolute -bottom-1 -right-1 text-[13px] leading-none">🔒</span>}
+      {filled && (alargadera || checkpoint) && (
+        <span className="absolute -bottom-1 -left-1 flex gap-0.5 text-[10px] leading-none">
+          {alargadera && <span title="Alargadera colocada">🔘</span>}
+          {checkpoint && <span title="Checkpoint colocado">✅</span>}
+        </span>
+      )}
       <span className="text-[9.5px] font-bold opacity-70 leading-none">P{pos}</span>
       {filled ? (
         <>
@@ -637,7 +744,8 @@ function AxleMap({ cfg, posData, selectedPos, onTap, getDragHandlers, pendientes
                       selected={selectedPos === p} onTap={() => onTap(p)}
                       dragHandlers={getDragHandlers ? getDragHandlers(p) : undefined}
                       desgasteIrregular={d.tipo_desgaste === "irregular"}
-                      pendienteAprobacion={!!(pendientesPos && pendientesPos.has(p))} />
+                      pendienteAprobacion={!!(pendientesPos && pendientesPos.has(p))}
+                      alargadera={!!d.alargadera} checkpoint={!!d.checkpoint} />
                   </div>
                 );
               })}
@@ -796,7 +904,8 @@ function AuditoriaForm({ user, clienteId, equipo, cfg, onCancel, onGenerarInstru
     return (
       <Modal title="Antes de empezar">
         <p className="text-[14px] text-[#374151] mb-2">Las presiones de aire deben controlarse en frío. ¿Confirmás que los neumáticos están fríos?</p>
-        <p className="text-[14px] text-[#374151] mb-5">Recordá los mm mínimos de retiro: Tracto: {cfg.mm_minimo_tracto}mm · Semi: {cfg.mm_minimo_semi}mm · Auxilio: {cfg.mm_minimo_auxilio}mm</p>
+        <p className="text-[14px] text-[#374151] mb-2">Recordá los mm mínimos de retiro: Tracto: {cfg.mm_minimo_tracto}mm · Semi: {cfg.mm_minimo_semi}mm · Auxilio: {cfg.mm_minimo_auxilio}mm</p>
+        <p className="text-[14px] text-[#374151] mb-5">Presiones estándar de la faena: Direccionales: {cfg.psi_delantero ?? DEFAULT_CFG.psi_delantero} PSI | Traccionales: {cfg.psi_traccion ?? DEFAULT_CFG.psi_traccion} PSI</p>
         <div className="flex gap-3">
           <Button variant="subtle" className="flex-1" onClick={onCancel}>Cancelar</Button>
           <Button className="flex-1" onClick={() => setFrioConfirmado(true)}>Confirmar</Button>
@@ -1427,6 +1536,16 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
     else if (tipo === "reparacion") logMovimiento(`Reparación pos ${pos}`);
     else if (tipo === "giro_neumatico") logMovimiento(`Giro pos ${pos}`);
   }
+  // Requerimiento 2: alargadera/checkpoint colocados en esta posicion --
+  // toggle simple, no pasa por intervenciones (estado del neumatico, no
+  // evento puntual). Se actualiza posData al toque y se encola el update.
+  function actualizarExtras(pos, cambios) {
+    const d = posData[pos];
+    if (!d || !d.numero_fuego) return;
+    setPosData(s => ({ ...s, [pos]: { ...s[pos], ...cambios } }));
+    pushQueue({ id: uuid(), tipo: "cambio_item", clienteId, ts: Date.now(), data: { kind: "extras", cliente_id: clienteId, item: { numero_fuego: d.numero_fuego, ...cambios } } });
+    syncQueue();
+  }
 
   function ejecutarSalida(pos, motivo) {
     const d = posData[pos];
@@ -1835,6 +1954,8 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
         <TireInfoModal pos={infoPos} data={posData[infoPos]} cfg={cfg} equipo={equipo} axleCfg={axleCfg}
           pendienteAprobacion={!!(posData[infoPos].numero_fuego && fuegosPendientes.includes(posData[infoPos].numero_fuego))}
           onClose={() => setInfoPos(null)}
+          onToggleAlargadera={(v) => actualizarExtras(infoPos, { alargadera: v })}
+          onToggleCheckpoint={(v) => actualizarExtras(infoPos, { checkpoint: v })}
           onGirar={() => {
             setConfirmDlg({
               title: "Confirmar giro de neumático",
@@ -1918,7 +2039,7 @@ function OrigenNeumaticoBadge({ numeroFuego }) {
   if (!origen || !ORIGEN_BADGE[origen]) return null;
   return <Badge color={ORIGEN_BADGE[origen].color}>{ORIGEN_BADGE[origen].label}</Badge>;
 }
-function TireInfoModal({ pos, data, cfg, equipo, axleCfg, onClose, onRegularPsi, onRetorqueo, onReparacion, onGirar, pendienteAprobacion }) {
+function TireInfoModal({ pos, data, cfg, equipo, axleCfg, onClose, onRegularPsi, onRetorqueo, onReparacion, onGirar, pendienteAprobacion, onToggleAlargadera, onToggleCheckpoint }) {
   const [psiField, setPsiField] = useState(String(data.psi || ""));
   const [showPsi, setShowPsi] = useState(false);
   const esDireccional = axleCfg && ejeTipoDePosicion(axleCfg, pos) === "D";
@@ -1955,6 +2076,30 @@ function TireInfoModal({ pos, data, cfg, equipo, axleCfg, onClose, onRegularPsi,
           <div><p className="text-[11px] text-muted font-semibold">Estado</p><Badge color={statusColor(data.status)}>{statusLabel(data.status)}</Badge></div>
         </div>
       </div>
+      {/* Requerimiento 2: alargadera/checkpoint colocados en esta posicion —
+          solo en la HC (no en la revision de solo consulta previa). */}
+      {(onToggleAlargadera || onToggleCheckpoint) && (
+        <div className="space-y-2 mb-4">
+          {onToggleAlargadera && (
+            <div className="flex items-center justify-between bg-[#F9FAFB] rounded-xl px-3 py-2.5">
+              <p className="text-[13px] font-bold">🔘 Alargadera colocada</p>
+              <div className="flex gap-1.5">
+                <button onClick={() => onToggleAlargadera(true)} className={cx("h-8 px-3 rounded-full text-[12px] font-bold", data.alargadera ? "bg-ink text-white" : "bg-white border border-bd")}>Sí</button>
+                <button onClick={() => onToggleAlargadera(false)} className={cx("h-8 px-3 rounded-full text-[12px] font-bold", !data.alargadera ? "bg-ink text-white" : "bg-white border border-bd")}>No</button>
+              </div>
+            </div>
+          )}
+          {onToggleCheckpoint && (
+            <div className="flex items-center justify-between bg-[#F9FAFB] rounded-xl px-3 py-2.5">
+              <p className="text-[13px] font-bold">🔘 Checkpoint colocado</p>
+              <div className="flex gap-1.5">
+                <button onClick={() => onToggleCheckpoint(true)} className={cx("h-8 px-3 rounded-full text-[12px] font-bold", data.checkpoint ? "bg-ink text-white" : "bg-white border border-bd")}>Sí</button>
+                <button onClick={() => onToggleCheckpoint(false)} className={cx("h-8 px-3 rounded-full text-[12px] font-bold", !data.checkpoint ? "bg-ink text-white" : "bg-white border border-bd")}>No</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
       {soloConsulta ? null : showPsi ? (
         <div className="space-y-3 mb-2">
           <Field label="Nuevo valor de PSI" required><TextInput type="number" inputMode="numeric" value={psiField} onChange={e => setPsiField(e.target.value)} /></Field>
@@ -2602,10 +2747,24 @@ function MecanicoApp({ user }) {
     return () => { cancel = true; clearInterval(t); };
   }, [clienteId, checkDone, cfg]);
 
+  // Requerimiento 3: verificacion contra el servidor (no solo localStorage)
+  // de si el mecanico ya completo el check_diario de HOY para esta empresa --
+  // cubre el caso de otro dispositivo/navegador donde el turno local nunca
+  // se guardo. Best-effort: si falla (offline), no bloquea el flujo normal.
+  function verificarCheckServidor(cid) {
+    sb.from("check_diario").select("id").eq("bultero_id", user.id).eq("fecha", todayISO()).eq("cliente_id", cid).limit(1)
+      .then(({ data }) => {
+        if (data && data.length) {
+          const t = { clienteId: cid, fecha: todayISO(), checkDone: true };
+          setTurno(t); setClienteId(t.clienteId); setEmpresaConfirmada(true); setCheckDone(true);
+        }
+      }).catch(() => {});
+  }
   useEffect(() => {
     const turno = getTurno();
     if (turno && turno.fecha === todayISO()) {
       setClienteId(turno.clienteId); setEmpresaConfirmada(true); setCheckDone(!!turno.checkDone);
+      if (!turno.checkDone) verificarCheckServidor(turno.clienteId);
     } else if (devModeActivo()) {
       // Modo dev sin turno guardado todavia: saltea empresa+check diario
       // (misma empresa/fecha que usa un turno real, para que el resto del
@@ -2613,6 +2772,10 @@ function MecanicoApp({ user }) {
       const t = { clienteId: "la_portada", fecha: todayISO(), checkDone: true };
       setTurno(t);
       setClienteId(t.clienteId); setEmpresaConfirmada(true); setCheckDone(true);
+    } else {
+      // Sin turno local (primer ingreso del dia en este dispositivo/navegador):
+      // si ya completo el check hoy para su empresa asignada, saltea empresa+check.
+      verificarCheckServidor(user.cliente_id);
     }
   }, []);
   useEffect(() => { if (clienteId) db.fetchConfig(clienteId).then(setCfg).catch(() => setCfg(getCache(LS.cfg(clienteId), DEFAULT_CFG))); }, [clienteId]);

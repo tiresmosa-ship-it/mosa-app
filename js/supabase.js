@@ -929,6 +929,14 @@ async function enviarCambioItem(data) {
     if (item.tipo === "regulacion_psi" && item.psi_nuevo != null && item.numero_fuego) {
       await sb.from("neumaticos").update({ psi_actual: item.psi_nuevo }).eq("cliente_id", cliente_id).eq("numero_fuego", item.numero_fuego);
     }
+  } else if (kind === "extras") {
+    // Requerimiento 2: alargadera/checkpoint por posicion -- estado persistente
+    // del neumatico, no un evento puntual (no pasa por intervenciones).
+    const cambios = {};
+    if (item.alargadera != null) cambios.alargadera = item.alargadera;
+    if (item.checkpoint != null) cambios.checkpoint = item.checkpoint;
+    const { error } = await sb.from("neumaticos").update(cambios).eq("cliente_id", cliente_id).eq("numero_fuego", item.numero_fuego);
+    if (error) throw error;
   }
 }
 async function enviarCambioChecklist(data) {
@@ -1535,7 +1543,7 @@ async function construirPosDataDesdeEquipo(equipoId, cfg, axleCfg, equipo) {
     // Objetivo 3: psi_actual/milimetros de `neumaticos` son la fuente mas
     // fresca (actualizarNeumaticoEntra/regulacion PSI los escriben en vivo) --
     // ganan sobre cualquier fallback de auditoria/cambio_detalle de mas abajo.
-    map[n.posicion_actual] = { posicion: n.posicion_actual, numero_fuego: n.numero_fuego, marca: n.marca, modelo: n.modelo, medida: n.medida, psi: n.psi_actual != null ? n.psi_actual : null, status: "ok", minMM: n.milimetros != null ? n.milimetros : null, tipo_desgaste: null };
+    map[n.posicion_actual] = { posicion: n.posicion_actual, numero_fuego: n.numero_fuego, marca: n.marca, modelo: n.modelo, medida: n.medida, psi: n.psi_actual != null ? n.psi_actual : null, status: "ok", minMM: n.milimetros != null ? n.milimetros : null, tipo_desgaste: null, alargadera: !!n.alargadera, checkpoint: !!n.checkpoint };
   });
   // Completar los huecos (psi/mm todavia null) con los ultimos valores
   // conocidos de la auditoria mas reciente.

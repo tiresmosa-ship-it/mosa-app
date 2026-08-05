@@ -642,3 +642,19 @@ END $$;
 -- discrepancias_inventario/marcas_modelos_cliente arriba). Sin esto el
 -- insert de db.registrarEventoSesion falla con 42501 "permission denied".
 GRANT SELECT, INSERT, UPDATE ON sesiones_trabajo TO anon;
+
+-- 36) Alargadera y Checkpoint por posicion de neumatico (toggle en el modal
+-- de detalle de la HC, mecanico.html TireInfoModal) -- viven junto al resto
+-- del estado del neumatico montado (psi_actual/milimetros), no en
+-- intervenciones (su CHECK de tipo no incluye "alargadera" y este flag no es
+-- un evento de auditoria puntual sino un estado persistente del neumatico).
+ALTER TABLE neumaticos ADD COLUMN IF NOT EXISTS alargadera BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE neumaticos ADD COLUMN IF NOT EXISTS checkpoint BOOLEAN NOT NULL DEFAULT false;
+
+-- 37) Herramientas extra del Check Diario (Paso 3): array libre de
+-- {nombre, cantidad} que el mecanico puede agregar ademas de la checklist
+-- estandar (TOOLS_CHECKLIST). Las columnas neu_dir_*/neu_trac_*/neu_libre_*
+-- para discriminar el stock de neumaticos por tipo ya existian en la tabla
+-- (creadas a mano en algun momento) pero el codigo nunca las escribia -- ver
+-- CheckDiario.continuar() en mecanico.html.
+ALTER TABLE check_diario ADD COLUMN IF NOT EXISTS herramientas_extra JSONB NOT NULL DEFAULT '[]'::jsonb;

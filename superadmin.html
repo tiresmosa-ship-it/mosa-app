@@ -1694,7 +1694,7 @@ function PosicionDetalleModal({ n, pos, equipo, discrepanciaPendiente, setView, 
     </Modal>
   );
 }
-function TireCircleReadOnly({ pos, filled, status, mm, psi, selected, onTap }) {
+function TireCircleReadOnly({ pos, filled, status, mm, psi, selected, onTap, alargadera, checkpoint }) {
   const styles = {
     empty: "border-2 border-dashed border-[#D1D5DB] bg-[#F9FAFB] text-muted",
     ok: "border-2 border-[#D1D5DB] bg-white text-ink",
@@ -1704,8 +1704,14 @@ function TireCircleReadOnly({ pos, filled, status, mm, psi, selected, onTap }) {
   const key = !filled ? "empty" : (status || "ok");
   return (
     <button type="button" disabled={!filled} onClick={onTap}
-      className={cx("w-[54px] h-[54px] rounded-full flex flex-col items-center justify-center shrink-0 shadow-sm transition",
+      className={cx("relative w-[54px] h-[54px] rounded-full flex flex-col items-center justify-center shrink-0 shadow-sm transition",
         styles[key], selected && "ring-2 ring-ink")}>
+      {filled && (alargadera || checkpoint) && (
+        <span className="absolute -bottom-1 -left-1 flex gap-0.5 text-[10px] leading-none">
+          {alargadera && <span title="Alargadera colocada">🔘</span>}
+          {checkpoint && <span title="Checkpoint colocado">✅</span>}
+        </span>
+      )}
       <span className="text-[9.5px] font-bold opacity-70 leading-none">P{pos}</span>
       {filled ? (
         <>
@@ -1733,7 +1739,8 @@ function AxleMapReadOnly({ cfg, porPosicion, colorDePosicion, selectedPos, onTap
                 return (
                   <div key={pos} className="relative z-10">
                     <TireCircleReadOnly pos={pos} filled={!!n} status={color} mm={mm} psi={psi}
-                      selected={selectedPos === pos} onTap={() => onTap(pos)} />
+                      selected={selectedPos === pos} onTap={() => onTap(pos)}
+                      alargadera={!!(n && n.alargadera)} checkpoint={!!(n && n.checkpoint)} />
                   </div>
                 );
               })}
