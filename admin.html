@@ -4768,6 +4768,52 @@ function CatalogoNeumaticosSection({ filtro, pushToast }) {
   );
 }
 
+// Requerimiento 1: medidas rapidas para el selector de Auditoria/HC del
+// mecanico (MedidaField en mecanico.html). Vive en config_cliente (clave
+// 'medidas_permitidas', JSON) igual que el resto de los parametros de esta
+// pantalla -- no es tabla nueva.
+function MedidasPermitidasSection({ medidas, onGuardar, pushToast }) {
+  const [nueva, setNueva] = useState("");
+  const [saving, setSaving] = useState(false);
+  const lista = (medidas && medidas.length) ? medidas : DEFAULT_CFG.medidas_permitidas;
+
+  async function agregar() {
+    const v = nueva.trim();
+    if (!v || lista.includes(v)) return;
+    setSaving(true);
+    try { await onGuardar([...lista, v]); setNueva(""); pushToast("✓ Medida agregada"); }
+    catch (e) { console.error("No se pudo agregar la medida", e); pushToast("✕ No se pudo agregar", "red"); }
+    setSaving(false);
+  }
+  async function quitar(m) {
+    setSaving(true);
+    try { await onGuardar(lista.filter(x => x !== m)); pushToast("✓ Medida eliminada"); }
+    catch (e) { console.error("No se pudo eliminar la medida", e); pushToast("✕ No se pudo eliminar", "red"); }
+    setSaving(false);
+  }
+
+  return (
+    <div>
+      <p className="font-bold text-[15px] mb-2">Medidas de neumáticos</p>
+      <p className="text-[11.5px] text-muted mb-3">Medidas rápidas que ve el mecánico al cargar una posición en Auditoría y Hoja de Cambio. Siempre puede elegir "Otra" y escribir una medida distinta (eso le dispara una alerta al Admin).</p>
+      <div className="bg-white rounded-2xl border border-bd shadow-card p-4 mb-6">
+        <div className="flex flex-wrap gap-2 mb-3">
+          {lista.map(m => (
+            <span key={m} className="flex items-center gap-1.5 bg-[#F3F4F6] rounded-full pl-3 pr-2 py-1.5 text-[13px] font-bold">
+              {m}
+              <button onClick={() => quitar(m)} disabled={saving} className="w-5 h-5 rounded-full bg-white flex items-center justify-center shrink-0"><Icon.close width="11" height="11" /></button>
+            </span>
+          ))}
+          {!lista.length && <p className="text-[13px] text-muted">Sin medidas configuradas.</p>}
+        </div>
+        <div className="flex gap-2">
+          <TextInput placeholder="Ej: 295/80R22.5" value={nueva} onChange={e => setNueva(e.target.value)} onKeyDown={e => { if (e.key === "Enter") agregar(); }} className="h-10" />
+          <Button variant="subtle" className="h-10 px-4 text-[13px]" disabled={!nueva.trim() || saving} onClick={agregar}>+ Agregar</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
 function ConfiguracionEmpresaView({ filtro, pushToast }) {
   const [config, setConfig] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -4879,6 +4925,9 @@ function ConfiguracionEmpresaView({ filtro, pushToast }) {
           </div>
         )}
       </Card>
+
+      <MedidasPermitidasSection medidas={config.medidas_permitidas} pushToast={pushToast}
+        onGuardar={async (next) => { await db.setConfigValor(filtro, "medidas_permitidas", next); setConfig(c => ({ ...c, medidas_permitidas: next })); }} />
 
       <CatalogoNeumaticosSection filtro={filtro} pushToast={pushToast} />
 

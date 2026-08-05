@@ -137,3 +137,7 @@ SELECT
 -- herramientas + alerta + boton "Sumar a Catalogo" del Admin).
 DELETE FROM herramientas_inventario WHERE nombre = 'Llave de impacto' AND cliente_id = 'la_portada';
 DELETE FROM alertas WHERE tipo = 'herramienta_nueva' AND titulo = 'Nueva herramienta declarada en terreno';
+
+-- Prueba en vivo del selector de medidas (config_cliente.medidas_permitidas
+-- + alerta "Medida de neumático no estandarizada").
+DELETE FROM alertas WHERE titulo = 'Medida de neumático no estandarizada';

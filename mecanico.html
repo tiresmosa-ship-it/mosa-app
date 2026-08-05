@@ -924,6 +924,22 @@ function AuditoriaForm({ user, clienteId, equipo, cfg, onCancel, onGenerarInstru
       });
       syncQueue();
     }
+    // Requerimiento 2.2: medida ingresada como "Otra" (no esta en
+    // config_cliente.medidas_permitidas) -- avisa al Admin para que la
+    // revise y, si corresponde, la sume a la lista estandar de la faena.
+    if (data.medida_no_registrada && (data.medida || "").trim()) {
+      pushQueue({
+        id: uuid(), tipo: "alerta", clienteId, ts: Date.now(), data: {
+          id: uuid(), cliente_id: clienteId, equipo_id: equipo.id_equipo, mecanico_id: user.id,
+          tipo: "marca_modelo_no_registrado", severidad: "amarillo",
+          titulo: "Medida de neumático no estandarizada",
+          descripcion: `El mecánico ${user.nombre} ingresó manualmente la medida ${data.medida} en el equipo ${equipo.patente} pos ${p}, la cual no está en la lista estándar.`,
+          posicion: p, numero_fuego: data.numero_fuego || null,
+          leida_mecanico: true, leida_admin: false, leida_superadmin: false
+        }
+      });
+      syncQueue();
+    }
     setPosData(s => ({ ...s, [p]: { ...data, posicion: p, status: ev.status, minMM: ev.minMM, motivos: ev.motivos } }));
     setEditingPos(null);
   }
@@ -1058,8 +1074,31 @@ function MarcaModeloAuditoriaField({ clienteId, marca, modelo, onChange }) {
   );
 }
 
+// Requerimiento 2: selector de medidas de config_cliente.medidas_permitidas
+// con opcion "Otra" para texto libre. isManual lo decide el llamador (se
+// prende solo o al tocar "Otra") -- asi el form del padre siempre sabe si la
+// medida ingresada es no estandar, para poder disparar la alerta al guardar.
+function MedidaField({ cfg, value, isManual, onChange }) {
+  const opciones = (cfg.medidas_permitidas && cfg.medidas_permitidas.length) ? cfg.medidas_permitidas : DEFAULT_CFG.medidas_permitidas;
+  return (
+    <Field label="Medida">
+      <Select value={isManual ? "__otra__" : value} onChange={e => {
+        const v = e.target.value;
+        if (v === "__otra__") onChange("", true);
+        else onChange(v, false);
+      }}>
+        <option value="">Seleccionar</option>
+        {opciones.map(m => <option key={m} value={m}>{m}</option>)}
+        <option value="__otra__">Otra</option>
+      </Select>
+      {isManual && <TextInput className="mt-2" placeholder="Ingresá la medida" value={value} onChange={e => onChange(e.target.value, true)} autoFocus />}
+    </Field>
+  );
+}
 function PosicionModal({ pos, equipo, cfg, clienteId, axleCfg, existing, onClose, onSave }) {
-  const [form, setForm] = useState(() => existing || { numero_fuego: "", marca: "", modelo: "", medida: cfg.medida_default || "", psi: "", mm_borde_izq: "", mm_centro: "", mm_borde_der: "", tipo_desgaste: "normal", marca_modelo_no_registrado: false });
+  const [form, setForm] = useState(() => existing || { numero_fuego: "", marca: "", modelo: "", medida: cfg.medida_default || "", psi: "", mm_borde_izq: "", mm_centro: "", mm_borde_der: "", tipo_desgaste: "normal", marca_modelo_no_registrado: false, medida_no_registrada: false });
+  const medidasOpciones = (cfg.medidas_permitidas && cfg.medidas_permitidas.length) ? cfg.medidas_permitidas : DEFAULT_CFG.medidas_permitidas;
+  const medidaEsManual = form.medida_no_registrada || (!!form.medida && !medidasOpciones.includes(form.medida));
   const ev = evaluarPosicion(axleCfg, cfg, pos, equipo.tipo, form);
   const mmAlert = ["mm_borde_izq", "mm_centro", "mm_borde_der"].some(k => form[k] !== "" && parseFloat(form[k]) < ev.mmMin);
   const mmWarn = ["mm_borde_izq", "mm_centro", "mm_borde_der"].some(k => form[k] !== "" && parseFloat(form[k]) < ev.mmAmarillo);
@@ -1077,7 +1116,7 @@ function PosicionModal({ pos, equipo, cfg, clienteId, axleCfg, existing, onClose
           <MarcaModeloAuditoriaField clienteId={clienteId} marca={form.marca} modelo={form.modelo}
             onChange={(marca, modelo, noRegistrado) => setForm(f => ({ ...f, marca, modelo, marca_modelo_no_registrado: noRegistrado }))} />
         </div>
-        <Field label="Medida"><TextInput placeholder="295/80R22.5" value={form.medida} onChange={e => setForm(f => ({ ...f, medida: e.target.value }))} /></Field>
+        <MedidaField cfg={cfg} value={form.medida} isManual={medidaEsManual} onChange={(v, manual) => setForm(f => ({ ...f, medida: v, medida_no_registrada: manual }))} />
         <Field label="PSI" required>
           <TextInput type="number" inputMode="numeric" value={form.psi} alert={psiAlert} warn={psiWarn}
             onChange={e => setForm(f => ({ ...f, psi: e.target.value }))} placeholder={`Objetivo ${ev.psiObjetivo}`} />
@@ -2231,6 +2270,7 @@ function MontajeModal({ tipo, pos, equipo, clienteId, cfg, axleCfg, user, onClos
   // Fix 1: medida siempre precargada con config_cliente.medida_default (no
   // hardcodeada), el mecanico la puede cambiar si el neumatico es distinto.
   const [medida, setMedida] = useState(cfg.medida_default || "");
+  const [medidaManual, setMedidaManual] = useState(false);
   const [psi, setPsi] = useState("");
   const [mm, setMm] = useState("");
   const [torqueado, setTorqueado] = useState(false);
@@ -2313,6 +2353,20 @@ function MontajeModal({ tipo, pos, equipo, clienteId, cfg, axleCfg, user, onClos
           titulo: `Neumático no registrado — ${equipo.patente} pos ${pos}`,
           descripcion: `Se montó un neumático con marca de fuego ${fuego} que no se encontraba registrado en la bodega "${BODEGA_LABEL[tipo]}".`,
           posicion: pos, leida_mecanico: true, leida_admin: false, leida_superadmin: false
+        }
+      });
+      syncQueue();
+    }
+    // Requerimiento 2.2: medida ingresada como "Otra" -- avisa al Admin para
+    // que la revise y, si corresponde, la sume a la lista estandar.
+    if (medidaManual && medida.trim()) {
+      pushQueue({
+        id: uuid(), tipo: "alerta", clienteId, ts: Date.now(), data: {
+          id: uuid(), cliente_id: clienteId, equipo_id: equipo.id_equipo, mecanico_id: user.id,
+          tipo: "marca_modelo_no_registrado", severidad: "amarillo",
+          titulo: "Medida de neumático no estandarizada",
+          descripcion: `El mecánico ${user.nombre} ingresó manualmente la medida ${medida} en el equipo ${equipo.patente} pos ${pos}, la cual no está en la lista estándar.`,
+          posicion: pos, numero_fuego: fuego || null, leida_mecanico: true, leida_admin: false, leida_superadmin: false
         }
       });
       syncQueue();
@@ -2418,7 +2472,7 @@ function MontajeModal({ tipo, pos, equipo, clienteId, cfg, axleCfg, user, onClos
             onChange={(m, mo, noRegistrado) => { setMarca(m); setModelo(mo); setMarcaModeloNoRegistrado(noRegistrado); setErrorValidacion(""); }} />
         </div>
         {/* Fix 1/4: medida siempre visible, precargada con medida_default */}
-        <Field label="Medida"><TextInput value={medida} onChange={e => setMedida(e.target.value)} /></Field>
+        <MedidaField cfg={cfg} value={medida} isManual={medidaManual} onChange={(v, manual) => { setMedida(v); setMedidaManual(manual); }} />
         <div className="grid grid-cols-2 gap-3">
           <Field label="PSI actual" required><TextInput type="number" inputMode="numeric" value={psi} onChange={e => setPsi(e.target.value)} /></Field>
           <Field label="MM actual" required><TextInput type="number" step="0.1" value={mm} onChange={e => setMm(e.target.value)} /></Field>

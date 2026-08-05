@@ -32,7 +32,11 @@ const DEFAULT_CFG = {
   moneda: "CLP",
   meses_vencimiento_auditoria: 6,
   horas_jornada_normal: 9,
-  horas_escalada_alerta: 4
+  horas_escalada_alerta: 4,
+  // Requerimiento 1: medidas rapidas para el selector de Auditoria/HC —
+  // guardadas como JSON en config_cliente.valor (clave 'medidas_permitidas'),
+  // ver fetchConfig/setConfigValor mas abajo.
+  medidas_permitidas: ["295/80R22.5", "11R22.5"]
 };
 
 const TOOLS_CHECKLIST = [
@@ -290,13 +294,18 @@ const db = {
     if (error) throw error;
     const map = { ...DEFAULT_CFG };
     const CLAVES_TEXTO = ["formula_marca_fuego", "medida_default", "moneda"];
-    (data || []).forEach(r => { const n = parseFloat(r.valor); map[r.clave] = isNaN(n) || CLAVES_TEXTO.includes(r.clave) ? r.valor : n; });
+    const CLAVES_JSON = ["medidas_permitidas"];
+    (data || []).forEach(r => {
+      if (CLAVES_JSON.includes(r.clave)) { try { map[r.clave] = JSON.parse(r.valor); } catch (e) { map[r.clave] = DEFAULT_CFG[r.clave]; } return; }
+      const n = parseFloat(r.valor); map[r.clave] = isNaN(n) || CLAVES_TEXTO.includes(r.clave) ? r.valor : n;
+    });
     setCache(LS.cfg(clienteId), map);
     return map;
   },
   async setConfigValor(clienteId, clave, valor) {
+    const guardado = (typeof valor === "object" && valor !== null) ? JSON.stringify(valor) : String(valor);
     const { error } = await sb.from("config_cliente").upsert(
-      { cliente_id: clienteId, clave, valor: String(valor) }, { onConflict: "cliente_id,clave" });
+      { cliente_id: clienteId, clave, valor: guardado }, { onConflict: "cliente_id,clave" });
     if (error) throw error;
   },
   async fetchAlertas(clienteId, mecanicoId) {
