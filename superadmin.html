@@ -850,7 +850,56 @@ function AlertaDetalleModal({ alerta, onClose, onMarcarLeida }) {
   );
 }
 const LS_DASHBOARD_VISTA = "dashboard_vista_superadmin";
-function DashboardView({ empresaCtl, onAbrirMecanico, setView }) {
+const ACTIVIDAD_FAENA_ESTADO = {
+  AUDITORIA_INICIADA: { label: "Auditoría Iniciada", dot: "🔵" },
+  AUDITORIA_FINALIZADA: { label: "Auditoría Finalizada", dot: "🟢" },
+  HOJA_CAMBIO_EN_PROCESO: { label: "Hoja de Cambio en Proceso", dot: "🟡" },
+  HOJA_CAMBIO_FINALIZADA: { label: "Hoja de Cambio Finalizada", dot: "🏁" }
+};
+function ActividadFaenaRow({ item, borde, adminUser, pushToast, onCambio }) {
+  const [abierto, setAbierto] = useState(false);
+  const [nuevaTarea, setNuevaTarea] = useState("");
+  const [agregando, setAgregando] = useState(false);
+  const est = ACTIVIDAD_FAENA_ESTADO[item.evento] || { label: item.evento, dot: "⚪" };
+  const enProceso = item.evento === "HOJA_CAMBIO_EN_PROCESO";
+  const eq = item.equipos, mec = item.usuarios;
+
+  async function agregar() {
+    if (!nuevaTarea.trim()) return;
+    setAgregando(true);
+    try {
+      await db.agregarTareaEquipo(item.equipo_id, nuevaTarea.trim(), adminUser);
+      pushToast("✓ Tarea agregada al instructivo — ya aparece en la Hoja de Cambio del mecánico");
+      setNuevaTarea(""); setAbierto(false);
+      onCambio();
+    } catch (e) { console.error("No se pudo agregar la tarea", e); pushToast(e.message || "✕ No se pudo agregar la tarea", "red"); }
+    setAgregando(false);
+  }
+
+  return (
+    <div className={cx("px-4 py-3", borde && "border-t border-bd")}>
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="font-bold text-[14px]">{eq ? `${eq.numero_interno ? eq.numero_interno + " · " : ""}${eq.patente}` : "-"}</p>
+          <p className="text-[12px] text-muted">{mec ? `${mec.nombre} ${mec.apellido || ""}`.trim() : "-"} · {timeAgoCorto(item.creado_en)}</p>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <Badge color={enProceso ? "amber" : item.evento === "HOJA_CAMBIO_FINALIZADA" ? "green" : "gray"}>{est.dot} {est.label}</Badge>
+          {enProceso && (
+            <Button variant="subtle" className="h-8 px-3 text-[12px]" onClick={() => setAbierto(v => !v)}>➕ Agregar Tarea</Button>
+          )}
+        </div>
+      </div>
+      {enProceso && abierto && (
+        <div className="flex gap-2 mt-3">
+          <TextInput placeholder="Tarea para el instructivo de hoy" value={nuevaTarea} onChange={e => setNuevaTarea(e.target.value)} onKeyDown={e => { if (e.key === "Enter") agregar(); }} className="h-9 text-[12.5px]" />
+          <Button variant="subtle" className="h-9 px-3 text-[12.5px]" disabled={agregando} onClick={agregar}>{agregando ? <span className="spinner" /> : "Guardar"}</Button>
+        </div>
+      )}
+    </div>
+  );
+}
+function DashboardView({ empresaCtl, onAbrirMecanico, setView, adminUser }) {
   const [vista, setVista] = useState(() => localStorage.getItem(LS_DASHBOARD_VISTA) || "tecnico");
   function elegirVista(v) { localStorage.setItem(LS_DASHBOARD_VISTA, v); setVista(v); }
   return (
@@ -861,12 +910,12 @@ function DashboardView({ empresaCtl, onAbrirMecanico, setView }) {
         <button onClick={() => elegirVista("numeros")} className={cx("px-4 py-2.5 rounded-full text-[13.5px] font-bold", vista === "numeros" ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>💰 Números</button>
       </div>
       {vista === "tecnico"
-        ? <DashboardTecnico empresaCtl={empresaCtl} onAbrirMecanico={onAbrirMecanico} setView={setView} />
+        ? <DashboardTecnico empresaCtl={empresaCtl} onAbrirMecanico={onAbrirMecanico} setView={setView} adminUser={adminUser} />
         : <DashboardNumeros empresaCtl={empresaCtl} />}
     </div>
   );
 }
-function DashboardTecnico({ empresaCtl, onAbrirMecanico, setView }) {
+function DashboardTecnico({ empresaCtl, onAbrirMecanico, setView, adminUser }) {
   const { filtro } = empresaCtl;
   const [kpis, setKpis] = useState({ equipos: null, auditorias: null, alertas: null, pct: null });
   const [criticas, setCriticas] = useState([]);
@@ -874,21 +923,24 @@ function DashboardTecnico({ empresaCtl, onAbrirMecanico, setView }) {
   const [pendientes, setPendientes] = useState([]);
   const [stock, setStock] = useState(null);
   const [mecanicos, setMecanicos] = useState([]);
+  const [actividad, setActividad] = useState([]);
   const [equiposMap, setEquiposMap] = useState({});
   const [loading, setLoading] = useState(true);
+  const [refrescando, setRefrescando] = useState(false);
   const [verAlerta, setVerAlerta] = useState(null);
   const [porEmpresa, setPorEmpresa] = useState([]);
   const [loadingPorEmpresa, setLoadingPorEmpresa] = useState(false);
   const [pushToast, toastNode] = useToasts();
 
-  async function cargar() {
-    setLoading(true);
+  async function cargar(silent) {
+    if (!silent) setLoading(true); else setRefrescando(true);
     try {
-      const [equiposCount, auditoriasCount, criticasList, pct, pend, stk, mecs, nivel1List] = await Promise.all([
+      const [equiposCount, auditoriasCount, criticasList, pct, pend, stk, mecs, nivel1List, act] = await Promise.all([
         adminDb.countEquiposActivos(filtro), adminDb.countAuditoriasHoy(filtro),
         adminDb.fetchAlertasCriticas(filtro, true), adminDb.fetchPctInstructivoHoy(filtro),
         adminDb.fetchInstructivosPendientes(filtro), adminDb.fetchStockRapido(filtro),
-        adminDb.fetchMecanicosEnJornada(filtro), adminDb.fetchAlertasNivel1Pendientes(filtro)
+        adminDb.fetchMecanicosEnJornada(filtro), adminDb.fetchAlertasNivel1Pendientes(filtro),
+        adminDb.fetchActividadFaena(filtro).catch(e => { console.error("No se pudo cargar la actividad en faena", e); return []; })
       ]);
       setKpis({ equipos: equiposCount, auditorias: auditoriasCount, alertas: criticasList.length, pct });
       setCriticas(criticasList);
@@ -896,6 +948,7 @@ function DashboardTecnico({ empresaCtl, onAbrirMecanico, setView }) {
       setPendientes(pend);
       setStock(stk);
       setMecanicos(mecs);
+      setActividad(act);
       const eqIds = [...new Set([...criticasList, ...nivel1List].map(a => a.equipo_id))].filter(Boolean);
       if (eqIds.length) {
         const { data: eqs } = await sb.from("equipos").select("id_equipo,patente,numero_interno").in("id_equipo", eqIds);
@@ -903,9 +956,15 @@ function DashboardTecnico({ empresaCtl, onAbrirMecanico, setView }) {
         setEquiposMap(map);
       } else setEquiposMap({});
     } catch (e) { console.error("No se pudo cargar el dashboard", e); }
-    setLoading(false);
+    if (!silent) setLoading(false); else setRefrescando(false);
   }
-  useEffect(() => { cargar(); }, [filtro]);
+  useEffect(() => {
+    cargar();
+    const canal = sb.channel("dashboard-actividad-faena-sa")
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "sesiones_trabajo" }, () => cargar(true))
+      .subscribe();
+    return () => { sb.removeChannel(canal); };
+  }, [filtro]);
 
   // Tabla de KPIs por empresa: solo tiene sentido cuando el filtro global es
   // "todas" (si ya se filtró a una empresa puntual, los KPIs de arriba alcanzan).
@@ -1005,6 +1064,17 @@ function DashboardTecnico({ empresaCtl, onAbrirMecanico, setView }) {
       <div className="space-y-2 mb-8">
         {criticas.map(a => <AlertaRow key={a.id} a={a} equiposMap={equiposMap} onVer={setVerAlerta} />)}
         {!criticas.length && <p className="text-[13.5px] text-muted py-4">Sin alertas críticas pendientes. 🎉</p>}
+      </div>
+
+      <div className="flex items-center gap-2 mb-3">
+        <p className="font-bold text-[16px]">🔴 Actividad en Faena (En Vivo)</p>
+        {refrescando && <span className="text-[11px] font-semibold text-muted">🔄 Actualizando...</span>}
+      </div>
+      <div className="bg-white rounded-2xl border border-bd shadow-card overflow-hidden mb-8">
+        {actividad.map((a, i) => (
+          <ActividadFaenaRow key={a.equipo_id} item={a} borde={i > 0} adminUser={adminUser} pushToast={pushToast} onCambio={() => cargar(true)} />
+        ))}
+        {!actividad.length && <p className="text-[13.5px] text-muted p-4">Sin actividad registrada hoy.</p>}
       </div>
 
       <p className="font-bold text-[16px] mb-3">Equipos con instructivo pendiente o parcial</p>
@@ -6072,7 +6142,7 @@ function AdminApp({ user, onLogout }) {
   else if (view === "usuarios") body = <UsuariosView key={refreshToken} empresaCtl={empresaCtl} />;
   else if (view === "configuracion") body = <ConfiguracionAdminView key={refreshToken} empresaCtl={empresaCtl} />;
   else if (view === "perfil") body = <PerfilAdminView user={user} onLogout={onLogout} />;
-  else body = <DashboardView key={refreshToken} empresaCtl={empresaCtl} onAbrirMecanico={setMecanicoBloqueado} setView={setView} />;
+  else body = <DashboardView key={refreshToken} empresaCtl={empresaCtl} onAbrirMecanico={setMecanicoBloqueado} setView={setView} adminUser={user} />;
 
   return (
     <AdminShell view={view} setView={setView} empresaCtl={empresaCtl} alertasNoLeidas={alertasNoLeidas} campanita={campanita} adminUser={user}>

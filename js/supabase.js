@@ -154,6 +154,23 @@ function todayISO() {
   return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate());
 }
 function nowHM() { const d = new Date(); return pad2(d.getHours()) + ":" + pad2(d.getMinutes()) + ":" + pad2(d.getSeconds()); }
+// Persistencia estricta de kilometraje por 8hs (independiente de si se hizo
+// algun cambio en la HC o no): mientras el registro este vigente, no se
+// vuelve a pedir el km al reabrir/refrescar la HC de este equipo.
+const KM_TTL_MS = 8 * 60 * 60 * 1000;
+function leerKmGuardado(equipoId) {
+  try {
+    const raw = localStorage.getItem("mosa_km_" + equipoId);
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    if (!obj || obj.km_registrados == null || !obj.timestamp_km) return null;
+    if (Date.now() - obj.timestamp_km >= KM_TTL_MS) { localStorage.removeItem("mosa_km_" + equipoId); return null; }
+    return obj.km_registrados;
+  } catch (e) { return null; }
+}
+function guardarKm(equipoId, km) {
+  try { localStorage.setItem("mosa_km_" + equipoId, JSON.stringify({ equipo_id: equipoId, km_registrados: km, timestamp_km: Date.now() })); } catch (e) {}
+}
 // Bug 6: formateo de fechas/horas guardadas en Supabase a hora local de
 // Chile, en formato DD/MM/YYYY y 24hs — no AM/PM ni YYYY-MM-DD crudo.
 // Ojo: las columnas `date` puras (ej. auditorias.fecha/cierre_dia.fecha,
@@ -540,6 +557,16 @@ const db = {
     const { error } = await sb.from("auditorias_receta").update({ posiciones_alerta: { ...pa, tareas_diferidas: [...diferidas, nuevaDiferida] } }).eq("id", recetaUltima.id);
     if (error) throw error;
     return { inyectada: false };
+  },
+  // Actividad en Faena (En Vivo): registra un evento de sesion de trabajo.
+  // No se pisa el anterior -- se inserta una fila nueva por evento, asi el
+  // Admin puede ver el estado actual (la mas reciente por equipo, ver
+  // fetchActividadFaena) sin perder el historial de la jornada.
+  async registrarEventoSesion(clienteId, equipoId, usuarioId, evento, extra) {
+    if (!equipoId || !usuarioId) return;
+    const row = { cliente_id: clienteId, equipo_id: equipoId, usuario_id: usuarioId, evento, auditoria_id: (extra && extra.auditoriaId) || null, cambio_id: (extra && extra.cambioId) || null };
+    const { error } = await sb.from("sesiones_trabajo").insert(row);
+    if (error) console.error("No se pudo registrar el evento de sesion", evento, error);
   },
   async reasignarTareaAHoy(equipoId, tarea, adminUser) {
     const receta = await db.fetchRecetaEnProcesoHoy(equipoId);
@@ -1952,6 +1979,20 @@ function filtroCliente(q, clienteId) {
   return (clienteId && clienteId !== "todas") ? q.eq("cliente_id", clienteId) : q;
 }
 const adminDb = {
+  // Estado actual (ultimo evento) por equipo para HOY, para el widget
+  // "Actividad en Faena (En Vivo)" del Dashboard de Admin/SuperAdmin.
+  async fetchActividadFaena(clienteId) {
+    const desde = new Date(); desde.setHours(0, 0, 0, 0);
+    let q = sb.from("sesiones_trabajo")
+      .select("id,equipo_id,usuario_id,evento,creado_en,equipos(patente,numero_interno),usuarios(nombre,apellido)")
+      .gte("creado_en", desde.toISOString()).order("creado_en", { ascending: false });
+    q = filtroCliente(q, clienteId);
+    const { data, error } = await q;
+    if (error) throw error;
+    const porEquipo = {};
+    (data || []).forEach(r => { if (!porEquipo[r.equipo_id]) porEquipo[r.equipo_id] = r; });
+    return Object.values(porEquipo).sort((a, b) => (b.creado_en || "").localeCompare(a.creado_en || ""));
+  },
   async countEquiposActivos(clienteId) {
     let q = sb.from("equipos").select("id_equipo", { count: "exact", head: true }).eq("activo", true);
     q = filtroCliente(q, clienteId);

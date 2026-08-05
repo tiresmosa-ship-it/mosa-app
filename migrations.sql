@@ -597,3 +597,48 @@ ALTER TABLE discrepancias_inventario ALTER COLUMN valor_sistema DROP NOT NULL;
 -- tareas_extra), no se creo tabla nueva -- solo se agrega el permiso por
 -- mecanico para poder derivar tareas a pendiente / agregar tareas propias.
 ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS puede_modificar_instructivo BOOLEAN NOT NULL DEFAULT false;
+
+-- 34) Actividad en Faena en vivo: log de eventos de sesion de trabajo por
+-- equipo (AUDITORIA_INICIADA/AUDITORIA_FINALIZADA/HOJA_CAMBIO_EN_PROCESO/
+-- HOJA_CAMBIO_FINALIZADA), usado por el widget "Actividad en Faena (En Vivo)"
+-- del Admin/SuperAdmin para mostrar el estado actual de cada equipo/mecanico
+-- sin tener que inferirlo de auditorias/cambios_neumaticos. Se inserta una
+-- fila por evento (no se pisa la anterior) -- el estado "actual" de un
+-- equipo es su fila mas reciente, ver db.fetchActividadFaena.
+CREATE TABLE IF NOT EXISTS sesiones_trabajo (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  cliente_id TEXT NOT NULL,
+  equipo_id UUID NOT NULL REFERENCES equipos(id_equipo),
+  usuario_id UUID NOT NULL REFERENCES usuarios(id),
+  evento TEXT NOT NULL CHECK (evento IN ('AUDITORIA_INICIADA', 'AUDITORIA_FINALIZADA', 'HOJA_CAMBIO_EN_PROCESO', 'HOJA_CAMBIO_FINALIZADA')),
+  auditoria_id UUID REFERENCES auditorias(id_auditoria),
+  cambio_id UUID REFERENCES cambios_neumaticos(id_cambio),
+  creado_en TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_sesiones_trabajo_equipo_creado ON sesiones_trabajo (equipo_id, creado_en DESC);
+CREATE INDEX IF NOT EXISTS idx_sesiones_trabajo_cliente_creado ON sesiones_trabajo (cliente_id, creado_en DESC);
+ALTER TABLE sesiones_trabajo ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS sesiones_trabajo_all ON sesiones_trabajo;
+CREATE POLICY sesiones_trabajo_all ON sesiones_trabajo FOR ALL USING (true) WITH CHECK (true);
+
+-- Habilitar Realtime (postgres_changes) para el widget "Actividad en Faena
+-- (En Vivo)" (sesiones_trabajo) y para reflejar en vivo, sin refrescar, las
+-- tareas del instructivo entre Admin/SuperAdmin y mecanico.html
+-- (auditorias_receta) -- ver mosa-app/js/supabase.js y mecanico.html
+-- (canal "hc-checklist-...") y admin.html/superadmin.html (canal
+-- "dashboard-actividad-faena...").
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_publication_tables WHERE pubname = 'supabase_realtime' AND tablename = 'sesiones_trabajo') THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE sesiones_trabajo;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_publication_tables WHERE pubname = 'supabase_realtime' AND tablename = 'auditorias_receta') THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE auditorias_receta;
+  END IF;
+END $$;
+
+-- 35) Faltaba el GRANT de tabla para el rol anon en sesiones_trabajo (la RLS
+-- policy sola no alcanza -- Postgres exige el GRANT ademas, mismo patron que
+-- discrepancias_inventario/marcas_modelos_cliente arriba). Sin esto el
+-- insert de db.registrarEventoSesion falla con 42501 "permission denied".
+GRANT SELECT, INSERT, UPDATE ON sesiones_trabajo TO anon;

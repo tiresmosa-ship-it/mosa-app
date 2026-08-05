@@ -1226,15 +1226,20 @@ function esRotacionValida(posOrigen, posDestino, configEjes) {
 }
 
 function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, checklistInicial, kmInicial, recetaIdInicial, pendiente, discrepanciasNeumaticosInicial, recsInfo, onFinish, onCancel }) {
-  const [km, setKm] = useState(kmInicial || "");
-  const [kmSet, setKmSet] = useState(!!kmInicial);
+  // Requerimiento 4: si hay un km guardado en localStorage para este equipo
+  // hace menos de 8hs, se usa directo sin volver a pedirlo (independiente de
+  // si se llego a hacer algun cambio en la HC o no, y de si el mecanico
+  // salio y volvio a entrar).
+  const kmGuardadoLocal = kmInicial ? null : leerKmGuardado(equipo.id_equipo);
+  const [km, setKm] = useState(kmInicial || (kmGuardadoLocal != null ? String(kmGuardadoLocal) : ""));
+  const [kmSet, setKmSet] = useState(!!kmInicial || kmGuardadoLocal != null);
   // Fix 6: si hay una sesion de HC ya abierta hoy para este equipo (header
   // creado, hora_salida todavia null) hace menos de 8hs, se hereda el km de
   // esa sesion y no se vuelve a pedir ni se genera alerta de "km repetidos".
   // undefined = todavia verificando, null = no aplica (pedir km como siempre).
-  const [sesionActiva, setSesionActiva] = useState(kmInicial ? null : undefined);
+  const [sesionActiva, setSesionActiva] = useState((kmInicial || kmGuardadoLocal != null) ? null : undefined);
   useEffect(() => {
-    if (kmInicial) return; // ya viene de una auditoria de hoy, no hace falta chequear
+    if (kmInicial || kmGuardadoLocal != null) return; // ya viene de una auditoria de hoy o de localStorage, no hace falta chequear
     let cancel = false;
     db.fetchCambioActivoReciente(equipo.id_equipo, user.id).then(s => {
       if (cancel) return;
@@ -1243,10 +1248,12 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
         setKm(String(s.kilometraje));
         setKmSet(true);
         setSesionActiva(s);
+        guardarKm(equipo.id_equipo, s.kilometraje);
       } else setSesionActiva(null);
     }).catch(() => { if (!cancel) setSesionActiva(null); });
     return () => { cancel = true; };
   }, []);
+  useEffect(() => { if (kmInicial) guardarKm(equipo.id_equipo, parseInt(kmInicial, 10)); }, []);
   // Fix 3: log de "Movimientos realizados" — se va llenando en vivo con
   // logMovimiento() a medida que se confirma cada accion (ver mas abajo), y
   // si se retoma una sesion activa (sesionActiva) se reconstruye desde
@@ -1313,6 +1320,31 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
     return () => { cancel = true; clearInterval(t); };
   }, [fuegosPendientes.length, recetaId.current]);
   const [checklist, setChecklist] = useState(checklistInicial);
+  // Requerimiento 1: reflejar en vivo, sin recargar, las tareas que el Admin
+  // agrega o deriva a Pendiente mientras el mecanico sigue con la HC abierta
+  // (y viceversa, ver dashboard-actividad-faena en admin.html/superadmin.html).
+  // Se agregan las tareas nuevas que trajo el servidor y se sacan del
+  // checklist activo las que el servidor ya no tiene (derivadas a pendiente).
+  useEffect(() => {
+    if (!recetaId.current) return;
+    const canal = sb.channel("hc-checklist-" + recetaId.current)
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "auditorias_receta", filter: `id=eq.${recetaId.current}` }, (payload) => {
+        const pa = (payload.new && payload.new.posiciones_alerta) || {};
+        const recs = Array.isArray(pa.recomendaciones) ? pa.recomendaciones : [];
+        const extras = Array.isArray(pa.tareas_extra) ? pa.tareas_extra : [];
+        const idsServidor = new Set([...recs.map(r => r.id), ...extras.map(t => t.id)]);
+        setChecklist(cs => {
+          const vigentes = cs.filter(c => idsServidor.has(c.id));
+          const idsLocales = new Set(vigentes.map(c => c.id));
+          const nuevasRecs = recs.filter(r => !idsLocales.has(r.id)).map(r => ({ id: r.id, texto: r.texto, done: !!r.done, extra: false }));
+          const nuevasExtras = extras.filter(t => !idsLocales.has(t.id)).map(t => ({ id: t.id, texto: t.texto, done: !!t.done, extra: true, origen: t.origen || null, tipo_origen: t.tipo_origen, creado_por: t.creado_por, fecha_origen: t.fecha_origen }));
+          if (vigentes.length === cs.length && !nuevasRecs.length && !nuevasExtras.length) return cs;
+          if (nuevasRecs.length || nuevasExtras.length) pushToast("🔔 Nueva tarea agregada al instructivo");
+          return [...vigentes, ...nuevasRecs, ...nuevasExtras];
+        });
+      }).subscribe();
+    return () => { sb.removeChannel(canal); };
+  }, [recetaId.current]);
   const [nuevaTarea, setNuevaTarea] = useState("");
   const [infoPos, setInfoPos] = useState(null);
   const [montaje, setMontaje] = useState(null); // { tipo, pos }
@@ -1647,6 +1679,7 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
       }
     });
     syncQueue();
+    db.registrarEventoSesion(clienteId, equipo.id_equipo, user.id, "HOJA_CAMBIO_FINALIZADA", { cambioId: cambio_id }).catch(e => console.error(e));
     setSaving(false);
     onFinish();
   }
@@ -1686,6 +1719,7 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
       // Encolado (no llamada directa a sb) para no perder el dato si esta offline.
       pushQueue({ id: uuid(), tipo: "update_equipo_km", clienteId, ts: Date.now(), data: { equipo_id: equipo.id_equipo, kilometros: parseInt(km, 10) } });
       syncQueue();
+      guardarKm(equipo.id_equipo, parseInt(km, 10));
       setKmSet(true);
     }} />;
   }
@@ -1726,23 +1760,25 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
           // y ese neumatico esta montado, agrega un atajo directo a su modal de info.
           const m = /pos(?:ici[oó]n)?\.?\s*(\d+)|\bP(\d+)\b/i.exec(c.texto);
           const posMatch = m ? parseInt(m[1] || m[2], 10) : null;
+          const tieneModal = posMatch != null && posData[posMatch];
           return (
-            <div key={c.id} className="w-full text-left bg-white rounded-2xl border border-bd shadow-card px-4 py-3 flex items-center gap-3">
-              <button onClick={() => setChecklist(cs => { const next = cs.map(x => x.id === c.id ? { ...x, done: !x.done } : x); persistChecklist(next); return next; })} className="flex items-center gap-3 flex-1 min-w-0 text-left">
-                <span className={cx("w-6 h-6 rounded-lg flex items-center justify-center shrink-0", c.done ? "bg-ink" : "bg-white border border-[#D1D5DB]")}>
+            <div key={c.id} onClick={() => tieneModal && setInfoPos(posMatch)}
+              className={cx("w-full text-left bg-white rounded-2xl border border-bd shadow-card px-4 py-3 flex items-center gap-3",
+                c.origen && "border-l-4 border-l-amber-500", tieneModal && "cursor-pointer")}>
+              <button onClick={(e) => { e.stopPropagation(); setChecklist(cs => { const next = cs.map(x => x.id === c.id ? { ...x, done: !x.done } : x); persistChecklist(next); return next; }); }} className="shrink-0">
+                <span className={cx("w-6 h-6 rounded-lg flex items-center justify-center", c.done ? "bg-ink" : "bg-white border border-[#D1D5DB]")}>
                   {c.done && <Icon.check width="14" height="14" className="text-white" />}
                 </span>
-                <span className={cx("text-[14px] font-semibold flex-1", c.done && "strike")}>{c.texto}</span>
               </button>
-              {c.origen && <Badge color="amber">De auditoría {formatDateLong(c.origen)}</Badge>}
+              <div className="flex items-center gap-2 flex-1 min-w-0">
+                <span className={cx("text-[14px] font-semibold flex-1", c.done && "strike")}>{c.texto}</span>
+                {c.origen && <span className="text-[10px] font-bold text-[#B45309] bg-[#FEF3C7] px-2 py-0.5 rounded-full shrink-0 whitespace-nowrap">TAREAS PENDIENTES</span>}
+              </div>
               {c.extra && <Icon.pencil width="15" height="15" className="text-muted shrink-0" />}
-              {posMatch != null && posData[posMatch] && (
-                <button onClick={() => setInfoPos(posMatch)} className="text-[11px] font-bold text-ink px-2.5 py-1.5 rounded-full bg-[#F3F4F6] shrink-0 whitespace-nowrap">🔗 Ir al neumático</button>
-              )}
               {/* Requerimiento 2C: solo si el mecanico tiene permiso — sin el
                   permiso, unicamente puede tachar (COMPLETADA), no derivar. */}
               {user.puede_modificar_instructivo && !c.done && (
-                <button onClick={() => diferirTarea(c)} className="text-[11px] font-bold text-[#92400E] px-2.5 py-1.5 rounded-full bg-[#FEF3C7] shrink-0 whitespace-nowrap">🔴 Pendiente</button>
+                <button onClick={(e) => { e.stopPropagation(); diferirTarea(c); }} className="text-[11px] font-bold text-[#92400E] px-2.5 py-1.5 rounded-full bg-[#FEF3C7] shrink-0 whitespace-nowrap">➡️ A Pendiente</button>
               )}
             </div>
           );
@@ -2616,6 +2652,7 @@ function MecanicoApp({ user }) {
       ];
       const discrepNeus = Array.isArray(pa.discrepancias_neumaticos) ? pa.discrepancias_neumaticos : [];
       const recsInfoResumen = { recs: recs.map(r => ({ id: r.id, key: r.key, texto: r.texto })) };
+      db.registrarEventoSesion(clienteId, eq.id_equipo, user.id, "HOJA_CAMBIO_EN_PROCESO", { auditoriaId: receta.auditoria_id }).catch(e => console.error(e));
       setFlow({ stage: "cambio", equipo: eq, axleCfg, posData, checklist, recetaIdInicial: receta.id, pendiente: null, discrepanciasNeumaticos: discrepNeus, recsInfo: recsInfoResumen });
       console.log(`[dev] Hoja de cambio abierta para ${eq.patente} (${eq.numero_interno || "-"})`);
     } catch (e) { console.error("[dev] no se pudo entrar directo a la hoja de cambio", e); }
@@ -2708,7 +2745,7 @@ function MecanicoApp({ user }) {
           setFlow({ stage: "accion", equipo: eq, estadoInfo: { vencida, enProcesoHoy } });
         }} />
         <AccionEquipo equipo={flow.equipo} estadoInfo={flow.estadoInfo} onClose={() => setFlow(null)}
-          onAuditoria={() => setFlow({ stage: "auditoria", equipo: flow.equipo })}
+          onAuditoria={() => { db.registrarEventoSesion(clienteId, flow.equipo.id_equipo, user.id, "AUDITORIA_INICIADA").catch(e => console.error(e)); setFlow({ stage: "auditoria", equipo: flow.equipo }); }}
           onContinuarCambio={async () => {
             const pd = await construirPosDataDesdeEquipo(flow.equipo.id_equipo, cfg, axleConfigFor(flow.equipo), flow.equipo);
             let recetaEnProceso = null;
@@ -2723,6 +2760,7 @@ function MecanicoApp({ user }) {
             ];
             const discrepNeus = Array.isArray(pa.discrepancias_neumaticos) ? pa.discrepancias_neumaticos : [];
             const recsInfoResumen = { recs: recs.map(r => ({ id: r.id, key: r.key, texto: r.texto })) };
+            db.registrarEventoSesion(clienteId, flow.equipo.id_equipo, user.id, "HOJA_CAMBIO_EN_PROCESO", { auditoriaId: recetaEnProceso.auditoria_id }).catch(e => console.error(e));
             setFlow({ stage: "cambio", equipo: flow.equipo, axleCfg: axleConfigFor(flow.equipo), posData: pd, checklist: cl, recetaIdInicial: recetaEnProceso.id, pendiente: null, discrepanciasNeumaticos: discrepNeus, recsInfo: recsInfoResumen });
           }} />
       </>
@@ -2760,6 +2798,8 @@ function MecanicoApp({ user }) {
           const n = res.alertas;
           if (navigator.onLine) pushToast(n > 0 ? `✓ Auditoría guardada · ${n} alerta${n !== 1 ? "s" : ""} generada${n !== 1 ? "s" : ""}` : "✓ Auditoría guardada");
           else pushToast("📋 Guardado localmente — se sincronizará al reconectar", "amber");
+          db.registrarEventoSesion(clienteId, flow.equipo.id_equipo, user.id, "AUDITORIA_FINALIZADA", { auditoriaId: res.auditoriaId }).catch(e => console.error(e));
+          db.registrarEventoSesion(clienteId, flow.equipo.id_equipo, user.id, "HOJA_CAMBIO_EN_PROCESO", { auditoriaId: res.auditoriaId }).catch(e => console.error(e));
           setFlow({ stage: "cambio", equipo: flow.equipo, axleCfg: flow.axleCfg, posData: flow.posData, checklist: flow.checklist, kmInicial: flow.km, recetaIdInicial: res.recetaId, discrepanciasNeumaticos: flow.discrepanciasNeumaticos, recsInfo: flow.recsInfo });
         }}
         onCerrar={async () => {
@@ -2767,6 +2807,7 @@ function MecanicoApp({ user }) {
           const n = res.alertas;
           if (navigator.onLine) pushToast(n > 0 ? `✓ Auditoría guardada · ${n} alerta${n !== 1 ? "s" : ""} generada${n !== 1 ? "s" : ""}` : "✓ Auditoría guardada");
           else pushToast("📋 Guardado localmente — se sincronizará al reconectar", "amber");
+          db.registrarEventoSesion(clienteId, flow.equipo.id_equipo, user.id, "AUDITORIA_FINALIZADA", { auditoriaId: res.auditoriaId }).catch(e => console.error(e));
           setFlow(null);
         }} />
     );

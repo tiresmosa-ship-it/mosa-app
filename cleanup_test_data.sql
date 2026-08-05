@@ -113,6 +113,14 @@ DELETE FROM neumaticos WHERE numero_fuego IN (
 -- DELETE en neumaticos).
 DELETE FROM neumaticos WHERE numero_fuego LIKE 'AUDTEST%';
 
+-- Filas de prueba insertadas al verificar db.registrarEventoSesion/Realtime
+-- en vivo contra AE289ZB (anon sin DELETE en sesiones_trabajo).
+DELETE FROM sesiones_trabajo WHERE id IN (
+  '552c8f90-854a-4b7f-9401-9cc937365419',
+  '9927e72a-78f8-4001-bf48-e90858c413f5',
+  '007928fa-15e6-4f0f-9c80-726ea44ae007'
+);
+
 -- =====================================================================
 -- Verificacion (deberia devolver 0 en todas)
 -- =====================================================================
