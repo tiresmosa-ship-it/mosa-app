@@ -881,10 +881,24 @@ async function asegurarNeumatico(clienteId, numeroFuego, equipoId, posicion, ext
     fecha_ingreso: todayISO(), activo: true
   });
 }
+// Bug critico de sincronizacion: enviarAuditoria hace 3 inserts seguidos
+// (auditorias -> auditoria_posiciones -> auditorias_receta). Si el 2do o 3ro
+// fallaba (por una caida de red a mitad de camino, tipico en 3G/4G de campo),
+// el item quedaba en la cola y el reintento volvia a ejecutar la funcion
+// entera desde el paso 1 -- que ahora choca con su propio id_auditoria
+// (23505, unique_violation), y syncQueue trata cualquier 23505 como "ya se
+// habia sincronizado antes" y descarta el item COMPLETO sin haber llegado a
+// insertar auditoria_posiciones/auditorias_receta. El mecanico ve "Auditoria
+// guardada" (los eventos de sesiones_trabajo se insertan aparte y si
+// funcionan), pero la receta jamas existe -> Recomendaciones/Hoja de Cambio
+// en Vivo del Admin y el propio checklist del mecanico quedan vacios para
+// siempre, sin ningun error visible. Fix: los 3 inserts se hacen con
+// upsert(onConflict:'<pk>') en vez de insert() puro, para que un reintento
+// parcial reconcilie en lugar de perder los pasos que faltaban.
 async function enviarAuditoria(data) {
   const { posiciones, receta, cliente_id, ...rest } = data;
   const cab = { ...rest, cliente_id };
-  const { error: e1 } = await sb.from("auditorias").insert(cab);
+  const { error: e1 } = await sb.from("auditorias").upsert(cab, { onConflict: "id_auditoria" });
   if (e1) throw e1;
   for (const p of posiciones) {
     if (p.numero_fuego) await asegurarNeumatico(cliente_id, p.numero_fuego, cab.equipo_id, p.posicion, p);
@@ -912,8 +926,8 @@ async function enviarAuditoria(data) {
     tipo_desgaste: p.tipo_desgaste || null, marca: p.marca || null, modelo: p.modelo || null,
     auditoria_id: cab.id_auditoria
   }));
-  if (rows.length) { const { error: e2 } = await sb.from("auditoria_posiciones").insert(rows); if (e2) throw e2; }
-  if (receta) { const { error: e3 } = await sb.from("auditorias_receta").insert({ ...receta, auditoria_id: cab.id_auditoria, cliente_id }); if (e3) throw e3; }
+  if (rows.length) { const { error: e2 } = await sb.from("auditoria_posiciones").upsert(rows, { onConflict: "id" }); if (e2) throw e2; }
+  if (receta) { const { error: e3 } = await sb.from("auditorias_receta").upsert({ ...receta, auditoria_id: cab.id_auditoria, cliente_id }, { onConflict: "id" }); if (e3) throw e3; }
   await sb.from("equipos").update({ kilometros: cab.kilometraje }).eq("id_equipo", cab.equipo_id);
 }
 async function insertMovimientoBodega(clienteId, mecanicoId, tipo, origen, numeroFuego) {

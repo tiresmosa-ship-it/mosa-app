@@ -154,3 +154,22 @@ DELETE FROM sesiones_trabajo WHERE id = 'ce61f7bf-796c-4232-ae19-cbeb34c55ddd';
 
 -- Prueba en vivo del fix 4 (persistencia del log de movimientos): regulacion PSI de prueba en P4/AE289ZB.
 DELETE FROM intervenciones WHERE id = 'b3ec4b87-1016-4b63-b9c9-758258ae0054';
+
+-- Prueba en vivo del flujo completo Auditoria -> EN_RECOMENDACIONES -> Hoja de
+-- Cambio en equipo AH771HG (119), para reproducir y confirmar el fix del bug
+-- critico de enviarAuditoria (insert -> upsert, ver js/supabase.js). Incluye
+-- una auditoria "de verdad" via construirYGuardarAuditoria/pushQueue (datos
+-- de neumaticos de prueba: numero_fuego 1001-1010) y dos auditorias armadas a
+-- mano para simular el escenario de reintento parcial.
+DELETE FROM auditoria_posiciones WHERE auditoria_id IN ('ab4d80f7-d29a-4bc0-85a8-afbb7cb03310', '30d15bca-d686-4c2d-b7e8-6600955c9c91');
+DELETE FROM auditorias_receta WHERE id = 'c1da6615-6f38-46fc-b78f-875e3e1fc71f';
+DELETE FROM auditorias WHERE id_auditoria IN ('ab4d80f7-d29a-4bc0-85a8-afbb7cb03310', '30d15bca-d686-4c2d-b7e8-6600955c9c91');
+DELETE FROM sesiones_trabajo WHERE equipo_id = 'e9f165c5-173a-489e-a732-c8629adad61f';
+DELETE FROM neumaticos WHERE cliente_id = 'la_portada' AND numero_fuego IN ('1001','1002','1003','1004','1005','1006','1007','1008','1009','1010','2001','2002','2003');
+
+-- Prueba en vivo con entrarDevHC (dev bypass): creo una auditoria/receta
+-- vacia para AE289ZD (112) al probar el bypass ?dev=true sin querer.
+DELETE FROM auditorias_receta WHERE id = 'e794940d-fc40-49a2-a4ae-31b85bd08fc2';
+DELETE FROM auditorias WHERE id_auditoria = 'c8e03de5-1a8c-401b-a317-9b85af2df82b';
+DELETE FROM sesiones_trabajo WHERE equipo_id = '0d6d06fd-a6d2-436a-b1ae-ce7a8919e7be';
+DELETE FROM check_diario WHERE id = '65f79638-a268-49ed-b4e2-1362c959bc35';
