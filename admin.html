@@ -534,12 +534,14 @@ const ACTIVIDAD_FAENA_ESTADO = {
   HOJA_CAMBIO_FINALIZADA: { label: "Hoja de Cambio Finalizada", dot: "🏁" }
 };
 function ActividadFaenaRow({ item, borde, adminUser, pushToast, onCambio }) {
-  const [modal, setModal] = useState(null); // null | 'recomendaciones' | 'hc'
+  const [modal, setModal] = useState(null); // null | 'recomendaciones' | 'hc' | 'pendientes'
   const est = ACTIVIDAD_FAENA_ESTADO[item.evento] || { label: item.evento, dot: "⚪" };
   const enProceso = item.evento === "HOJA_CAMBIO_EN_PROCESO";
   const enRecomendaciones = item.evento === "EN_RECOMENDACIONES";
+  const auditoriaIniciada = item.evento === "AUDITORIA_INICIADA";
   const eq = item.equipos, mec = item.usuarios;
   const equipoLabel = eq ? `${eq.numero_interno ? eq.numero_interno + " · " : ""}${eq.patente}` : "-";
+  const equipo = { id_equipo: item.equipo_id, patente: eq && eq.patente, numero_interno: eq && eq.numero_interno };
 
   return (
     <div className={cx("px-4 py-3", borde && "border-t border-bd")}>
@@ -549,22 +551,33 @@ function ActividadFaenaRow({ item, borde, adminUser, pushToast, onCambio }) {
           <p className="text-[12px] text-muted">{mec ? `${mec.nombre} ${mec.apellido || ""}`.trim() : "-"} · {timeAgoCorto(item.creado_en)}</p>
         </div>
         <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
-          <Badge color={enProceso ? "amber" : enRecomendaciones ? "purple" : item.evento === "HOJA_CAMBIO_FINALIZADA" ? "green" : "gray"}>{est.dot} {est.label}</Badge>
+          <Badge color={enProceso ? "amber" : enRecomendaciones ? "purple" : item.evento === "HOJA_CAMBIO_FINALIZADA" ? "green" : "gray"}>
+            {auditoriaIniciada ? "🔵 Auditoría en Curso" : `${est.dot} ${est.label}`}
+          </Badge>
           {enRecomendaciones && (
-            <Button variant="subtle" className="h-8 px-3 text-[12px]" onClick={() => setModal("recomendaciones")}>📋 Ver Recomendaciones del Sistema</Button>
+            <Button variant="subtle" className="h-8 px-3 text-[12px]" onClick={() => setModal("recomendaciones")}>📋 Ver y Gestionar Recomendaciones</Button>
           )}
           {enProceso && (
-            <Button variant="subtle" className="h-8 px-3 text-[12px]" onClick={() => setModal("hc")}>👁️ Ver Hoja de Cambio en Vivo</Button>
+            <Button variant="subtle" className="h-8 px-3 text-[12px]" onClick={() => setModal("hc")}>👁️ Ver y Editar Hoja de Cambio en Vivo</Button>
           )}
+          {/* Requerimiento 4: acceso directo a los pendientes del equipo desde
+              la tarjeta de Actividad en Faena, sin tener que ir al modulo
+              Equipos (que tiene la misma sección, ver TareasPendientesSeccion). */}
+          <Button variant="ghost" className="h-8 px-3 text-[12px]" onClick={() => setModal("pendientes")}>🕓 Pendientes</Button>
         </div>
       </div>
       {modal === "recomendaciones" && (
-        <RecomendacionesModal auditoriaId={item.auditoria_id} equipoLabel={equipoLabel} adminUser={adminUser} pushToast={pushToast}
+        <RecomendacionesModal auditoriaId={item.auditoria_id} equipoId={item.equipo_id} equipoLabel={equipoLabel} adminUser={adminUser} pushToast={pushToast}
           onClose={() => setModal(null)} onCambio={onCambio} />
       )}
       {modal === "hc" && (
         <HojaCambioEnVivoModal auditoriaId={item.auditoria_id} equipoId={item.equipo_id} equipoLabel={equipoLabel} adminUser={adminUser} pushToast={pushToast}
           onClose={() => setModal(null)} onCambio={onCambio} />
+      )}
+      {modal === "pendientes" && (
+        <Modal title={`Tareas pendientes — ${equipoLabel}`} onClose={() => setModal(null)}>
+          <TareasPendientesSeccion equipo={equipo} adminUser={adminUser} pushToast={pushToast} />
+        </Modal>
       )}
     </div>
   );
@@ -572,9 +585,11 @@ function ActividadFaenaRow({ item, borde, adminUser, pushToast, onCambio }) {
 // Requerimiento 3: el Admin ve las recomendaciones que dejo la auditoria y
 // puede aprobarlas/desaprobarlas, marcarlas prioritarias o derivarlas
 // directo a Pendiente sin tener que esperar a que el mecanico llegue a la HC.
-function RecomendacionesModal({ auditoriaId, equipoLabel, adminUser, pushToast, onClose, onCambio }) {
+function RecomendacionesModal({ auditoriaId, equipoId, equipoLabel, adminUser, pushToast, onClose, onCambio }) {
   const [receta, setReceta] = useState(undefined); // undefined = cargando, null = no encontrada
   const [ocupado, setOcupado] = useState(null);
+  const [nuevaTarea, setNuevaTarea] = useState("");
+  const [agregando, setAgregando] = useState(false);
 
   function cargar() {
     db.fetchRecetaPorAuditoria(auditoriaId).then(setReceta).catch(e => { console.error("No se pudo cargar la auditoria", e); setReceta(null); });
@@ -582,6 +597,21 @@ function RecomendacionesModal({ auditoriaId, equipoLabel, adminUser, pushToast, 
   useEffect(cargar, [auditoriaId]);
 
   const recs = receta ? (Array.isArray(receta.posiciones_alerta.recomendaciones) ? receta.posiciones_alerta.recomendaciones : []) : [];
+
+  // Requerimiento 2.2: cargar una tarea manual directo desde Recomendaciones,
+  // igual mecanismo que usa "Ver Hoja de Cambio en Vivo" (db.agregarTareaEquipo
+  // ya decide si inyectarla a la HC activa de hoy o dejarla pendiente).
+  async function agregarTarea() {
+    if (!nuevaTarea.trim()) return;
+    setAgregando(true);
+    try {
+      await db.agregarTareaEquipo(equipoId, nuevaTarea.trim(), adminUser);
+      pushToast("✓ Tarea agregada al instructivo");
+      setNuevaTarea("");
+      onCambio && onCambio();
+    } catch (e) { console.error("No se pudo agregar la tarea", e); pushToast(e.message || "✕ No se pudo agregar la tarea", "red"); }
+    setAgregando(false);
+  }
 
   async function actualizar(r, cambios, msg) {
     setOcupado(r.id);
@@ -628,6 +658,10 @@ function RecomendacionesModal({ auditoriaId, equipoLabel, adminUser, pushToast, 
             </div>
           ))}
           {!recs.length && <p className="text-[13.5px] text-muted text-center py-6">Sin recomendaciones activas para este equipo.</p>}
+          <div className="flex gap-2 pt-2 border-t border-bd">
+            <TextInput placeholder="Cargar nueva tarea" value={nuevaTarea} onChange={e => setNuevaTarea(e.target.value)} onKeyDown={e => { if (e.key === "Enter") agregarTarea(); }} className="h-10 text-[13px]" />
+            <Button variant="subtle" className="h-10 px-4 text-[13px]" disabled={!nuevaTarea.trim() || agregando} onClick={agregarTarea}>{agregando ? <span className="spinner" /> : "➕ Agregar Tarea"}</Button>
+          </div>
         </div>
       )}
     </Modal>
@@ -641,6 +675,7 @@ function HojaCambioEnVivoModal({ auditoriaId, equipoId, equipoLabel, adminUser, 
   const [receta, setReceta] = useState(undefined);
   const [nuevaTarea, setNuevaTarea] = useState("");
   const [agregando, setAgregando] = useState(false);
+  const [ocupado, setOcupado] = useState(null);
 
   function cargar() {
     db.fetchRecetaPorAuditoria(auditoriaId).then(setReceta).catch(e => { console.error("No se pudo cargar la HC", e); setReceta(null); });
@@ -668,9 +703,26 @@ function HojaCambioEnVivoModal({ auditoriaId, equipoId, equipoLabel, adminUser, 
     setAgregando(false);
   }
 
+  // Requerimiento 3.3: mandar a pendiente EN VIVO una tarea activa de la HC en
+  // curso -- reusa enviarTareaActivaAPendiente (misma funcion que usa
+  // Recomendaciones), marcando esExtra segun de que lista vino cada tarea. El
+  // canal realtime de arriba actualiza este modal solo, y el que ya escucha
+  // mecanico.html (canal "hc-checklist-<recetaId>") hace que desaparezca del
+  // HACER_HOY del mecanico en el momento en que llega el update.
+  async function aPendiente(t, esExtra) {
+    const key = t.id || t.texto;
+    setOcupado(key);
+    try {
+      await db.enviarTareaActivaAPendiente(receta.id, t, esExtra, adminUser);
+      pushToast("⏳ Tarea mandada a Pendiente — se quita de la Hoja de Cambio del mecánico");
+      onCambio && onCambio();
+    } catch (e) { console.error("No se pudo mandar la tarea a pendiente", e); pushToast("✕ No se pudo mandar a pendiente", "red"); }
+    setOcupado(null);
+  }
+
   const pa = (receta && receta.posiciones_alerta) || {};
-  const recs = Array.isArray(pa.recomendaciones) ? pa.recomendaciones : [];
-  const extras = Array.isArray(pa.tareas_extra) ? pa.tareas_extra : [];
+  const recs = (Array.isArray(pa.recomendaciones) ? pa.recomendaciones : []).map(t => ({ ...t, esExtra: false }));
+  const extras = (Array.isArray(pa.tareas_extra) ? pa.tareas_extra : []).map(t => ({ ...t, esExtra: true }));
   const activas = [...recs, ...extras];
   const completadas = activas.filter(t => t.done);
   const enProceso = activas.filter(t => !t.done);
@@ -685,7 +737,14 @@ function HojaCambioEnVivoModal({ auditoriaId, equipoId, equipoLabel, adminUser, 
           <div>
             <p className="font-bold text-[13.5px] mb-2">🟡 En proceso ({enProceso.length})</p>
             <div className="space-y-1.5">
-              {enProceso.map((t, i) => <p key={i} className="text-[13px] text-[#92400E] bg-[#FEF3C7] rounded-xl px-3 py-2">{t.texto}</p>)}
+              {enProceso.map((t, i) => (
+                <div key={i} className="text-[13px] text-[#92400E] bg-[#FEF3C7] rounded-xl px-3 py-2 flex items-center justify-between gap-2">
+                  <span className="flex-1">{t.texto}</span>
+                  <button disabled={ocupado === (t.id || t.texto)} onClick={() => aPendiente(t, t.esExtra)} className="text-[11px] font-bold text-[#92400E] px-2.5 py-1 rounded-full bg-white shrink-0 whitespace-nowrap">
+                    {ocupado === (t.id || t.texto) ? "..." : "⏳ Mandar a Pendiente"}
+                  </button>
+                </div>
+              ))}
               {!enProceso.length && <p className="text-[12.5px] text-muted">Nada pendiente por hacer hoy.</p>}
             </div>
           </div>
@@ -1623,7 +1682,7 @@ function TareasPendientesSeccion({ equipo, adminUser, pushToast }) {
                   <td className="py-2.5 px-4"><Badge color="red">Pendiente</Badge></td>
                   <td className="py-2.5 px-4">
                     <Button variant="subtle" className="h-9 px-3 text-[12.5px]" disabled={reasignando === t.id} onClick={() => reasignar(t)}>
-                      {reasignando === t.id ? <span className="spinner" /> : "🔁 Reactivar Tarea"}
+                      {reasignando === t.id ? <span className="spinner" /> : "🔄 Reactivar para Hoy"}
                     </Button>
                   </td>
                 </tr>
