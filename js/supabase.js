@@ -1011,10 +1011,10 @@ async function enviarCambioItem(data) {
     await actualizarNeumaticoSale(cliente_id, item);
     await insertMovimientoBodega(cliente_id, mecanico_id, "salida", item.origen_mov || item.motivo || "salida", item.numero_fuego);
   } else if (kind === "entra") {
-    await asegurarNeumatico(cliente_id, item.numero_fuego, equipo_id, item.posicion, item);
+    if (item.id_neumatico_origen) await renombrarNeumaticoOrigen(item.id_neumatico_origen, equipo_id, item);
+    else { await asegurarNeumatico(cliente_id, item.numero_fuego, equipo_id, item.posicion, item); await actualizarNeumaticoEntra(cliente_id, equipo_id, item); }
     const { error } = await sb.from("cambio_detalle").insert({ id: uuid(), cambio_id, tipo: "entra", numero_fuego: item.numero_fuego, posicion: item.posicion || null, milimetros: item.milimetros || null, psi: item.psi || null, estado: item.estado || null, motivo_salida: null });
     if (error) throw error;
-    await actualizarNeumaticoEntra(cliente_id, equipo_id, item);
     await insertMovimientoBodega(cliente_id, mecanico_id, "entrada", "montaje", item.numero_fuego);
   } else if (kind === "rotacion") {
     const r = item, a = r.a, b = r.b;
@@ -1143,6 +1143,27 @@ async function actualizarNeumaticoEntra(clienteId, equipoId, en) {
     });
     if (error) throw error;
   }
+}
+// Montaje "No tiene N° de fuego" con auto-asignacion de stock (ver
+// asignarAutomatico en mecanico.html): la fila de bodega que se estaba
+// descontando (id_neumatico_origen) tenia un numero_fuego provisorio
+// (placeholder de la carga por lote, o dato viejo). En vez de dejarla huerfana
+// en bodega y crear una fila nueva bajo el codigo recien generado (lo que
+// haria actualizarNeumaticoEntra al no encontrar coincidencia por
+// numero_fuego), se renombra esa misma fila al codigo oficial y se monta.
+async function renombrarNeumaticoOrigen(idNeumaticoOrigen, equipoId, en) {
+  const update = {
+    numero_fuego: en.numero_fuego, estado_actual: "en_uso", bodega: null,
+    equipo_actual: equipoId, posicion_actual: en.posicion || null
+  };
+  if (en.tipo) update.tipo = en.tipo;
+  if (en.marca) update.marca = en.marca;
+  if (en.modelo) update.modelo = en.modelo;
+  if (en.medida) update.medida = en.medida;
+  if (en.psi != null) update.psi_actual = en.psi;
+  if (en.milimetros != null) update.milimetros = en.milimetros;
+  const { error } = await sb.from("neumaticos").update(update).eq("id_neumatico", idNeumaticoOrigen);
+  if (error) throw error;
 }
 window.addEventListener("online", () => syncQueue());
 setInterval(() => { if (navigator.onLine) syncQueue(); }, 15000);

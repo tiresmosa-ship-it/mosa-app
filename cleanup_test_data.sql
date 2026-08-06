@@ -150,6 +150,7 @@ DELETE FROM sesiones_trabajo WHERE auditoria_id = '2563a044-0eef-4ddb-ba7a-b0c5b
 -- Prueba en vivo de EN_RECOMENDACIONES tras dropear sesiones_trabajo_evento_check
 -- (la alerta hito_operativo asociada ya la borra el DELETE FROM alertas de arriba).
 DELETE FROM sesiones_trabajo WHERE id = 'b7b9c43e-25cc-4272-93a8-b851bd1bf621';
+DELETE FROM sesiones_trabajo WHERE id = 'ce61f7bf-796c-4232-ae19-cbeb34c55ddd';
 
 -- Prueba en vivo del fix 4 (persistencia del log de movimientos): regulacion PSI de prueba en P4/AE289ZB.
 DELETE FROM intervenciones WHERE id = 'b3ec4b87-1016-4b63-b9c9-758258ae0054';

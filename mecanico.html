@@ -1718,7 +1718,7 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
     // neumaticos.tipo via asegurarNeumatico/actualizarNeumaticoEntra. "estado"
     // sigue siendo el origen del montaje (nuevo/transito/recauchado), campo
     // distinto que ya usaba cambio_detalle.estado.
-    const itemEntra = { numero_fuego: data.numero_fuego, posicion: pos, milimetros: data.mm ? parseFloat(data.mm) : null, psi: data.psi ? parseInt(data.psi, 10) : null, estado: tipo, tipo: inferirTipoNeumatico(equipo, axleCfg, pos), marca: data.marca || null, modelo: data.modelo || null, medida: data.medida || null };
+    const itemEntra = { numero_fuego: data.numero_fuego, posicion: pos, milimetros: data.mm ? parseFloat(data.mm) : null, psi: data.psi ? parseInt(data.psi, 10) : null, estado: tipo, tipo: inferirTipoNeumatico(equipo, axleCfg, pos), marca: data.marca || null, modelo: data.modelo || null, medida: data.medida || null, id_neumatico_origen: data.idNeumaticoOrigen || null };
     entra.current.push(itemEntra);
     ensureCambioHeader().then(cambio_id => {
       pushQueue({ id: uuid(), tipo: "cambio_item", clienteId, ts: Date.now(), data: { kind: "entra", cambio_id, cliente_id: clienteId, mecanico_id: user.id, equipo_id: equipo.id_equipo, item: itemEntra } });
@@ -2357,7 +2357,7 @@ function MontajeModal({ tipo, pos, equipo, clienteId, cfg, axleCfg, user, onClos
   // "No tiene fuego" + hay stock: se asigna solo el primero disponible (el
   // mecanico no tiene que buscarlo/elegirlo, solo confirmar/ajustar datos).
   useEffect(() => {
-    if (fuegoMarcado === false && !manual && opciones && opciones.length && !seleccionado) elegirDeLista(opciones[0]);
+    if (fuegoMarcado === false && !manual && opciones && opciones.length && !seleccionado) asignarAutomatico(opciones[0]);
   }, [fuegoMarcado, opciones]);
 
   async function generarFuegoManual() {
@@ -2377,6 +2377,24 @@ function MontajeModal({ tipo, pos, equipo, clienteId, cfg, axleCfg, user, onClos
     setManual(false);
     setMarca(""); setModelo(""); // el mecanico los tipea de nuevo mirando el neumatico fisico
     setFuego(o.numero_fuego);
+  }
+  // Fix: "No tiene fuego" significa que el neumatico fisico NO tiene marca --
+  // el numero_fuego que trae la fila de bodega (o.numero_fuego) es solo un
+  // codigo provisorio interno (ver EntradaNeumaticosModal en admin.html,
+  // prefijo "PEND" + timestamp, o datos viejos tipo "DIR001"), NO algo que
+  // haya que escribirle al neumatico. Aca hay que sugerir el codigo oficial
+  // de la faena (formula de La Portada u otro cliente con formula propia)
+  // para que el mecanico lo marque en el neumatico, igual que en el flujo
+  // "fuera de stock" (generarFuegoManual/irAManual).
+  async function asignarAutomatico(o) {
+    setSeleccionado(o);
+    setErrorValidacion("");
+    setManual(false);
+    setMarca(""); setModelo("");
+    try {
+      const sug = await generarNumeroFuegoSugerido(clienteId, cfg, equipo.numero_interno, pos, todayISO());
+      setFuego(sug);
+    } catch (e) { console.error("No se pudo generar el numero de fuego sugerido", e); setFuego(o.numero_fuego); }
   }
   function confirmarMontaje() {
     // Fix 2: la validacion estricta marca/modelo contra el sistema SOLO
@@ -2422,7 +2440,15 @@ function MontajeModal({ tipo, pos, equipo, clienteId, cfg, axleCfg, user, onClos
       });
       syncQueue();
     }
-    onConfirm({ numero_fuego: fuego, marca, modelo, marcaModeloNoRegistrado, medida, psi, mm, fotoUrl, deBodega: !manual });
+    // Si el fuego final quedo distinto al de la fila de bodega que se estaba
+    // descontando (caso "No tiene fuego" -> se genero un codigo nuevo con la
+    // formula de la faena, ver asignarAutomatico), hay que renombrar ESA fila
+    // especifica en vez de dejarla huerfana en bodega mientras se crea una
+    // fila nueva con el codigo generado -- ver actualizarNeumaticoEntra en
+    // js/supabase.js, que ahora prioriza idNeumaticoOrigen sobre el matcheo
+    // por numero_fuego.
+    const idNeumaticoOrigen = (seleccionado && seleccionado.numero_fuego !== fuego) ? seleccionado.id_neumatico : null;
+    onConfirm({ numero_fuego: fuego, marca, modelo, marcaModeloNoRegistrado, medida, psi, mm, fotoUrl, deBodega: !manual, idNeumaticoOrigen });
   }
 
   async function onFotoChange(e) {
