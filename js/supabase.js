@@ -397,6 +397,27 @@ const db = {
     if (error) throw error;
     return (data && data[0]) || null;
   },
+  // Requerimiento 3: receta asociada a una auditoria puntual -- usada por los
+  // modales "Ver Recomendaciones" y "Ver Hoja de Cambio en Vivo" del Admin
+  // (Actividad en Faena), que ya conocen el auditoria_id via sesiones_trabajo.
+  async fetchRecetaPorAuditoria(auditoriaId) {
+    if (!auditoriaId) return null;
+    const { data, error } = await sb.from("auditorias_receta").select("id,auditoria_id,estado,posiciones_alerta")
+      .eq("auditoria_id", auditoriaId).order("creado_en", { ascending: false }).limit(1).maybeSingle();
+    if (error) throw error;
+    return data;
+  },
+  // Requerimiento 3: el Admin aprueba/desaprueba o marca prioritaria una
+  // recomendacion de la auditoria (read-modify-write sobre posiciones_alerta,
+  // mismo patron que el resto de la app para no pisar tareas_diferidas etc.).
+  async actualizarRecomendacion(recetaId, recomendacionId, cambios) {
+    const { data, error: eFresh } = await sb.from("auditorias_receta").select("posiciones_alerta").eq("id", recetaId).maybeSingle();
+    if (eFresh) throw eFresh;
+    const pa = (data && data.posiciones_alerta) || {};
+    const recs = (Array.isArray(pa.recomendaciones) ? pa.recomendaciones : []).map(r => r.id === recomendacionId ? { ...r, ...cambios } : r);
+    const { error } = await sb.from("auditorias_receta").update({ posiciones_alerta: { ...pa, recomendaciones: recs } }).eq("id", recetaId);
+    if (error) throw error;
+  },
   // Bug 1 (persistencia HC): igual que fetchRecetaEnProcesoHoy pero sin
   // conocer de antemano el equipo — se usa al abrir mecanico.html para
   // detectar automaticamente si este mecanico dejo una hoja de cambio a
@@ -589,7 +610,28 @@ const db = {
     if (!equipoId || !usuarioId) return;
     const row = { cliente_id: clienteId, equipo_id: equipoId, usuario_id: usuarioId, evento, auditoria_id: (extra && extra.auditoriaId) || null, cambio_id: (extra && extra.cambioId) || null };
     const { error } = await sb.from("sesiones_trabajo").insert(row);
-    if (error) console.error("No se pudo registrar el evento de sesion", evento, error);
+    if (error) { console.error("No se pudo registrar el evento de sesion", evento, error); return; }
+    // Requerimiento 1.2: alerta de hito operativo para el Admin en cada
+    // transicion de estado (severidad info -- no requiere accion, solo
+    // visibilidad; ver NIVELES_ALERTA.info y ActividadFaenaRow).
+    const HITO_TEXTO = {
+      AUDITORIA_INICIADA: ["Auditoría Iniciada", "inició la auditoría"],
+      AUDITORIA_FINALIZADA: ["Auditoría Finalizada", "finalizó la auditoría"],
+      HOJA_CAMBIO_EN_PROCESO: ["Hoja de Cambio Iniciada", "inició la Hoja de Cambio"],
+      HOJA_CAMBIO_FINALIZADA: ["Hoja de Cambio Finalizada", "finalizó la Hoja de Cambio"]
+    };
+    const hito = HITO_TEXTO[evento];
+    if (hito) {
+      const equipoLabel = (extra && extra.equipoLabel) || equipoId;
+      const mecanicoNombre = (extra && extra.mecanicoNombre) || "El mecánico";
+      const { error: eAlerta } = await sb.from("alertas").insert({
+        id: uuid(), cliente_id: clienteId, equipo_id: equipoId, mecanico_id: usuarioId,
+        tipo: "hito_operativo", severidad: "info", estado: "nueva",
+        titulo: hito[0], descripcion: `${mecanicoNombre} ${hito[1]} en el equipo ${equipoLabel}.`,
+        leida_mecanico: true, leida_admin: false, leida_superadmin: false
+      });
+      if (eAlerta) console.error("No se pudo generar la alerta de hito operativo", eAlerta);
+    }
   },
   async reasignarTareaAHoy(equipoId, tarea, adminUser) {
     const receta = await db.fetchRecetaEnProcesoHoy(equipoId);
@@ -962,8 +1004,20 @@ async function enviarCambioItem(data) {
     if (error) throw error;
   }
 }
+// Requerimiento 2 (fix critico): persistChecklist en mecanico.html arma
+// posiciones_alerta SOLO con {recomendaciones, discrepancias_neumaticos,
+// tareas_extra} a partir del checklist local (que nunca tuvo tareas_diferidas
+// para empezar). Si esto se escribiera como UPDATE directo pisando toda la
+// columna, cada vez que el mecanico toca cualquier checkbox borraria las
+// tareas que el mismo (o el Admin) ya habian mandado a Pendiente en esa
+// misma receta -- el bug de "se pierden las tareas pendientes". Se lee la
+// fila fresca justo antes de escribir y se mergea, preservando
+// tareas_diferidas (y cualquier otra clave) que no vengan en data.posiciones_alerta.
 async function enviarCambioChecklist(data) {
-  const { error } = await sb.from("auditorias_receta").update({ posiciones_alerta: data.posiciones_alerta }).eq("id", data.receta_id);
+  const { data: fresh, error: eFresh } = await sb.from("auditorias_receta").select("posiciones_alerta").eq("id", data.receta_id).maybeSingle();
+  if (eFresh) throw eFresh;
+  const paFresca = (fresh && fresh.posiciones_alerta) || {};
+  const { error } = await sb.from("auditorias_receta").update({ posiciones_alerta: { ...paFresca, ...data.posiciones_alerta } }).eq("id", data.receta_id);
   if (error) throw error;
 }
 async function enviarCambioCierre(data) {
@@ -1882,9 +1936,15 @@ async function siguienteNumeroFuego(clienteId, cfg) {
   numerosFuegoEnCola(clienteId).forEach(n => { if (maxExistente === null || n > maxExistente) maxExistente = n; });
   return String(maxExistente === null ? inicio : Math.max(inicio, maxExistente + 1));
 }
-// Punto unico de decision de formula: La Portada usa su formula fija
-// (interno+semana+anio+posicion); cualquier otro cliente usa el correlativo
-// secuencial configurable. Ver Admin > Configuracion > Formula marca de fuego.
+// Fix 1: punto unico de decision de formula. NO se puede decidir leyendo
+// cfg.formula_marca_fuego directo -- ese valor cae a DEFAULT_CFG
+// ("interno+semana+anio+posicion") para CUALQUIER cliente sin fila propia
+// en config_cliente, y confirmado contra la base real BYS *tambien* tiene
+// guardado ese mismo string en config_cliente (clave formula_marca_fuego)
+// aunque usa correlativo -- leerlo directo le daria a BYS la formula de La
+// Portada. Se sigue decidiendo por clienteId (unica fuente confiable hoy);
+// si en el futuro se agrega una UI para que cada empresa elija su formula,
+// hay que migrar los valores reales de config_cliente primero.
 async function generarNumeroFuegoSugerido(clienteId, cfg, numeroInterno, posicion, fecha) {
   if (clienteId === CLIENTE_ID_DEFAULT) return generarFuegoLaPortada(numeroInterno, posicion, fecha);
   return siguienteNumeroFuego(clienteId, cfg);
@@ -1932,7 +1992,7 @@ const NIVELES_ALERTA = {
   },
   info: {
     nivel: 3, label: "Informativas",
-    tipos: ["cierre_dia", "rotacion_recomendada", "desbloqueo_aprobado", "discrepancia_resuelta", "herramienta_nueva"]
+    tipos: ["cierre_dia", "rotacion_recomendada", "desbloqueo_aprobado", "discrepancia_resuelta", "herramienta_nueva", "hito_operativo"]
   }
 };
 // escalada_sin_resolver/recordatorio_admin no entran en ningun nivel fijo de
@@ -2038,7 +2098,7 @@ const adminDb = {
   async fetchActividadFaena(clienteId) {
     const desde = new Date(); desde.setHours(0, 0, 0, 0);
     let q = sb.from("sesiones_trabajo")
-      .select("id,equipo_id,usuario_id,evento,creado_en,equipos(patente,numero_interno),usuarios(nombre,apellido)")
+      .select("id,equipo_id,usuario_id,evento,creado_en,auditoria_id,equipos(patente,numero_interno),usuarios(nombre,apellido)")
       .gte("creado_en", desde.toISOString()).order("creado_en", { ascending: false });
     q = filtroCliente(q, clienteId);
     const { data, error } = await q;

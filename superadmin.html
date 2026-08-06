@@ -858,46 +858,182 @@ const ACTIVIDAD_FAENA_ESTADO = {
   HOJA_CAMBIO_FINALIZADA: { label: "Hoja de Cambio Finalizada", dot: "🏁" }
 };
 function ActividadFaenaRow({ item, borde, adminUser, pushToast, onCambio }) {
-  const [abierto, setAbierto] = useState(false);
-  const [nuevaTarea, setNuevaTarea] = useState("");
-  const [agregando, setAgregando] = useState(false);
+  const [modal, setModal] = useState(null); // null | 'recomendaciones' | 'hc'
   const est = ACTIVIDAD_FAENA_ESTADO[item.evento] || { label: item.evento, dot: "⚪" };
   const enProceso = item.evento === "HOJA_CAMBIO_EN_PROCESO";
+  const auditoriaFinalizada = item.evento === "AUDITORIA_FINALIZADA";
   const eq = item.equipos, mec = item.usuarios;
-
-  async function agregar() {
-    if (!nuevaTarea.trim()) return;
-    setAgregando(true);
-    try {
-      await db.agregarTareaEquipo(item.equipo_id, nuevaTarea.trim(), adminUser);
-      pushToast("✓ Tarea agregada al instructivo — ya aparece en la Hoja de Cambio del mecánico");
-      setNuevaTarea(""); setAbierto(false);
-      onCambio();
-    } catch (e) { console.error("No se pudo agregar la tarea", e); pushToast(e.message || "✕ No se pudo agregar la tarea", "red"); }
-    setAgregando(false);
-  }
+  const equipoLabel = eq ? `${eq.numero_interno ? eq.numero_interno + " · " : ""}${eq.patente}` : "-";
 
   return (
     <div className={cx("px-4 py-3", borde && "border-t border-bd")}>
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <p className="font-bold text-[14px]">{eq ? `${eq.numero_interno ? eq.numero_interno + " · " : ""}${eq.patente}` : "-"}</p>
+          <p className="font-bold text-[14px]">{equipoLabel}</p>
           <p className="text-[12px] text-muted">{mec ? `${mec.nombre} ${mec.apellido || ""}`.trim() : "-"} · {timeAgoCorto(item.creado_en)}</p>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
           <Badge color={enProceso ? "amber" : item.evento === "HOJA_CAMBIO_FINALIZADA" ? "green" : "gray"}>{est.dot} {est.label}</Badge>
+          {auditoriaFinalizada && (
+            <Button variant="subtle" className="h-8 px-3 text-[12px]" onClick={() => setModal("recomendaciones")}>📋 Ver Recomendaciones</Button>
+          )}
           {enProceso && (
-            <Button variant="subtle" className="h-8 px-3 text-[12px]" onClick={() => setAbierto(v => !v)}>➕ Agregar Tarea</Button>
+            <Button variant="subtle" className="h-8 px-3 text-[12px]" onClick={() => setModal("hc")}>👁️ Ver Hoja de Cambio en Vivo</Button>
           )}
         </div>
       </div>
-      {enProceso && abierto && (
-        <div className="flex gap-2 mt-3">
-          <TextInput placeholder="Tarea para el instructivo de hoy" value={nuevaTarea} onChange={e => setNuevaTarea(e.target.value)} onKeyDown={e => { if (e.key === "Enter") agregar(); }} className="h-9 text-[12.5px]" />
-          <Button variant="subtle" className="h-9 px-3 text-[12.5px]" disabled={agregando} onClick={agregar}>{agregando ? <span className="spinner" /> : "Guardar"}</Button>
-        </div>
+      {modal === "recomendaciones" && (
+        <RecomendacionesModal auditoriaId={item.auditoria_id} equipoLabel={equipoLabel} adminUser={adminUser} pushToast={pushToast}
+          onClose={() => setModal(null)} onCambio={onCambio} />
+      )}
+      {modal === "hc" && (
+        <HojaCambioEnVivoModal auditoriaId={item.auditoria_id} equipoId={item.equipo_id} equipoLabel={equipoLabel} adminUser={adminUser} pushToast={pushToast}
+          onClose={() => setModal(null)} onCambio={onCambio} />
       )}
     </div>
+  );
+}
+function RecomendacionesModal({ auditoriaId, equipoLabel, adminUser, pushToast, onClose, onCambio }) {
+  const [receta, setReceta] = useState(undefined); // undefined = cargando, null = no encontrada
+  const [ocupado, setOcupado] = useState(null);
+
+  function cargar() {
+    db.fetchRecetaPorAuditoria(auditoriaId).then(setReceta).catch(e => { console.error("No se pudo cargar la auditoria", e); setReceta(null); });
+  }
+  useEffect(cargar, [auditoriaId]);
+
+  const recs = receta ? (Array.isArray(receta.posiciones_alerta.recomendaciones) ? receta.posiciones_alerta.recomendaciones : []) : [];
+
+  async function actualizar(r, cambios, msg) {
+    setOcupado(r.id);
+    try {
+      await db.actualizarRecomendacion(receta.id, r.id, cambios);
+      pushToast(msg);
+      cargar();
+      onCambio && onCambio();
+    } catch (e) { console.error("No se pudo actualizar la recomendación", e); pushToast("✕ No se pudo actualizar", "red"); }
+    setOcupado(null);
+  }
+  async function aPendiente(r) {
+    setOcupado(r.id);
+    try {
+      const { data, error: eFresh } = await sb.from("auditorias_receta").select("posiciones_alerta").eq("id", receta.id).maybeSingle();
+      if (eFresh) throw eFresh;
+      const pa = data.posiciones_alerta || {};
+      const diferidas = Array.isArray(pa.tareas_diferidas) ? pa.tareas_diferidas : [];
+      const nuevaDiferida = { id: r.id, texto: r.texto, tipo_origen: "sistema", creado_por: adminUser ? `${adminUser.nombre} ${adminUser.apellido || ""}`.trim() : "Admin", fecha_origen: todayISO(), estado: "PENDIENTE" };
+      const nuevaPa = { ...pa, recomendaciones: (pa.recomendaciones || []).filter(x => x.id !== r.id), tareas_diferidas: [...diferidas, nuevaDiferida] };
+      const { error } = await sb.from("auditorias_receta").update({ posiciones_alerta: nuevaPa }).eq("id", receta.id);
+      if (error) throw error;
+      pushToast("→ Recomendación derivada a Pendiente");
+      cargar();
+      onCambio && onCambio();
+    } catch (e) { console.error("No se pudo derivar la recomendación", e); pushToast("✕ No se pudo derivar", "red"); }
+    setOcupado(null);
+  }
+
+  return (
+    <Modal title={`Recomendaciones — ${equipoLabel}`} onClose={onClose}>
+      {receta === undefined ? <div className="flex justify-center py-8"><span className="spinner" /></div> : receta === null ? (
+        <p className="text-[13.5px] text-muted text-center py-6">No se encontró el instructivo de esta auditoría.</p>
+      ) : (
+        <div className="space-y-2">
+          {recs.map(r => (
+            <div key={r.id} className="bg-white rounded-2xl border border-bd shadow-card px-4 py-3">
+              <div className="flex items-start justify-between gap-2">
+                <p className={cx("text-[13.5px] font-semibold flex-1", r.done && "text-[#15803D]")}>{r.done ? "✅" : "🟢"} {r.texto}</p>
+                <div className="flex gap-1.5 shrink-0">
+                  {r.prioritaria && <Badge color="red">Prioritaria</Badge>}
+                  <Badge color={r.aprobada === false ? "red" : r.aprobada ? "green" : "gray"}>{r.aprobada === false ? "Desaprobada" : r.aprobada ? "Aprobada" : "Sin revisar"}</Badge>
+                </div>
+              </div>
+              <div className="flex gap-2 flex-wrap mt-2.5">
+                <button disabled={ocupado === r.id} onClick={() => actualizar(r, { aprobada: true }, "✓ Recomendación aprobada")} className="text-[11px] font-bold text-[#15803D] px-2.5 py-1 rounded-full bg-[#DCFCE7]">Aprobar</button>
+                <button disabled={ocupado === r.id} onClick={() => actualizar(r, { aprobada: false }, "✓ Recomendación desaprobada")} className="text-[11px] font-bold text-[#B91C1C] px-2.5 py-1 rounded-full bg-[#FEE2E2]">Desaprobar</button>
+                <button disabled={ocupado === r.id} onClick={() => actualizar(r, { prioritaria: !r.prioritaria }, r.prioritaria ? "✓ Ya no es prioritaria" : "✓ Marcada como prioritaria")} className="text-[11px] font-bold text-ink px-2.5 py-1 rounded-full bg-[#F3F4F6]">{r.prioritaria ? "Quitar prioridad" : "Marcar prioritaria"}</button>
+                {!r.done && <button disabled={ocupado === r.id} onClick={() => aPendiente(r)} className="text-[11px] font-bold text-[#92400E] px-2.5 py-1 rounded-full bg-[#FEF3C7]">➡️ A Pendiente</button>}
+              </div>
+            </div>
+          ))}
+          {!recs.length && <p className="text-[13.5px] text-muted text-center py-6">Sin recomendaciones activas para este equipo.</p>}
+        </div>
+      )}
+    </Modal>
+  );
+}
+function HojaCambioEnVivoModal({ auditoriaId, equipoId, equipoLabel, adminUser, pushToast, onClose, onCambio }) {
+  const [receta, setReceta] = useState(undefined);
+  const [nuevaTarea, setNuevaTarea] = useState("");
+  const [agregando, setAgregando] = useState(false);
+
+  function cargar() {
+    db.fetchRecetaPorAuditoria(auditoriaId).then(setReceta).catch(e => { console.error("No se pudo cargar la HC", e); setReceta(null); });
+  }
+  useEffect(cargar, [auditoriaId]);
+
+  useEffect(() => {
+    if (!receta || !receta.id) return;
+    const canal = sb.channel("admin-hc-en-vivo-" + receta.id)
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "auditorias_receta", filter: `id=eq.${receta.id}` },
+        (payload) => setReceta(r => ({ ...r, posiciones_alerta: payload.new.posiciones_alerta })))
+      .subscribe();
+    return () => { sb.removeChannel(canal); };
+  }, [receta && receta.id]);
+
+  async function agregar() {
+    if (!nuevaTarea.trim()) return;
+    setAgregando(true);
+    try {
+      await db.agregarTareaEquipo(equipoId, nuevaTarea.trim(), adminUser);
+      pushToast("✓ Tarea agregada — ya aparece en la Hoja de Cambio del mecánico");
+      setNuevaTarea("");
+      onCambio && onCambio();
+    } catch (e) { console.error("No se pudo agregar la tarea", e); pushToast(e.message || "✕ No se pudo agregar la tarea", "red"); }
+    setAgregando(false);
+  }
+
+  const pa = (receta && receta.posiciones_alerta) || {};
+  const recs = Array.isArray(pa.recomendaciones) ? pa.recomendaciones : [];
+  const extras = Array.isArray(pa.tareas_extra) ? pa.tareas_extra : [];
+  const activas = [...recs, ...extras];
+  const completadas = activas.filter(t => t.done);
+  const enProceso = activas.filter(t => !t.done);
+  const postergadas = (Array.isArray(pa.tareas_diferidas) ? pa.tareas_diferidas : []).filter(t => t.estado === "PENDIENTE");
+
+  return (
+    <Modal title={`Hoja de Cambio en vivo — ${equipoLabel}`} onClose={onClose}>
+      {receta === undefined ? <div className="flex justify-center py-8"><span className="spinner" /></div> : receta === null ? (
+        <p className="text-[13.5px] text-muted text-center py-6">No se encontró la Hoja de Cambio de este equipo.</p>
+      ) : (
+        <div className="space-y-5">
+          <div>
+            <p className="font-bold text-[13.5px] mb-2">🟡 En proceso ({enProceso.length})</p>
+            <div className="space-y-1.5">
+              {enProceso.map((t, i) => <p key={i} className="text-[13px] text-[#92400E] bg-[#FEF3C7] rounded-xl px-3 py-2">{t.texto}</p>)}
+              {!enProceso.length && <p className="text-[12.5px] text-muted">Nada pendiente por hacer hoy.</p>}
+            </div>
+          </div>
+          <div>
+            <p className="font-bold text-[13.5px] mb-2">✅ Completadas ({completadas.length})</p>
+            <div className="space-y-1.5">
+              {completadas.map((t, i) => <p key={i} className="text-[13px] text-[#15803D] strike">{t.texto}</p>)}
+              {!completadas.length && <p className="text-[12.5px] text-muted">Todavía ninguna.</p>}
+            </div>
+          </div>
+          <div>
+            <p className="font-bold text-[13.5px] mb-2">➡️ Postergadas por el mecánico ({postergadas.length})</p>
+            <div className="space-y-1.5">
+              {postergadas.map(t => <p key={t.id} className="text-[13px] text-muted bg-[#F3F4F6] rounded-xl px-3 py-2">{t.texto}</p>)}
+              {!postergadas.length && <p className="text-[12.5px] text-muted">Sin tareas postergadas.</p>}
+            </div>
+          </div>
+          <div className="flex gap-2 pt-2 border-t border-bd">
+            <TextInput placeholder="Agregar tarea de texto libre" value={nuevaTarea} onChange={e => setNuevaTarea(e.target.value)} onKeyDown={e => { if (e.key === "Enter") agregar(); }} className="h-10 text-[13px]" />
+            <Button variant="subtle" className="h-10 px-4 text-[13px]" disabled={!nuevaTarea.trim() || agregando} onClick={agregar}>{agregando ? <span className="spinner" /> : "+ Agregar"}</Button>
+          </div>
+        </div>
+      )}
+    </Modal>
   );
 }
 function DashboardView({ empresaCtl, onAbrirMecanico, setView, adminUser }) {

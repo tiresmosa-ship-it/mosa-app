@@ -375,6 +375,55 @@ const TIPOS_NEU = [
 ];
 const CHECK_DIARIO_DRAFT_KEY = (clienteId) => `mosa_checkdiario_draft_${clienteId}`;
 
+// Requerimiento (Check de Cierre = Check de Inicio): estos dos bloques se
+// comparten entre CheckDiario (Paso 1/2) y ReconteoCierre (mismo Paso 1/2 al
+// cerrar la jornada), asi los dos formularios quedan visual y
+// estructuralmente identicos sin duplicar el JSX.
+function PasoStockNeumaticos({ titulo, stockNeu, toggleStockNeu, setStockNeuVal }) {
+  return (
+    <div className="px-0 pt-4">
+      <p className="font-extrabold text-[17px] mb-3">{titulo}</p>
+      <p className="text-[12.5px] text-muted mb-3">Marcá el check para confirmar que revisaste el ítem, aunque tengas 0.</p>
+      {BODEGAS_NEU.map(b => (
+        <Card key={b.key} className="mb-4">
+          <p className="font-bold text-[15px] mb-3">{b.label}</p>
+          <div className="space-y-2">
+            {TIPOS_NEU.map(t => (
+              <div key={t.key} className={cx("bg-white rounded-2xl border shadow-card px-4 py-3 flex items-center gap-3", stockNeu[b.key][t.key].checked ? "border-bd" : "border-[#F59E0B]")}>
+                <button type="button" onClick={() => toggleStockNeu(b.key, t.key)} className={cx("w-7 h-7 rounded-lg flex items-center justify-center shrink-0 border", stockNeu[b.key][t.key].checked ? "bg-ink border-ink" : "bg-white border-[#D1D5DB]")}>
+                  {stockNeu[b.key][t.key].checked && <Icon.check width="15" height="15" className="text-white" />}
+                </button>
+                <span className="text-[14px] font-semibold text-[#1F2937] flex-1">{t.label}</span>
+                <Stepper value={stockNeu[b.key][t.key].value} onChange={v => setStockNeuVal(b.key, t.key, v)} />
+              </div>
+            ))}
+          </div>
+        </Card>
+      ))}
+    </div>
+  );
+}
+function PasoStockLlantas({ stockPatio, toggleStockPatio, setStockPatioVal, fields }) {
+  const campos = fields || PATIO_FIELDS;
+  return (
+    <div className="px-0 pt-4">
+      <p className="font-extrabold text-[17px] mb-3">Stock de llantas</p>
+      <p className="text-[12.5px] text-muted mb-3">Marcá el check para confirmar que revisaste el ítem, aunque tengas 0.</p>
+      <div className="space-y-2 mb-4">
+        {campos.map(f => (
+          <div key={f.key} className={cx("bg-white rounded-2xl border shadow-card px-4 py-3 flex items-center gap-3", stockPatio[f.key].checked ? "border-bd" : "border-[#F59E0B]")}>
+            <button type="button" onClick={() => toggleStockPatio(f.key)} className={cx("w-7 h-7 rounded-lg flex items-center justify-center shrink-0 border", stockPatio[f.key].checked ? "bg-ink border-ink" : "bg-white border-[#D1D5DB]")}>
+              {stockPatio[f.key].checked && <Icon.check width="15" height="15" className="text-white" />}
+            </button>
+            <span className="text-[14px] font-semibold text-[#1F2937] flex-1">{f.label}</span>
+            <Stepper value={stockPatio[f.key].value} onChange={v => setStockPatioVal(f.key, v)} />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function CheckDiario({ user, clienteId, onDone }) {
   // Requerimiento 3.3: restaurar el borrador (paso + conteos) si el mecanico
   // dejo el check a medias hoy y refresco/volvio a entrar.
@@ -552,49 +601,20 @@ function CheckDiario({ user, clienteId, onDone }) {
       </div>
 
       {step === 1 && (
-        <div className="px-0 pt-4">
-          <p className="font-extrabold text-[17px] mb-3">Paso 1 · Stock de neumáticos</p>
-          <p className="text-[12.5px] text-muted mb-3">Marcá el check para confirmar que revisaste el ítem, aunque tengas 0.</p>
-          {BODEGAS_NEU.map(b => (
-            <Card key={b.key} className="mb-4">
-              <p className="font-bold text-[15px] mb-3">{b.label}</p>
-              <div className="space-y-2">
-                {TIPOS_NEU.map(t => (
-                  <div key={t.key} className={cx("bg-white rounded-2xl border shadow-card px-4 py-3 flex items-center gap-3", stockNeu[b.key][t.key].checked ? "border-bd" : "border-[#F59E0B]")}>
-                    <button type="button" onClick={() => toggleStockNeu(b.key, t.key)} className={cx("w-7 h-7 rounded-lg flex items-center justify-center shrink-0 border", stockNeu[b.key][t.key].checked ? "bg-ink border-ink" : "bg-white border-[#D1D5DB]")}>
-                      {stockNeu[b.key][t.key].checked && <Icon.check width="15" height="15" className="text-white" />}
-                    </button>
-                    <span className="text-[14px] font-semibold text-[#1F2937] flex-1">{t.label}</span>
-                    <Stepper value={stockNeu[b.key][t.key].value} onChange={v => setStockNeuVal(b.key, t.key, v)} />
-                  </div>
-                ))}
-              </div>
-            </Card>
-          ))}
+        <>
+          <PasoStockNeumaticos titulo="Paso 1 · Stock de neumáticos" stockNeu={stockNeu} toggleStockNeu={toggleStockNeu} setStockNeuVal={setStockNeuVal} />
           <Button className="w-full mb-4" onClick={() => setStep(2)}>Continuar</Button>
-        </div>
+        </>
       )}
 
       {step === 2 && (
-        <div className="px-0 pt-4">
-          <p className="font-extrabold text-[17px] mb-3">Paso 2 · Stock de llantas</p>
-          <p className="text-[12.5px] text-muted mb-3">Marcá el check para confirmar que revisaste el ítem, aunque tengas 0.</p>
-          <div className="space-y-2 mb-4">
-            {PATIO_FIELDS.map(f => (
-              <div key={f.key} className={cx("bg-white rounded-2xl border shadow-card px-4 py-3 flex items-center gap-3", stockPatio[f.key].checked ? "border-bd" : "border-[#F59E0B]")}>
-                <button type="button" onClick={() => toggleStockPatio(f.key)} className={cx("w-7 h-7 rounded-lg flex items-center justify-center shrink-0 border", stockPatio[f.key].checked ? "bg-ink border-ink" : "bg-white border-[#D1D5DB]")}>
-                  {stockPatio[f.key].checked && <Icon.check width="15" height="15" className="text-white" />}
-                </button>
-                <span className="text-[14px] font-semibold text-[#1F2937] flex-1">{f.label}</span>
-                <Stepper value={stockPatio[f.key].value} onChange={v => setStockPatioVal(f.key, v)} />
-              </div>
-            ))}
-          </div>
+        <>
+          <PasoStockLlantas stockPatio={stockPatio} toggleStockPatio={toggleStockPatio} setStockPatioVal={setStockPatioVal} />
           <div className="flex gap-3 mb-4">
             <Button variant="subtle" className="flex-1" onClick={() => setStep(1)}>Volver</Button>
             <Button className="flex-1" onClick={() => setStep(3)}>Continuar</Button>
           </div>
-        </div>
+        </>
       )}
 
       {step === 3 && (
@@ -1433,14 +1453,45 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
     return () => { cancel = true; };
   }, []);
   useEffect(() => { if (kmInicial) guardarKm(equipo.id_equipo, parseInt(kmInicial, 10)); }, []);
-  // Fix 3: log de "Movimientos realizados" — se va llenando en vivo con
-  // logMovimiento() a medida que se confirma cada accion (ver mas abajo), y
-  // si se retoma una sesion activa (sesionActiva) se reconstruye desde
-  // cambio_detalle/intervenciones para no perderlo al recargar la pagina.
-  const [movimientos, setMovimientos] = useState([]);
-  function logMovimiento(texto, detalle) {
-    setMovimientos(m => [...m, { id: uuid(), creado_en: new Date().toISOString(), texto, detalle: detalle || null }]);
+  // Fix 3 / Fix 4: log de "Movimientos realizados" — se va llenando en vivo
+  // con logMovimiento() a medida que se confirma cada accion. Se cachea en
+  // localStorage (clave hc_log_[patente], con fecha para no arrastrar el de
+  // otro dia) para que un F5 lo muestre al instante; en paralelo se
+  // reconstruye siempre desde cambio_detalle/intervenciones (fuente de
+  // verdad) para no depender de que sesionActiva se haya calculado -- antes
+  // esto solo pasaba si sesionActiva quedaba seteada, pero el atajo de km
+  // cacheado (leerKmGuardado) hace que sesionActiva se salte (quede null) en
+  // el caso mas comun, y el log se perdia en cada F5.
+  const HC_LOG_KEY = "hc_log_" + equipo.patente;
+  function leerLogGuardado() {
+    try {
+      const raw = localStorage.getItem(HC_LOG_KEY);
+      if (!raw) return [];
+      const d = JSON.parse(raw);
+      return d && d.fecha === todayISO() && Array.isArray(d.items) ? d.items : [];
+    } catch (e) { return []; }
   }
+  function guardarLog(items) {
+    try { localStorage.setItem(HC_LOG_KEY, JSON.stringify({ fecha: todayISO(), items })); } catch (e) {}
+  }
+  const [movimientos, setMovimientos] = useState(leerLogGuardado);
+  function logMovimiento(texto, detalle) {
+    setMovimientos(m => {
+      const next = [...m, { id: uuid(), creado_en: new Date().toISOString(), texto, detalle: detalle || null }];
+      guardarLog(next);
+      return next;
+    });
+  }
+  useEffect(() => {
+    let cancel = false;
+    db.fetchCambioActivoReciente(equipo.id_equipo, user.id).then(s => {
+      if (cancel || !s) return;
+      db.fetchMovimientosCambio(s.id_cambio, equipo.id_equipo, user.id)
+        .then(items => { if (cancel) return; setMovimientos(items); guardarLog(items); })
+        .catch(e => console.error("No se pudo reconstruir el log de movimientos", e));
+    }).catch(() => {});
+    return () => { cancel = true; };
+  }, []);
   // Requerimiento 2: cantidad en vivo de cada bodega en los botones de
   // entrada (ej. "Nuevo (10)") — se recarga cada vez que un montaje exitoso
   // descuenta stock, para no quedar desincronizado del numero real.
@@ -1454,14 +1505,6 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
     window.addEventListener("mosa-sync-done", refrescarStockBodega);
     return () => window.removeEventListener("mosa-sync-done", refrescarStockBodega);
   }, []);
-  useEffect(() => {
-    if (!sesionActiva) return;
-    let cancel = false;
-    db.fetchMovimientosCambio(sesionActiva.id_cambio, equipo.id_equipo, user.id)
-      .then(items => { if (!cancel) setMovimientos(items); })
-      .catch(e => console.error("No se pudo reconstruir el log de movimientos", e));
-    return () => { cancel = true; };
-  }, [sesionActiva]);
   const [posData, setPosData] = useState(() => ({ ...posDataInicial }));
   // Item 9: posiciones con discrepancia de neumatico sin aprobar por el Admin
   // (numero_fuego/marca/medida no coincidian al auditar) - muestran banner +
@@ -1868,7 +1911,7 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
       }
     });
     syncQueue();
-    db.registrarEventoSesion(clienteId, equipo.id_equipo, user.id, "HOJA_CAMBIO_FINALIZADA", { cambioId: cambio_id }).catch(e => console.error(e));
+    db.registrarEventoSesion(clienteId, equipo.id_equipo, user.id, "HOJA_CAMBIO_FINALIZADA", { cambioId: cambio_id, equipoLabel: equipo.patente, mecanicoNombre: user.nombre }).catch(e => console.error(e));
     setSaving(false);
     onFinish();
   }
@@ -2336,10 +2379,15 @@ function MontajeModal({ tipo, pos, equipo, clienteId, cfg, axleCfg, user, onClos
     setFuego(o.numero_fuego);
   }
   function confirmarMontaje() {
-    // Si vino de un neumatico elegido en el buscador, validar marca/modelo
-    // contra el registro del sistema — bloqueante, sin revelar el valor
-    // correcto (solo dice que difiere).
-    if (seleccionado) {
+    // Fix 2: la validacion estricta marca/modelo contra el sistema SOLO
+    // aplica cuando el mecanico busco y eligio el neumatico a mano
+    // (fuegoMarcado === true, leyo el numero fisico). Si "No tiene marca
+    // fuego", `seleccionado` se autoasigna solo (primer disponible de la
+    // bodega, ver efecto de arriba) para descontar stock -- pero el
+    // mecanico no tiene forma de confirmar que ese es realmente el
+    // neumatico fisico que tiene enfrente, asi que no puede quedar
+    // bloqueado si tipea una marca/modelo distinta a la de esa fila.
+    if (seleccionado && fuegoMarcado === true) {
       const sisMarca = normStr(seleccionado.marca), sisModelo = normStr(seleccionado.modelo);
       const inMarca = normStr(marca), inModelo = normStr(modelo);
       const difiere = (sisMarca && sisMarca !== inMarca) || (sisModelo && sisModelo !== inModelo);
@@ -2513,64 +2561,80 @@ function MontajeModal({ tipo, pos, equipo, clienteId, cfg, axleCfg, user, onClos
    check diario (reusa NEUMATICO_FIELDS/LLANTA_CIERRE_FIELDS/Stepper), pero
    arranca siempre en 0 sin precargar nada, para no inducir al mecanico.
 ===================================================================== */
+// Requerimiento: el Check de Cierre clona la misma estructura por pasos y
+// por categoria (Nuevos/Tránsito/Reparación/Recauchados x Direccional/
+// Traccional/Eje Libre) que el Check de Inicio (CheckDiario), reutilizando
+// PasoStockNeumaticos/PasoStockLlantas -- unico bloque distinto: las llantas
+// del cierre se comparan contra `insumos` (subtipos LLANTA_CIERRE_FIELDS),
+// por eso el Paso 2 recibe un `fields` distinto al de CheckDiario.
 function ReconteoCierre({ onConfirmar, verificando }) {
-  const RECONTEO_FIELDS = [...NEUMATICO_FIELDS, ...LLANTA_CIERRE_FIELDS];
-  const [stock, setStock] = useState(() => Object.fromEntries(RECONTEO_FIELDS.map(f => [f.key, { value: 0, checked: false }])));
+  const [step, setStep] = useState(1);
+  const [stockNeu, setStockNeu] = useState(() =>
+    Object.fromEntries(BODEGAS_NEU.map(b => [b.key, Object.fromEntries(TIPOS_NEU.map(t => [t.key, { value: 0, checked: false }]))])));
+  const [stockLlantas, setStockLlantas] = useState(() => Object.fromEntries(LLANTA_CIERRE_FIELDS.map(f => [f.key, { value: 0, checked: false }])));
 
-  const filled = RECONTEO_FIELDS.filter(f => stock[f.key].checked).length;
-  const complete = filled === RECONTEO_FIELDS.length;
+  const stockNeuFilled = BODEGAS_NEU.reduce((n, b) => n + TIPOS_NEU.filter(t => stockNeu[b.key][t.key].checked).length, 0);
+  const stockNeuTotal = BODEGAS_NEU.length * TIPOS_NEU.length;
+  const llantasFilled = LLANTA_CIERRE_FIELDS.filter(f => stockLlantas[f.key].checked).length;
+  const totalItems = stockNeuTotal + LLANTA_CIERRE_FIELDS.length;
+  const itemsCompletos = stockNeuFilled + llantasFilled;
+  const progress = Math.round((itemsCompletos / totalItems) * 100);
+  const paso1Completo = stockNeuFilled === stockNeuTotal;
+  const complete = paso1Completo && llantasFilled === LLANTA_CIERRE_FIELDS.length;
 
-  function setVal(key, v) { setStock(s => ({ ...s, [key]: { value: v, checked: true } })); }
-  function toggle(key) { setStock(s => ({ ...s, [key]: { ...s[key], checked: !s[key].checked } })); }
-
-  function renderSeccion(titulo, fields) {
-    return (
-      <>
-        <p className="font-bold text-[15px] mb-2">{titulo}</p>
-        <div className="space-y-2 mb-4">
-          {fields.map(f => (
-            <div key={f.key} className={cx("bg-white rounded-2xl border shadow-card px-4 py-3 flex items-center gap-3", stock[f.key].checked ? "border-bd" : "border-[#F59E0B]")}>
-              <button type="button" onClick={() => toggle(f.key)} className={cx("w-7 h-7 rounded-lg flex items-center justify-center shrink-0 border", stock[f.key].checked ? "bg-ink border-ink" : "bg-white border-[#D1D5DB]")}>
-                {stock[f.key].checked && <Icon.check width="15" height="15" className="text-white" />}
-              </button>
-              <span className="text-[14px] font-semibold text-[#1F2937] flex-1">{f.label}</span>
-              <Stepper value={stock[f.key].value} onChange={v => setVal(f.key, v)} />
-            </div>
-          ))}
-        </div>
-      </>
-    );
-  }
+  function setStockNeuVal(bKey, tKey, v) { setStockNeu(s => ({ ...s, [bKey]: { ...s[bKey], [tKey]: { value: v, checked: true } } })); }
+  function toggleStockNeu(bKey, tKey) { setStockNeu(s => ({ ...s, [bKey]: { ...s[bKey], [tKey]: { ...s[bKey][tKey], checked: !s[bKey][tKey].checked } } })); }
+  function setStockLlantasVal(key, v) { setStockLlantas(s => ({ ...s, [key]: { value: v, checked: true } })); }
+  function toggleStockLlantas(key) { setStockLlantas(s => ({ ...s, [key]: { ...s[key], checked: !s[key].checked } })); }
 
   function confirmar() {
-    const totalesNeumaticos = { nuevo: stock.nuevos.value, transito: stock.transito.value, recauchado: stock.recauchados.value, reparacion: stock.reparar.value };
-    const totalesLlantas = Object.fromEntries(LLANTA_CIERRE_FIELDS.map(f => [f.key, stock[f.key].value]));
+    const totalBodega = (bKey) => TIPOS_NEU.reduce((n, t) => n + (stockNeu[bKey][t.key].value || 0), 0);
+    const totalesNeumaticos = { nuevo: totalBodega("nuevos"), transito: totalBodega("transito"), recauchado: totalBodega("recauchados"), reparacion: totalBodega("reparar") };
+    const totalesLlantas = Object.fromEntries(LLANTA_CIERRE_FIELDS.map(f => [f.key, stockLlantas[f.key].value]));
     onConfirmar(totalesNeumaticos, totalesLlantas);
   }
 
   return (
-    <div className="min-h-screen pb-28 px-5 pt-14 safe-top">
-      <h1 className="text-[26px] font-extrabold mb-1">Antes de cerrar, confirmá el stock actual</h1>
-      <div className="bg-[#F9FAFB] rounded-[20px] p-5 my-4">
-        <div className="flex items-center justify-between mb-2">
-          <span className="font-bold text-[16px]">Ítems confirmados</span>
-          <span className="text-[13px] font-bold">{filled}/{RECONTEO_FIELDS.length}</span>
-        </div>
-        <div className="h-2 rounded-full bg-[#E5E7EB] overflow-hidden">
-          <div className="h-full bg-ink transition-all" style={{ width: (RECONTEO_FIELDS.length ? Math.round((filled / RECONTEO_FIELDS.length) * 100) : 0) + "%" }} />
+    <div className="min-h-screen pb-28 px-5 safe-top">
+      <div className="sticky top-0 z-30 bg-white px-5 pt-14 pb-3">
+        <h1 className="text-[26px] font-extrabold mb-1">Antes de cerrar, confirmá el stock actual</h1>
+        <p className="text-[14px] text-sub mt-1 mb-4">Paso {step} de 2</p>
+        <div className="bg-[#F9FAFB] rounded-[20px] p-5">
+          <div className="flex items-center justify-between mb-2">
+            <span className="font-bold text-[16px]">Ítems confirmados</span>
+            <span className="text-[13px] font-bold">{itemsCompletos}/{totalItems}</span>
+          </div>
+          <div className="h-2 rounded-full bg-[#E5E7EB] overflow-hidden">
+            <div className="h-full bg-ink transition-all" style={{ width: progress + "%" }} />
+          </div>
         </div>
       </div>
-      {renderSeccion("Neumáticos", NEUMATICO_FIELDS)}
-      {renderSeccion("Llantas", LLANTA_CIERRE_FIELDS)}
+
+      {step === 1 && (
+        <>
+          <PasoStockNeumaticos titulo="Paso 1 · Stock de neumáticos" stockNeu={stockNeu} toggleStockNeu={toggleStockNeu} setStockNeuVal={setStockNeuVal} />
+          <Button className="w-full mb-4" onClick={() => setStep(2)}>Continuar</Button>
+        </>
+      )}
+
+      {step === 2 && (
+        <>
+          <PasoStockLlantas stockPatio={stockLlantas} toggleStockPatio={toggleStockLlantas} setStockPatioVal={setStockLlantasVal} fields={LLANTA_CIERRE_FIELDS} />
+          <Button variant="subtle" className="w-full mb-4" onClick={() => setStep(1)}>Volver</Button>
+        </>
+      )}
+
       {/* Fix 4: z-40 (por encima del z-30 de BottomNav, que sigue montado
           en esta pantalla) — sin esto la barra de navegación de abajo tapaba
           este botón, tambien fixed bottom-0, porque ganaba por z-index. */}
-      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-bd p-4 safe-bottom z-40">
-        <Button className="w-full" disabled={!complete || verificando} onClick={confirmar}>
-          {verificando ? <span className="spinner" /> : "Confirmar y cerrar jornada"}
-        </Button>
-        {!complete && <p className="text-center text-[12px] text-muted mt-2">Marcá el checkbox de los {RECONTEO_FIELDS.length} ítems para continuar</p>}
-      </div>
+      {step === 2 && (
+        <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-bd p-4 safe-bottom z-40">
+          <Button className="w-full" disabled={!complete || verificando} onClick={confirmar}>
+            {verificando ? <span className="spinner" /> : "Confirmar y cerrar jornada"}
+          </Button>
+          {!complete && <p className="text-center text-[12px] text-muted mt-2">Marcá el checkbox de los {totalItems} ítems para continuar</p>}
+        </div>
+      )}
     </div>
   );
 }
@@ -2903,7 +2967,7 @@ function MecanicoApp({ user }) {
       ];
       const discrepNeus = Array.isArray(pa.discrepancias_neumaticos) ? pa.discrepancias_neumaticos : [];
       const recsInfoResumen = { recs: recs.map(r => ({ id: r.id, key: r.key, texto: r.texto })) };
-      db.registrarEventoSesion(clienteId, eq.id_equipo, user.id, "HOJA_CAMBIO_EN_PROCESO", { auditoriaId: receta.auditoria_id }).catch(e => console.error(e));
+      db.registrarEventoSesion(clienteId, eq.id_equipo, user.id, "HOJA_CAMBIO_EN_PROCESO", { auditoriaId: receta.auditoria_id, equipoLabel: eq.patente, mecanicoNombre: user.nombre }).catch(e => console.error(e));
       setFlow({ stage: "cambio", equipo: eq, axleCfg, posData, checklist, recetaIdInicial: receta.id, pendiente: null, discrepanciasNeumaticos: discrepNeus, recsInfo: recsInfoResumen });
       console.log(`[dev] Hoja de cambio abierta para ${eq.patente} (${eq.numero_interno || "-"})`);
     } catch (e) { console.error("[dev] no se pudo entrar directo a la hoja de cambio", e); }
@@ -2996,7 +3060,7 @@ function MecanicoApp({ user }) {
           setFlow({ stage: "accion", equipo: eq, estadoInfo: { vencida, enProcesoHoy } });
         }} />
         <AccionEquipo equipo={flow.equipo} estadoInfo={flow.estadoInfo} onClose={() => setFlow(null)}
-          onAuditoria={() => { db.registrarEventoSesion(clienteId, flow.equipo.id_equipo, user.id, "AUDITORIA_INICIADA").catch(e => console.error(e)); setFlow({ stage: "auditoria", equipo: flow.equipo }); }}
+          onAuditoria={() => { db.registrarEventoSesion(clienteId, flow.equipo.id_equipo, user.id, "AUDITORIA_INICIADA", { equipoLabel: flow.equipo.patente, mecanicoNombre: user.nombre }).catch(e => console.error(e)); setFlow({ stage: "auditoria", equipo: flow.equipo }); }}
           onContinuarCambio={async () => {
             const pd = await construirPosDataDesdeEquipo(flow.equipo.id_equipo, cfg, axleConfigFor(flow.equipo), flow.equipo);
             let recetaEnProceso = null;
@@ -3011,7 +3075,7 @@ function MecanicoApp({ user }) {
             ];
             const discrepNeus = Array.isArray(pa.discrepancias_neumaticos) ? pa.discrepancias_neumaticos : [];
             const recsInfoResumen = { recs: recs.map(r => ({ id: r.id, key: r.key, texto: r.texto })) };
-            db.registrarEventoSesion(clienteId, flow.equipo.id_equipo, user.id, "HOJA_CAMBIO_EN_PROCESO", { auditoriaId: recetaEnProceso.auditoria_id }).catch(e => console.error(e));
+            db.registrarEventoSesion(clienteId, flow.equipo.id_equipo, user.id, "HOJA_CAMBIO_EN_PROCESO", { auditoriaId: recetaEnProceso.auditoria_id, equipoLabel: flow.equipo.patente, mecanicoNombre: user.nombre }).catch(e => console.error(e));
             setFlow({ stage: "cambio", equipo: flow.equipo, axleCfg: axleConfigFor(flow.equipo), posData: pd, checklist: cl, recetaIdInicial: recetaEnProceso.id, pendiente: null, discrepanciasNeumaticos: discrepNeus, recsInfo: recsInfoResumen });
           }} />
       </>
@@ -3049,8 +3113,8 @@ function MecanicoApp({ user }) {
           const n = res.alertas;
           if (navigator.onLine) pushToast(n > 0 ? `✓ Auditoría guardada · ${n} alerta${n !== 1 ? "s" : ""} generada${n !== 1 ? "s" : ""}` : "✓ Auditoría guardada");
           else pushToast("📋 Guardado localmente — se sincronizará al reconectar", "amber");
-          db.registrarEventoSesion(clienteId, flow.equipo.id_equipo, user.id, "AUDITORIA_FINALIZADA", { auditoriaId: res.auditoriaId }).catch(e => console.error(e));
-          db.registrarEventoSesion(clienteId, flow.equipo.id_equipo, user.id, "HOJA_CAMBIO_EN_PROCESO", { auditoriaId: res.auditoriaId }).catch(e => console.error(e));
+          db.registrarEventoSesion(clienteId, flow.equipo.id_equipo, user.id, "AUDITORIA_FINALIZADA", { auditoriaId: res.auditoriaId, equipoLabel: flow.equipo.patente, mecanicoNombre: user.nombre }).catch(e => console.error(e));
+          db.registrarEventoSesion(clienteId, flow.equipo.id_equipo, user.id, "HOJA_CAMBIO_EN_PROCESO", { auditoriaId: res.auditoriaId, equipoLabel: flow.equipo.patente, mecanicoNombre: user.nombre }).catch(e => console.error(e));
           setFlow({ stage: "cambio", equipo: flow.equipo, axleCfg: flow.axleCfg, posData: flow.posData, checklist: flow.checklist, kmInicial: flow.km, recetaIdInicial: res.recetaId, discrepanciasNeumaticos: flow.discrepanciasNeumaticos, recsInfo: flow.recsInfo });
         }}
         onCerrar={async () => {
@@ -3058,7 +3122,7 @@ function MecanicoApp({ user }) {
           const n = res.alertas;
           if (navigator.onLine) pushToast(n > 0 ? `✓ Auditoría guardada · ${n} alerta${n !== 1 ? "s" : ""} generada${n !== 1 ? "s" : ""}` : "✓ Auditoría guardada");
           else pushToast("📋 Guardado localmente — se sincronizará al reconectar", "amber");
-          db.registrarEventoSesion(clienteId, flow.equipo.id_equipo, user.id, "AUDITORIA_FINALIZADA", { auditoriaId: res.auditoriaId }).catch(e => console.error(e));
+          db.registrarEventoSesion(clienteId, flow.equipo.id_equipo, user.id, "AUDITORIA_FINALIZADA", { auditoriaId: res.auditoriaId, equipoLabel: flow.equipo.patente, mecanicoNombre: user.nombre }).catch(e => console.error(e));
           setFlow(null);
         }} />
     );
