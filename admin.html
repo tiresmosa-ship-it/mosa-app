@@ -1226,7 +1226,12 @@ function OrigenNeumaticoBadge({ numeroFuego }) {
   return <Badge color={ORIGEN_BADGE[origen].color}>{ORIGEN_BADGE[origen].label}</Badge>;
 }
 function PosicionDetalleModal({ n, pos, equipo, discrepanciaPendiente, setView, onClose }) {
-  const mm = n.aud ? (n.aud.milimetros != null ? n.aud.milimetros : n.aud.mm_centro) : null;
+  // Fix sincronizacion mapa: neumaticos.milimetros es el valor EN VIVO (lo
+  // escribe el montaje de la Hoja de Cambio, ver actualizarNeumaticoEntra/
+  // renombrarNeumaticoOrigen en js/supabase.js) y siempre es mas reciente que
+  // el snapshot de la ultima auditoria (n.aud, que solo se actualiza al
+  // auditar). Mismo criterio que ya usaba psi (n.psi_actual primero).
+  const mm = n.milimetros != null ? n.milimetros : (n.aud ? (n.aud.mm_centro != null ? n.aud.mm_centro : n.aud.milimetros) : null);
   const psi = n.psi_actual != null ? n.psi_actual : (n.aud ? n.aud.psi : null);
   return (
     <Modal title={`Posición ${pos}`} onClose={onClose}>
@@ -1297,7 +1302,7 @@ function AxleMapReadOnly({ cfg, porPosicion, colorDePosicion, selectedPos, onTap
               {row.positions.map(pos => {
                 const n = porPosicion[pos];
                 const color = colorDePosicion(pos);
-                const mm = n && n.aud ? (n.aud.milimetros != null ? n.aud.milimetros : n.aud.mm_centro) : null;
+                const mm = n ? (n.milimetros != null ? n.milimetros : (n.aud ? (n.aud.mm_centro != null ? n.aud.mm_centro : n.aud.milimetros) : null)) : null;
                 const psi = n ? (n.psi_actual != null ? n.psi_actual : (n.aud ? n.aud.psi : null)) : null;
                 return (
                   <div key={pos} className="relative z-10">
@@ -1362,7 +1367,7 @@ function MapaEquipoTab({ equipo, setView }) {
     const data = {
       psi: n.psi_actual != null ? n.psi_actual : (n.aud ? n.aud.psi : null),
       mm_borde_izq: n.aud ? n.aud.mm_borde_izq : null,
-      mm_centro: n.aud ? (n.aud.mm_centro != null ? n.aud.mm_centro : n.aud.milimetros) : null,
+      mm_centro: n.milimetros != null ? n.milimetros : (n.aud ? (n.aud.mm_centro != null ? n.aud.mm_centro : n.aud.milimetros) : null),
       mm_borde_der: n.aud ? n.aud.mm_borde_der : null
     };
     const ev = evaluarPosicion(cfg, DEFAULT_CFG, pos, equipo.tipo, data);
