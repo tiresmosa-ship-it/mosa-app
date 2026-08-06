@@ -186,7 +186,8 @@ function Card({ className = "", children }) {
 function Badge({ children, color = "gray" }) {
   const colors = {
     gray: "bg-[#F3F4F6] text-[#374151]", green: "bg-[#DCFCE7] text-[#15803D]",
-    red: "bg-[#FEE2E2] text-[#B91C1C]", amber: "bg-[#FEF3C7] text-[#92400E]", black: "bg-ink text-white"
+    red: "bg-[#FEE2E2] text-[#B91C1C]", amber: "bg-[#FEF3C7] text-[#92400E]", black: "bg-ink text-white",
+    purple: "bg-[#F3E8FF] text-[#7E22CE]"
   };
   return <span className={cx("px-3 py-1 rounded-full text-[12px] font-bold", colors[color])}>{children}</span>;
 }
@@ -854,6 +855,7 @@ const LS_DASHBOARD_VISTA = "dashboard_vista_superadmin";
 const ACTIVIDAD_FAENA_ESTADO = {
   AUDITORIA_INICIADA: { label: "Auditoría Iniciada", dot: "🔵" },
   AUDITORIA_FINALIZADA: { label: "Auditoría Finalizada", dot: "🟢" },
+  EN_RECOMENDACIONES: { label: "En Recomendaciones", dot: "🟣" },
   HOJA_CAMBIO_EN_PROCESO: { label: "Hoja de Cambio en Proceso", dot: "🟡" },
   HOJA_CAMBIO_FINALIZADA: { label: "Hoja de Cambio Finalizada", dot: "🏁" }
 };
@@ -861,7 +863,7 @@ function ActividadFaenaRow({ item, borde, adminUser, pushToast, onCambio }) {
   const [modal, setModal] = useState(null); // null | 'recomendaciones' | 'hc'
   const est = ACTIVIDAD_FAENA_ESTADO[item.evento] || { label: item.evento, dot: "⚪" };
   const enProceso = item.evento === "HOJA_CAMBIO_EN_PROCESO";
-  const auditoriaFinalizada = item.evento === "AUDITORIA_FINALIZADA";
+  const enRecomendaciones = item.evento === "EN_RECOMENDACIONES";
   const eq = item.equipos, mec = item.usuarios;
   const equipoLabel = eq ? `${eq.numero_interno ? eq.numero_interno + " · " : ""}${eq.patente}` : "-";
 
@@ -873,9 +875,9 @@ function ActividadFaenaRow({ item, borde, adminUser, pushToast, onCambio }) {
           <p className="text-[12px] text-muted">{mec ? `${mec.nombre} ${mec.apellido || ""}`.trim() : "-"} · {timeAgoCorto(item.creado_en)}</p>
         </div>
         <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
-          <Badge color={enProceso ? "amber" : item.evento === "HOJA_CAMBIO_FINALIZADA" ? "green" : "gray"}>{est.dot} {est.label}</Badge>
-          {auditoriaFinalizada && (
-            <Button variant="subtle" className="h-8 px-3 text-[12px]" onClick={() => setModal("recomendaciones")}>📋 Ver Recomendaciones</Button>
+          <Badge color={enProceso ? "amber" : enRecomendaciones ? "purple" : item.evento === "HOJA_CAMBIO_FINALIZADA" ? "green" : "gray"}>{est.dot} {est.label}</Badge>
+          {enRecomendaciones && (
+            <Button variant="subtle" className="h-8 px-3 text-[12px]" onClick={() => setModal("recomendaciones")}>📋 Ver Recomendaciones del Sistema</Button>
           )}
           {enProceso && (
             <Button variant="subtle" className="h-8 px-3 text-[12px]" onClick={() => setModal("hc")}>👁️ Ver Hoja de Cambio en Vivo</Button>
@@ -917,14 +919,7 @@ function RecomendacionesModal({ auditoriaId, equipoLabel, adminUser, pushToast, 
   async function aPendiente(r) {
     setOcupado(r.id);
     try {
-      const { data, error: eFresh } = await sb.from("auditorias_receta").select("posiciones_alerta").eq("id", receta.id).maybeSingle();
-      if (eFresh) throw eFresh;
-      const pa = data.posiciones_alerta || {};
-      const diferidas = Array.isArray(pa.tareas_diferidas) ? pa.tareas_diferidas : [];
-      const nuevaDiferida = { id: r.id, texto: r.texto, tipo_origen: "sistema", creado_por: adminUser ? `${adminUser.nombre} ${adminUser.apellido || ""}`.trim() : "Admin", fecha_origen: todayISO(), estado: "PENDIENTE" };
-      const nuevaPa = { ...pa, recomendaciones: (pa.recomendaciones || []).filter(x => x.id !== r.id), tareas_diferidas: [...diferidas, nuevaDiferida] };
-      const { error } = await sb.from("auditorias_receta").update({ posiciones_alerta: nuevaPa }).eq("id", receta.id);
-      if (error) throw error;
+      await db.enviarTareaActivaAPendiente(receta.id, r, false, adminUser);
       pushToast("→ Recomendación derivada a Pendiente");
       cargar();
       onCambio && onCambio();
@@ -951,7 +946,7 @@ function RecomendacionesModal({ auditoriaId, equipoLabel, adminUser, pushToast, 
                 <button disabled={ocupado === r.id} onClick={() => actualizar(r, { aprobada: true }, "✓ Recomendación aprobada")} className="text-[11px] font-bold text-[#15803D] px-2.5 py-1 rounded-full bg-[#DCFCE7]">Aprobar</button>
                 <button disabled={ocupado === r.id} onClick={() => actualizar(r, { aprobada: false }, "✓ Recomendación desaprobada")} className="text-[11px] font-bold text-[#B91C1C] px-2.5 py-1 rounded-full bg-[#FEE2E2]">Desaprobar</button>
                 <button disabled={ocupado === r.id} onClick={() => actualizar(r, { prioritaria: !r.prioritaria }, r.prioritaria ? "✓ Ya no es prioritaria" : "✓ Marcada como prioritaria")} className="text-[11px] font-bold text-ink px-2.5 py-1 rounded-full bg-[#F3F4F6]">{r.prioritaria ? "Quitar prioridad" : "Marcar prioritaria"}</button>
-                {!r.done && <button disabled={ocupado === r.id} onClick={() => aPendiente(r)} className="text-[11px] font-bold text-[#92400E] px-2.5 py-1 rounded-full bg-[#FEF3C7]">➡️ A Pendiente</button>}
+                {!r.done && <button disabled={ocupado === r.id} onClick={() => aPendiente(r)} className="text-[11px] font-bold text-[#92400E] px-2.5 py-1 rounded-full bg-[#FEF3C7]">⏳ Mandar a Pendiente</button>}
               </div>
             </div>
           ))}

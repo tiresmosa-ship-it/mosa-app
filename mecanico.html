@@ -3113,7 +3113,11 @@ function MecanicoApp({ user }) {
           const n = res.alertas;
           if (navigator.onLine) pushToast(n > 0 ? `✓ Auditoría guardada · ${n} alerta${n !== 1 ? "s" : ""} generada${n !== 1 ? "s" : ""}` : "✓ Auditoría guardada");
           else pushToast("📋 Guardado localmente — se sincronizará al reconectar", "amber");
-          db.registrarEventoSesion(clienteId, flow.equipo.id_equipo, user.id, "AUDITORIA_FINALIZADA", { auditoriaId: res.auditoriaId, equipoLabel: flow.equipo.patente, mecanicoNombre: user.nombre }).catch(e => console.error(e));
+          // Requerimiento 1.2: al terminar la auditoria el camion pasa por
+          // EN_RECOMENDACIONES (con el auditoria_id ya persistido, para que
+          // el Admin pueda abrir "Ver Recomendaciones del Sistema") y de ahi
+          // directo a Hoja de Cambio, ya que el mecanico decidio continuar.
+          db.registrarEventoSesion(clienteId, flow.equipo.id_equipo, user.id, "EN_RECOMENDACIONES", { auditoriaId: res.auditoriaId, equipoLabel: flow.equipo.patente, mecanicoNombre: user.nombre }).catch(e => console.error(e));
           db.registrarEventoSesion(clienteId, flow.equipo.id_equipo, user.id, "HOJA_CAMBIO_EN_PROCESO", { auditoriaId: res.auditoriaId, equipoLabel: flow.equipo.patente, mecanicoNombre: user.nombre }).catch(e => console.error(e));
           setFlow({ stage: "cambio", equipo: flow.equipo, axleCfg: flow.axleCfg, posData: flow.posData, checklist: flow.checklist, kmInicial: flow.km, recetaIdInicial: res.recetaId, discrepanciasNeumaticos: flow.discrepanciasNeumaticos, recsInfo: flow.recsInfo });
         }}
@@ -3122,7 +3126,7 @@ function MecanicoApp({ user }) {
           const n = res.alertas;
           if (navigator.onLine) pushToast(n > 0 ? `✓ Auditoría guardada · ${n} alerta${n !== 1 ? "s" : ""} generada${n !== 1 ? "s" : ""}` : "✓ Auditoría guardada");
           else pushToast("📋 Guardado localmente — se sincronizará al reconectar", "amber");
-          db.registrarEventoSesion(clienteId, flow.equipo.id_equipo, user.id, "AUDITORIA_FINALIZADA", { auditoriaId: res.auditoriaId, equipoLabel: flow.equipo.patente, mecanicoNombre: user.nombre }).catch(e => console.error(e));
+          db.registrarEventoSesion(clienteId, flow.equipo.id_equipo, user.id, "EN_RECOMENDACIONES", { auditoriaId: res.auditoriaId, equipoLabel: flow.equipo.patente, mecanicoNombre: user.nombre }).catch(e => console.error(e));
           setFlow(null);
         }} />
     );

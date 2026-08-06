@@ -617,6 +617,10 @@ const db = {
     const HITO_TEXTO = {
       AUDITORIA_INICIADA: ["Auditoría Iniciada", "inició la auditoría"],
       AUDITORIA_FINALIZADA: ["Auditoría Finalizada", "finalizó la auditoría"],
+      // Requerimiento 1.2: al pasar a Recomendaciones (cierre de auditoria) el
+      // texto de la alerta es fijo (no usa la plantilla generica de abajo)
+      // porque el pedido especifica la redaccion exacta.
+      EN_RECOMENDACIONES: ["Recomendaciones Listas", null],
       HOJA_CAMBIO_EN_PROCESO: ["Hoja de Cambio Iniciada", "inició la Hoja de Cambio"],
       HOJA_CAMBIO_FINALIZADA: ["Hoja de Cambio Finalizada", "finalizó la Hoja de Cambio"]
     };
@@ -624,14 +628,51 @@ const db = {
     if (hito) {
       const equipoLabel = (extra && extra.equipoLabel) || equipoId;
       const mecanicoNombre = (extra && extra.mecanicoNombre) || "El mecánico";
+      const descripcion = evento === "EN_RECOMENDACIONES"
+        ? `Auditoría finalizada. Recomendaciones listas para revisión. Equipo ${equipoLabel}.`
+        : `${mecanicoNombre} ${hito[1]} en el equipo ${equipoLabel}.`;
       const { error: eAlerta } = await sb.from("alertas").insert({
         id: uuid(), cliente_id: clienteId, equipo_id: equipoId, mecanico_id: usuarioId,
         tipo: "hito_operativo", severidad: "info", estado: "nueva",
-        titulo: hito[0], descripcion: `${mecanicoNombre} ${hito[1]} en el equipo ${equipoLabel}.`,
+        titulo: hito[0], descripcion,
         leida_mecanico: true, leida_admin: false, leida_superadmin: false
       });
       if (eAlerta) console.error("No se pudo generar la alerta de hito operativo", eAlerta);
     }
+  },
+  // Requerimiento 2/3: mueve una tarea ACTIVA (recomendacion del sistema o
+  // tarea_extra) del instructivo en curso a Pendiente. A diferencia de
+  // reasignarTareaAHoy (que opera sobre tareas_diferidas), esta lee/escribe
+  // recomendaciones o tareas_extra segun `esExtra`, en un unico update para
+  // evitar el race de dos escrituras sobre la misma fila.
+  async enviarTareaActivaAPendiente(recetaId, tarea, esExtra, adminUser) {
+    const { data, error: eFresh } = await sb.from("auditorias_receta").select("posiciones_alerta").eq("id", recetaId).maybeSingle();
+    if (eFresh) throw eFresh;
+    const pa = (data && data.posiciones_alerta) || {};
+    const creadoPor = adminUser ? `${adminUser.nombre} ${adminUser.apellido || ""}`.trim() : "Admin";
+    const diferidas = Array.isArray(pa.tareas_diferidas) ? pa.tareas_diferidas : [];
+    const nuevaDiferida = {
+      id: tarea.id || uuid(), texto: tarea.texto, tipo_origen: tarea.tipo_origen || (esExtra ? "mecanico" : "sistema"),
+      creado_por: creadoPor, fecha_origen: tarea.fecha_origen || todayISO(), estado: "PENDIENTE"
+    };
+    // Ojo: a diferencia de las recomendaciones (siempre tienen id, ver
+    // generarRecomendaciones), las tareas_extra que persiste
+    // persistChecklist en mecanico.html NO llevan id. Filtrar por id en ese
+    // caso borraria de un saque todos los items sin id. Se ubica el indice
+    // exacto por id si existe, o por contenido (texto+fecha_origen+creado_por)
+    // si no, y se sacan solo esa posicion.
+    function sacarUnaCoincidencia(lista) {
+      let idx = -1;
+      if (tarea.id) idx = lista.findIndex(t => t.id === tarea.id);
+      if (idx === -1) idx = lista.findIndex(t => !t.id && t.texto === tarea.texto && t.fecha_origen === tarea.fecha_origen && t.creado_por === tarea.creado_por);
+      if (idx === -1) return lista;
+      return [...lista.slice(0, idx), ...lista.slice(idx + 1)];
+    }
+    const nuevaPa = esExtra
+      ? { ...pa, tareas_extra: sacarUnaCoincidencia(Array.isArray(pa.tareas_extra) ? pa.tareas_extra : []), tareas_diferidas: [...diferidas, nuevaDiferida] }
+      : { ...pa, recomendaciones: sacarUnaCoincidencia(Array.isArray(pa.recomendaciones) ? pa.recomendaciones : []), tareas_diferidas: [...diferidas, nuevaDiferida] };
+    const { error } = await sb.from("auditorias_receta").update({ posiciones_alerta: nuevaPa }).eq("id", recetaId);
+    if (error) throw error;
   },
   async reasignarTareaAHoy(equipoId, tarea, adminUser) {
     const receta = await db.fetchRecetaEnProcesoHoy(equipoId);

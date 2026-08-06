@@ -673,3 +673,13 @@ ALTER TABLE alertas DROP CONSTRAINT IF EXISTS alertas_tipo_check;
 -- boton "Sumar a Catalogo" del Admin no tenga que parsear el texto libre de
 -- la descripcion).
 ALTER TABLE alertas ADD COLUMN IF NOT EXISTS datos_extra JSONB;
+
+-- 40) sesiones_trabajo.evento tiene un CHECK constraint con una lista fija
+-- (AUDITORIA_INICIADA/AUDITORIA_FINALIZADA/HOJA_CAMBIO_EN_PROCESO/
+-- HOJA_CAMBIO_FINALIZADA) que rechaza el nuevo estado 'EN_RECOMENDACIONES'
+-- (transicion al cerrar la auditoria y pasar a la pantalla de
+-- Recomendaciones, antes de entrar a la Hoja de Cambio -- ver
+-- db.registrarEventoSesion en js/supabase.js y mecanico.html). Mismo
+-- criterio que en los bloques 15/38: se saca la restriccion en vez de
+-- ampliarla cada vez que se agrega un evento nuevo.
+ALTER TABLE sesiones_trabajo DROP CONSTRAINT IF EXISTS sesiones_trabajo_evento_check;
