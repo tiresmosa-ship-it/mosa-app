@@ -832,6 +832,10 @@ async function asegurarNeumatico(clienteId, numeroFuego, equipoId, posicion, ext
     id_neumatico: uuid(), numero_fuego: numeroFuego, cliente_id: clienteId,
     marca: (extra && extra.marca) || null, modelo: (extra && extra.modelo) || null, medida: (extra && extra.medida) || null,
     tipo: (extra && extra.tipo) || null,
+    // Linea base (primera auditoria u otro alta inicial): mm/PSI ingresados
+    // quedan en el inventario maestro, no solo en auditoria_posiciones.
+    psi_actual: (extra && extra.psi != null) ? extra.psi : null,
+    milimetros: (extra && extra.milimetros != null) ? extra.milimetros : null,
     estado_actual: "en_uso", bodega: null, equipo_actual: equipoId, posicion_actual: posicion,
     fecha_ingreso: todayISO(), activo: true
   });
@@ -1419,6 +1423,18 @@ const RETIRO_MOTIVOS = [
 const CAMPO_LABELS = { numero_fuego: "N° de fuego", marca: "marca", medida: "medida" };
 function normStr(v) { return (v == null ? "" : String(v)).trim().toLowerCase(); }
 async function compararNeumaticosAuditoria(clienteId, equipoId, posData) {
+  // Requerimiento: linea base sin discrepancias falsas -- en la PRIMERA
+  // auditoria de un equipo todavia no hay ningun neumatico vinculado a el en
+  // `neumaticos` (equipo_actual nunca se seteo), asi que comparar contra esa
+  // tabla vacia marcaria "numero_fuego no coincide" en TODAS las posiciones
+  // (sistema="" vs lo que tipeo el mecanico). Se detecta consultando si ya
+  // existe alguna auditoria previa para este equipo; si no hay ninguna, se
+  // asume que lo que carga el mecanico ES la linea base oficial y no se
+  // genera ninguna discrepancia (asegurarNeumatico igual la deja guardada
+  // como estado inicial al procesar la auditoria, ver enviarAuditoria).
+  const { data: previas, error: ePrevias } = await sb.from("auditorias").select("id_auditoria").eq("equipo_id", equipoId).limit(1);
+  if (ePrevias) throw ePrevias;
+  if (!previas || !previas.length) return [];
   const { data: neus, error } = await sb.from("neumaticos")
     .select("numero_fuego, marca, medida, posicion_actual")
     .eq("cliente_id", clienteId).eq("equipo_actual", equipoId).eq("activo", true);
