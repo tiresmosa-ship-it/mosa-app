@@ -173,3 +173,8 @@ DELETE FROM auditorias_receta WHERE id = 'e794940d-fc40-49a2-a4ae-31b85bd08fc2';
 DELETE FROM auditorias WHERE id_auditoria = 'c8e03de5-1a8c-401b-a317-9b85af2df82b';
 DELETE FROM sesiones_trabajo WHERE equipo_id = '0d6d06fd-a6d2-436a-b1ae-ce7a8919e7be';
 DELETE FROM check_diario WHERE id = '65f79638-a268-49ed-b4e2-1362c959bc35';
+
+-- Prueba en vivo contra produccion (mosatiresystem.netlify.app) para diagnosticar
+-- por que ONK265 (106) no mostraba EN_RECOMENDACIONES/HOJA_CAMBIO_EN_PROCESO --
+-- confirme que el insert directo funciona bien (no era problema de DB/migracion).
+DELETE FROM sesiones_trabajo WHERE id = '84d46c5e-af3e-4dd2-8fdd-05e03d522182';
