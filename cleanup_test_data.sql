@@ -178,3 +178,4 @@ DELETE FROM check_diario WHERE id = '65f79638-a268-49ed-b4e2-1362c959bc35';
 -- por que ONK265 (106) no mostraba EN_RECOMENDACIONES/HOJA_CAMBIO_EN_PROCESO --
 -- confirme que el insert directo funciona bien (no era problema de DB/migracion).
 DELETE FROM sesiones_trabajo WHERE id = '84d46c5e-af3e-4dd2-8fdd-05e03d522182';
+DELETE FROM sesiones_trabajo WHERE id = '117fecd8-1070-428a-8e3b-727487672216';
