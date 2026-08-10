@@ -567,6 +567,70 @@ const db = {
     });
     return out.sort((a, b) => (b.fecha_origen || "").localeCompare(a.fecha_origen || ""));
   },
+  // Requerimiento: consolidacion AUTOMATICA e INCONDICIONAL de todas las
+  // tareas pendientes de un equipo al generar el instructivo de una
+  // auditoria nueva -- sin preguntarle al mecanico si quiere sumarlas (antes
+  // habia un modal "Si, sumar / No, solo las de hoy", se elimina). Unifica
+  // dos fuentes que ya existian por separado:
+  //   A) recetas de auditorias anteriores que quedaron con tareas sin
+  //      terminar (fetchTareasPendientesAnteriores, checklist propio de esa
+  //      auditoria con done:false).
+  //   B) tareas puntuales derivadas a Pendiente por el Admin o el mecanico
+  //      en cualquier momento (fetchTareasPendientesEquipo, tareas_diferidas
+  //      con estado PENDIENTE de CUALQUIER auditoria pasada, no solo las
+  //      ultimas 3).
+  // Ambas fuentes se marcan como consumidas (sin_cambio / REASIGNADA) para
+  // que no se sigan arrastrando duplicadas en la proxima auditoria -- si el
+  // mecanico no las completa hoy, vuelven a caer en tareas_diferidas con
+  // estado PENDIENTE via diferirTareaChecklist/finalizar (CambioForm), y por
+  // lo tanto esta misma consolidacion las va a volver a traer la proxima vez
+  // (punto 4 del requerimiento: "persistencia de gestion").
+  async consolidarTareasPendientes(equipoId) {
+    const [recetasIncompletas, tareasSueltas] = await Promise.all([
+      db.fetchTareasPendientesAnteriores(equipoId).catch(() => []),
+      db.fetchTareasPendientesEquipo(equipoId).catch(() => [])
+    ]);
+    const vistos = new Set();
+    const consolidadas = [];
+    recetasIncompletas.forEach(r => {
+      const fecha = r.auditorias ? r.auditorias.fecha : null;
+      tareasIncompletasDeReceta(r).forEach(texto => {
+        const key = normStr(texto);
+        if (!key || vistos.has(key)) return;
+        vistos.add(key);
+        consolidadas.push({ texto, origen: fecha, tipo_origen: "sistema" });
+      });
+    });
+    tareasSueltas.forEach(t => {
+      const key = normStr(t.texto);
+      if (!key || vistos.has(key)) return;
+      vistos.add(key);
+      consolidadas.push({ texto: t.texto, origen: t.fecha_origen || t.fecha_auditoria || null, tipo_origen: t.tipo_origen || "mecanico", creado_por: t.creado_por || null });
+    });
+    if (recetasIncompletas.length) {
+      await db.marcarRecetasSinCambio(recetasIncompletas.map(r => r.id)).catch(e => console.error("No se pudieron marcar las recetas incompletas como consolidadas", e));
+    }
+    if (tareasSueltas.length) {
+      // Read-modify-write por receta de origen (agrupado, no una escritura
+      // por tarea) para no pisarse si dos tareas pendientes vivian en la
+      // misma fila -- mismo criterio que el resto de la app usa sobre
+      // posiciones_alerta.
+      const porReceta = {};
+      tareasSueltas.forEach(t => { (porReceta[t.receta_id] = porReceta[t.receta_id] || []).push(t.id); });
+      for (const recetaId of Object.keys(porReceta)) {
+        const ids = porReceta[recetaId];
+        try {
+          const { data, error: eFresh } = await sb.from("auditorias_receta").select("posiciones_alerta").eq("id", recetaId).maybeSingle();
+          if (eFresh) throw eFresh;
+          const pa = (data && data.posiciones_alerta) || {};
+          const diferidas = (Array.isArray(pa.tareas_diferidas) ? pa.tareas_diferidas : []).map(t => ids.includes(t.id) ? { ...t, estado: "REASIGNADA" } : t);
+          const { error } = await sb.from("auditorias_receta").update({ posiciones_alerta: { ...pa, tareas_diferidas: diferidas } }).eq("id", recetaId);
+          if (error) throw error;
+        } catch (e) { console.error("No se pudo marcar una tarea pendiente como consolidada", e); }
+      }
+    }
+    return consolidadas;
+  },
   // "Reasignar a hoy" desde el panel de equipo del Admin: si el mecanico tiene
   // una hoja de cambio activa hoy para este equipo, la tarea se inyecta ahi
   // mismo (HACER_HOY, visible de inmediato); si no hay sesion activa, se deja
