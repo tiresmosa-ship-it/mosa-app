@@ -1266,33 +1266,52 @@ function Instructivo({ equipo, axleCfg, posData, recsInfo, checklist, setCheckli
    Un tap corto (sin arrastre) sobre un neumático montado solo abre el
    modal de información/intervenciones.
 ===================================================================== */
-function RetiroModal({ pos, fuego, patente, mmActual, onClose, onConfirm }) {
-  // Dos pasos: 1) confirmacion simple, 2) motivo (desgaste normal pide mm,
-  // otro pide texto libre obligatorio; daño no pide campo extra pero ambos
-  // daño/otro generan alerta de baja prematura al confirmar, ver CambioForm).
+function RetiroModal({ pos, fuego, patente, mmActual, clienteId, onClose, onConfirm }) {
+  // Dos pasos: 1) confirmacion simple, 2) motivo.
+  // Requerimiento (blindaje de mm oficiales): el mm ya NO es un campo que el
+  // mecanico pueda tipear/editar para el retiro — se usa siempre mmActual,
+  // el valor oficial que ya esta cargado en el mapa para esa posicion (mismo
+  // que ve el Admin), para que no se pueda evadir la Regla 1 escribiendo un
+  // numero menor. Si mmActual es null (posicion sin dato oficial todavia),
+  // no se puede retirar por "Desgaste normal" hasta que se audite/mida.
   const [step, setStep] = useState("confirm");
   const [sel, setSel] = useState("desgaste_normal");
-  // Requerimiento 1: precargado con el mm real conocido de esta posicion (no
-  // en blanco) para que la validacion de "<=3mm para retirar por desgaste"
-  // salte de entrada en vez de depender de que el mecanico lo tipee bien.
-  // Sigue siendo editable por si el mecanico mide de nuevo al momento del retiro.
-  const [mm, setMm] = useState(mmActual != null ? String(mmActual) : "");
   const [justificacion, setJustificacion] = useState("");
-  const [errorMM, setErrorMM] = useState("");
-  const puedeConfirmar = sel === "desgaste_normal" ? mm.trim() !== "" : sel === "otro" ? justificacion.trim() !== "" : true;
+  const [fotoUrl, setFotoUrl] = useState(null);
+  const [fotoNombre, setFotoNombre] = useState("");
+  const [subiendoFoto, setSubiendoFoto] = useState(false);
+  const [fotoError, setFotoError] = useState("");
+  const mm = mmActual != null ? parseFloat(mmActual) : null;
+  const requiereFoto = sel === "dano" || sel === "otro";
 
-  // Requerimiento 1: un retiro por desgaste solo se permite con <=3mm — con
-  // mas profundidad el neumatico todavia tiene vida util.
-  function confirmar() {
-    if (sel === "desgaste_normal") {
-      const v = parseFloat(mm);
-      if (!isNaN(v) && v > 3) {
-        setErrorMM(`Acción no permitida: el neumático posee ${v}mm de profundidad remanente (mayor a 3mm). Aún conserva vida útil y no se puede retirar por desgaste.`);
-        return;
-      }
+  // Requerimiento — Regla 1: un retiro por desgaste normal solo se permite
+  // con mm oficial <= 3mm; con mas profundidad el neumatico todavia tiene
+  // vida util y la accion queda bloqueada de plano (no hay forma de forzarlo
+  // desde esta pantalla).
+  const bloqueadoPorDesgaste = sel === "desgaste_normal" && (mm == null || mm > 3);
+  const puedeConfirmar = sel === "desgaste_normal"
+    ? !bloqueadoPorDesgaste
+    : requiereFoto
+      ? !!fotoUrl && !subiendoFoto
+      : true;
+
+  async function onFotoChange(e) {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    setFotoNombre(file.name); setSubiendoFoto(true); setFotoError(""); setFotoUrl(null);
+    try {
+      const url = await subirFotoRetiro(clienteId, pos, file);
+      setFotoUrl(url);
+    } catch (err) {
+      setFotoError("No se pudo subir la foto. Verificá que exista el bucket público 'neumaticos-evidencia' en Supabase Storage.");
+    } finally {
+      setSubiendoFoto(false);
     }
-    setErrorMM("");
-    onConfirm({ sel, mm, justificacion });
+  }
+
+  function confirmar() {
+    if (!puedeConfirmar) return;
+    onConfirm({ sel, mm, justificacion, fotoUrl });
   }
 
   if (step === "confirm") {
@@ -1309,7 +1328,8 @@ function RetiroModal({ pos, fuego, patente, mmActual, onClose, onConfirm }) {
 
   return (
     <Modal title="Motivo de retiro" onClose={onClose}>
-      <p className="text-[13.5px] text-sub mb-4">Neumático <span className="font-bold text-ink">{fuego}</span> · Posición P{pos}</p>
+      <p className="text-[13.5px] text-sub mb-1">Neumático <span className="font-bold text-ink">{fuego}</span> · Posición P{pos}</p>
+      <p className="text-[12.5px] text-muted mb-4">Profundidad oficial registrada: <span className="font-bold">{mm != null ? `${mm}mm` : "sin dato — auditá esta posición antes de retirar por desgaste"}</span></p>
       <div className="space-y-2 mb-4">
         {RETIRO_MOTIVOS.map(m => (
           <button key={m.slug} type="button" onClick={() => setSel(m.slug)}
@@ -1321,18 +1341,33 @@ function RetiroModal({ pos, fuego, patente, mmActual, onClose, onConfirm }) {
           </button>
         ))}
       </div>
-      {sel === "desgaste_normal" && (
-        <Field label="MM al momento del retiro" required>
-          <TextInput type="number" inputMode="decimal" value={mm} onChange={e => { setMm(e.target.value); setErrorMM(""); }} placeholder="Ej: 3" />
-        </Field>
-      )}
       {sel === "otro" && (
         <Field label="Detalle" required>
           <TextArea value={justificacion} onChange={e => setJustificacion(e.target.value)} placeholder="Describí el motivo del retiro" />
         </Field>
       )}
-      {errorMM && <p className="text-[12.5px] font-bold text-[#B91C1C] bg-[#FEE2E2] rounded-xl px-3 py-2.5 mb-1">{errorMM}</p>}
-      <Button variant="danger" className="w-full mt-5" disabled={!puedeConfirmar} onClick={confirmar}>Confirmar retiro</Button>
+      {bloqueadoPorDesgaste && (
+        <div className="bg-[#FEE2E2] rounded-xl px-3 py-2.5 mb-1">
+          <p className="text-[12.5px] font-bold text-[#B91C1C]">🛑 Acción No Permitida</p>
+          <p className="text-[12.5px] text-[#B91C1C] mt-0.5">
+            {mm == null
+              ? "Esta posición no tiene una profundidad oficial registrada — no se puede retirar por desgaste normal hasta auditarla."
+              : "No se puede retirar por desgaste un neumático con más de 3 mm de vida útil."}
+          </p>
+        </div>
+      )}
+      {requiereFoto && (
+        <Field label="Foto de evidencia" required hint="Obligatoria para retiros por Daño u Otro">
+          <label className="h-14 px-5 rounded-2xl font-bold text-[15px] bg-ink text-white flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98] transition w-full">
+            <span className="text-[18px]">📷</span> Tomar foto
+            <input type="file" accept="image/*" capture="environment" onChange={onFotoChange} className="hidden" />
+          </label>
+        </Field>
+      )}
+      {subiendoFoto && <p className="text-[12.5px] text-muted mb-1">Subiendo foto...</p>}
+      {fotoUrl && <p className="text-[12.5px] font-bold text-[#15803D] mb-1">✓ Foto subida: {fotoNombre}</p>}
+      {fotoError && <p className="text-[12.5px] font-bold text-[#B91C1C] mb-1">{fotoError}</p>}
+      <Button variant="danger" className="w-full mt-4" disabled={!puedeConfirmar} onClick={confirmar}>Confirmar retiro</Button>
     </Modal>
   );
 }
@@ -1663,12 +1698,16 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
       }
     });
   }
-  function confirmarRetiro(pos, { sel, mm, justificacion }) {
+  // Requerimiento: mm ya no llega editado por el mecanico (RetiroModal lo
+  // resuelve siempre con el mm OFICIAL de la posicion, mmActual/minMM — ver
+  // RetiroModal). Retiro por Daño/Otro exige foto de evidencia, ya validada
+  // como obligatoria en el modal (puedeConfirmar); acá solo se persiste.
+  function confirmarRetiro(pos, { sel, mm, justificacion, fotoUrl }) {
     const d = posData[pos];
     const esDesgaste = sel === "desgaste_normal";
     const motivoSalida = esDesgaste ? "retiro_desgaste" : "retiro_daño_otro";
-    const milimetros = esDesgaste ? (parseFloat(mm) || null) : (d.minMM || null);
-    const itemRetiro = { numero_fuego: d.numero_fuego, posicion: pos, milimetros, psi: d.psi || null, motivo: motivoSalida, motivo_salida: motivoSalida, origen_mov: motivoSalida };
+    const milimetros = mm != null ? mm : (d.minMM || null);
+    const itemRetiro = { numero_fuego: d.numero_fuego, posicion: pos, milimetros, psi: d.psi || null, motivo: motivoSalida, motivo_salida: motivoSalida, origen_mov: motivoSalida, foto_url: fotoUrl || null };
     sale.current.push(itemRetiro);
     ensureCambioHeader().then(cambio_id => {
       pushQueue({ id: uuid(), tipo: "cambio_item", clienteId, ts: Date.now(), data: { kind: "sale", cambio_id, cliente_id: clienteId, mecanico_id: user.id, item: itemRetiro } });
@@ -1678,8 +1717,9 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
       pushQueue({
         id: uuid(), tipo: "alerta", clienteId, ts: Date.now(), data: {
           id: uuid(), cliente_id: clienteId, equipo_id: equipo.id_equipo, mecanico_id: user.id,
-          tipo: "baja_prematura", severidad: "amarillo", titulo: `Retiro por daño/otro — ${equipo.patente} pos ${pos}`,
+          tipo: "baja_prematura", severidad: "amarillo", titulo: `Retiro por ${sel === "dano" ? "daño" : "otro"} — ${equipo.patente} pos ${pos}`,
           descripcion: sel === "otro" ? justificacion : "Retiro por daño", posicion: pos, numero_fuego: d.numero_fuego,
+          datos_extra: { foto_url: fotoUrl || null },
           leida_mecanico: true, leida_admin: false, leida_superadmin: false
         }
       });
@@ -2104,7 +2144,7 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
 
       {retiroSel && posData[retiroSel.pos] && (
         <RetiroModal pos={retiroSel.pos} fuego={posData[retiroSel.pos].numero_fuego} patente={equipo.patente}
-          mmActual={posData[retiroSel.pos].minMM}
+          mmActual={posData[retiroSel.pos].minMM} clienteId={clienteId}
           onClose={() => setRetiroSel(null)}
           onConfirm={(payload) => confirmarRetiro(retiroSel.pos, payload)} />
       )}

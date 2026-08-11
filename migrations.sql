@@ -683,3 +683,32 @@ ALTER TABLE alertas ADD COLUMN IF NOT EXISTS datos_extra JSONB;
 -- criterio que en los bloques 15/38: se saca la restriccion en vez de
 -- ampliarla cada vez que se agrega un evento nuevo.
 ALTER TABLE sesiones_trabajo DROP CONSTRAINT IF EXISTS sesiones_trabajo_evento_check;
+
+-- 41) cambio_detalle.foto_url -- evidencia fotografica obligatoria al
+-- retirar un neumatico por Daño/Otro (RetiroModal en mecanico.html, sube a
+-- un bucket nuevo 'neumaticos-evidencia'). Queda vinculada al registro del
+-- desmonte para que el Admin la pueda auditar despues, no solo la
+-- descripcion de texto libre de la alerta baja_prematura.
+ALTER TABLE cambio_detalle ADD COLUMN IF NOT EXISTS foto_url TEXT;
+
+-- 42) Bucket de Storage "neumaticos-evidencia" (fotos de retiro por Daño/Otro)
+-- Igual que el bucket "checkpoints" (bloques 8/11), esto NO se puede crear
+-- por SQL: andá a Supabase Dashboard > Storage > "New bucket", nombralo
+-- exactamente "neumaticos-evidencia" y marcalo como Public. Sin este
+-- bucket, el retiro por Daño/Otro no va a poder subir la foto obligatoria
+-- (la app avisa con un error si falta). Despues de crearlo, correr estas
+-- politicas para que el rol anon pueda subir/leer en ese bucket puntual:
+DROP POLICY IF EXISTS "anon puede subir a neumaticos-evidencia" ON storage.objects;
+CREATE POLICY "anon puede subir a neumaticos-evidencia" ON storage.objects
+  FOR INSERT TO anon
+  WITH CHECK (bucket_id = 'neumaticos-evidencia');
+
+DROP POLICY IF EXISTS "anon puede actualizar neumaticos-evidencia" ON storage.objects;
+CREATE POLICY "anon puede actualizar neumaticos-evidencia" ON storage.objects
+  FOR UPDATE TO anon
+  USING (bucket_id = 'neumaticos-evidencia');
+
+DROP POLICY IF EXISTS "anon puede leer neumaticos-evidencia" ON storage.objects;
+CREATE POLICY "anon puede leer neumaticos-evidencia" ON storage.objects
+  FOR SELECT TO anon
+  USING (bucket_id = 'neumaticos-evidencia');

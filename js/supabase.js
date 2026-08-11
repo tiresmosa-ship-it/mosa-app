@@ -1084,7 +1084,10 @@ async function enviarCambioItem(data) {
   const { kind, cliente_id, mecanico_id, equipo_id, cambio_id, item } = data;
   if (kind === "sale") {
     await asegurarNeumatico(cliente_id, item.numero_fuego, null, null, item);
-    const { error } = await sb.from("cambio_detalle").insert({ id: uuid(), cambio_id, tipo: "sale", numero_fuego: item.numero_fuego, posicion: item.posicion || null, milimetros: item.milimetros || null, psi: item.psi || null, estado: null, motivo_salida: item.motivo_salida || item.motivo || null });
+    // Requerimiento: evidencia fotografica del retiro por Daño/Otro (ver
+    // RetiroModal en mecanico.html) queda vinculada al registro del
+    // desmonte, no solo en la alerta de baja_prematura.
+    const { error } = await sb.from("cambio_detalle").insert({ id: uuid(), cambio_id, tipo: "sale", numero_fuego: item.numero_fuego, posicion: item.posicion || null, milimetros: item.milimetros || null, psi: item.psi || null, estado: null, motivo_salida: item.motivo_salida || item.motivo || null, foto_url: item.foto_url || null });
     if (error) throw error;
     await actualizarNeumaticoSale(cliente_id, item);
     await insertMovimientoBodega(cliente_id, mecanico_id, "salida", item.origen_mov || item.motivo || "salida", item.numero_fuego);
@@ -1542,6 +1545,17 @@ async function subirFotoCheckpoint(clienteId, pos, file) {
   const { error } = await sb.storage.from("checkpoints").upload(path, file, { upsert: true });
   if (error) throw error;
   const { data } = sb.storage.from("checkpoints").getPublicUrl(path);
+  return data.publicUrl;
+}
+// Requerimiento: evidencia fotografica obligatoria al retirar un neumatico
+// por Daño/Otro (RetiroModal, mecanico.html) -- mismo patron que
+// subirFotoCheckpoint, bucket propio para no mezclar con las fotos de
+// checkpoint de montaje.
+async function subirFotoRetiro(clienteId, pos, file) {
+  const path = `${clienteId}/${Date.now()}_p${pos}_${file.name}`;
+  const { error } = await sb.storage.from("neumaticos-evidencia").upload(path, file, { upsert: true });
+  if (error) throw error;
+  const { data } = sb.storage.from("neumaticos-evidencia").getPublicUrl(path);
   return data.publicUrl;
 }
 
