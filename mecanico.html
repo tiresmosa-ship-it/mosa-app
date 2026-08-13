@@ -888,8 +888,14 @@ function ResumenInstructivoModal({ resumen, onEntendido }) {
 
 function AuditoriaForm({ user, clienteId, equipo, cfg, onCancel, onGenerarInstructivo }) {
   const [frioConfirmado, setFrioConfirmado] = useState(false);
-  const [km, setKm] = useState("");
-  const [kmSet, setKmSet] = useState(false);
+  // Un semirremolque no tiene motor/odometro propio -- el km real es del
+  // tracto que lo arrastra en cada viaje, no algo que el semi pueda
+  // reportar. Pedirle "los km" al mecanico antes de poder auditar un SEMI
+  // era friccion sin sentido (cliente ELB, mayoria de la flota son semis).
+  // Se salta el paso completo: km queda en "0" y no se vuelve a pedir.
+  const esSemi = equipo.tipo === "SEMI";
+  const [km, setKm] = useState(esSemi ? "0" : "");
+  const [kmSet, setKmSet] = useState(esSemi);
   const axleCfg = axleConfigFor(equipo);
   const allPositions = axleCfg.rows.flatMap(r => r.positions);
   const [posData, setPosData] = useState({});
@@ -1445,8 +1451,11 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
   // si se llego a hacer algun cambio en la HC o no, y de si el mecanico
   // salio y volvio a entrar).
   const kmGuardadoLocal = kmInicial ? null : leerKmGuardado(equipo.id_equipo);
-  const [km, setKm] = useState(kmInicial || (kmGuardadoLocal != null ? String(kmGuardadoLocal) : ""));
-  const [kmSet, setKmSet] = useState(!!kmInicial || kmGuardadoLocal != null);
+  // Mismo criterio que AuditoriaForm: un SEMI no tiene km propio, no se le
+  // pide.
+  const esSemi = equipo.tipo === "SEMI";
+  const [km, setKm] = useState(kmInicial || (kmGuardadoLocal != null ? String(kmGuardadoLocal) : (esSemi ? "0" : "")));
+  const [kmSet, setKmSet] = useState(!!kmInicial || kmGuardadoLocal != null || esSemi);
   // Fix 6: si hay una sesion de HC ya abierta hoy para este equipo (header
   // creado, hora_salida todavia null) hace menos de 8hs, se hereda el km de
   // esa sesion y no se vuelve a pedir ni se genera alerta de "km repetidos".
