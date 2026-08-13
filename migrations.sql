@@ -712,3 +712,11 @@ DROP POLICY IF EXISTS "anon puede leer neumaticos-evidencia" ON storage.objects;
 CREATE POLICY "anon puede leer neumaticos-evidencia" ON storage.objects
   FOR SELECT TO anon
   USING (bucket_id = 'neumaticos-evidencia');
+
+-- 43) equipos.configuracion_ejes tenia un CHECK constraint con una lista fija
+-- (4x2/6x2/6x4, presumiblemente) que rechaza las configuraciones nuevas del
+-- cliente ELB ("1+1", "3+1", y a futuro "3x2" para los Moffett -- ver
+-- AXLE_CONFIGS en js/supabase.js). Mismo criterio que en los bloques
+-- 15/38/40: se saca la restriccion en vez de tener que ampliarla cada vez
+-- que se agrega una flota con ejes distintos.
+ALTER TABLE equipos DROP CONSTRAINT IF EXISTS equipos_configuracion_ejes_check;
