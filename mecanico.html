@@ -308,28 +308,51 @@ const { useRef } = React;
 /* =====================================================================
    SELECCION DE EMPRESA
 ===================================================================== */
+// Requerimiento: mecanicos que trabajan para mas de una empresa (ej. un
+// mecanico de MOSA que cubre BYS, ELB y La Portada segun el dia). Antes,
+// esta pantalla solo mostraba/confirmaba la unica cliente_id del usuario --
+// ahora, si usuarios.empresas_adicionales trae mas de un cliente_id, se
+// muestra una lista real para elegir. Sin cambios de comportamiento para
+// mecanicos de una sola empresa (Carlos/Pedro/Miguel siguen viendo la misma
+// pantalla de "confirmar" de siempre).
 function SeleccionEmpresa({ user, onConfirm }) {
-  const [cliente, setCliente] = useState(null);
-  useEffect(() => { db.fetchCliente(user.cliente_id).then(setCliente).catch(() => setCliente({ nombre: user.cliente_id })); }, []);
+  const idsEmpresas = [user.cliente_id, ...((user.empresas_adicionales || []).filter(id => id && id !== user.cliente_id))];
+  const multiples = idsEmpresas.length > 1;
+  const [clientes, setClientes] = useState(null);
+  const [seleccionada, setSeleccionada] = useState(multiples ? null : idsEmpresas[0]);
+  useEffect(() => {
+    Promise.all(idsEmpresas.map(id => db.fetchCliente(id).catch(() => ({ id_cliente: id, nombre: id }))))
+      .then(setClientes);
+  }, []);
   function confirmar() {
-    localStorage.setItem("empresa_activa_hoy", user.cliente_id);
-    onConfirm(user.cliente_id);
+    if (!seleccionada) return;
+    localStorage.setItem("empresa_activa_hoy", seleccionada);
+    onConfirm(seleccionada);
   }
   return (
     <div className="min-h-screen flex flex-col px-6 pt-16 safe-top">
       <p className="text-[14px] text-muted mb-2">Antes de comenzar</p>
       <h1 className="text-[28px] font-extrabold leading-tight mb-8">¿En qué empresa vas a trabajar hoy?</h1>
-      <Card className="mb-4">
-        <div className="flex items-center gap-3">
-          <div className="w-12 h-12 rounded-2xl bg-[#F3F4F6] flex items-center justify-center"><Icon.truck width="24" height="24" /></div>
-          <div>
-            <p className="font-extrabold text-[16px]">{cliente ? cliente.nombre : "Cargando..."}</p>
-            <p className="text-[12.5px] text-muted">Empresa asignada</p>
-          </div>
+      {clientes === null ? (
+        <div className="flex justify-center py-8"><span className="spinner" /></div>
+      ) : (
+        <div className="space-y-3 mb-4">
+          {clientes.map(c => (
+            <button key={c.id_cliente} type="button" onClick={() => setSeleccionada(c.id_cliente)}
+              className={cx("w-full text-left bg-white rounded-card shadow-card border p-5 flex items-center gap-3",
+                seleccionada === c.id_cliente ? "border-ink" : "border-bd")}>
+              <div className="w-12 h-12 rounded-2xl bg-[#F3F4F6] flex items-center justify-center shrink-0"><Icon.truck width="24" height="24" /></div>
+              <div className="flex-1 min-w-0">
+                <p className="font-extrabold text-[16px]">{c.nombre}</p>
+                <p className="text-[12.5px] text-muted">{multiples ? "Tocá para elegir" : "Empresa asignada"}</p>
+              </div>
+              {multiples && seleccionada === c.id_cliente && <span className="text-[18px] shrink-0">✓</span>}
+            </button>
+          ))}
         </div>
-      </Card>
+      )}
       <div className="flex-1" />
-      <Button className="w-full mb-8" disabled={!cliente} onClick={confirmar}>Confirmar empresa</Button>
+      <Button className="w-full mb-8" disabled={!seleccionada} onClick={confirmar}>Confirmar empresa</Button>
     </div>
   );
 }

@@ -720,3 +720,11 @@ CREATE POLICY "anon puede leer neumaticos-evidencia" ON storage.objects
 -- 15/38/40: se saca la restriccion en vez de tener que ampliarla cada vez
 -- que se agrega una flota con ejes distintos.
 ALTER TABLE equipos DROP CONSTRAINT IF EXISTS equipos_configuracion_ejes_check;
+
+-- 44) usuarios.empresas_adicionales -- mecanicos que trabajan para mas de
+-- una empresa (ej. cubren BYS, ELB y La Portada segun el dia). usuarios.
+-- cliente_id sigue siendo la empresa "de base"; este array JSONB guarda las
+-- demas cliente_id a las que tambien tiene acceso. SeleccionEmpresa
+-- (mecanico.html) ya lee esta columna -- si tiene mas de un cliente_id
+-- disponible, muestra una lista real para elegir en vez de auto-confirmar.
+ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS empresas_adicionales JSONB DEFAULT '[]'::jsonb;
