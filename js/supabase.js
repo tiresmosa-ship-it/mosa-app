@@ -98,10 +98,41 @@ const AXLE_CONFIGS = {
       { label: "Auxilio", type: "auxilio", ejeTipo: "auxilio", positions: [13] }
     ],
     groups: [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12], [13]]
+  },
+  // Cliente ELB: trailers con notacion "N+1" (N ejes de 4 neumaticos + un
+  // repuesto aparte, confirmado por el cliente -- "2+1" son 3 ejes = la
+  // misma cantidad que "semi" de arriba, no hace falta un key nuevo para
+  // ese caso). "1+1" = 2 ejes, "3+1" = 4 ejes.
+  "1+1": {
+    total: 9,
+    rows: [
+      { label: "Eje 1", type: "M", ejeTipo: "T", positions: [1, 2, 3, 4] },
+      { label: "Eje 2", type: "M", ejeTipo: "T", positions: [5, 6, 7, 8] },
+      { label: "Auxilio", type: "auxilio", ejeTipo: "auxilio", positions: [9] }
+    ],
+    groups: [[1, 2, 3, 4], [5, 6, 7, 8], [9]]
+  },
+  "3+1": {
+    total: 17,
+    rows: [
+      { label: "Eje 1", type: "M", ejeTipo: "T", positions: [1, 2, 3, 4] },
+      { label: "Eje 2", type: "M", ejeTipo: "T", positions: [5, 6, 7, 8] },
+      { label: "Eje 3", type: "M", ejeTipo: "T", positions: [9, 10, 11, 12] },
+      { label: "Eje 4", type: "M", ejeTipo: "T", positions: [13, 14, 15, 16] },
+      { label: "Auxilio", type: "auxilio", ejeTipo: "auxilio", positions: [17] }
+    ],
+    groups: [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12], [13, 14, 15, 16], [17]]
   }
 };
+// Fix ELB: antes, un equipo tipo SEMI SIEMPRE caia en el layout fijo de 13
+// posiciones sin importar lo que tuviera en configuracion_ejes -- estaba bien
+// mientras el unico semi fuera "3 ejes + auxilio", pero ELB tiene trailers
+// con distinta cantidad de ejes (1+1=9, 3+1=17). Ahora se prioriza el
+// lookup directo por configuracion_ejes (si matchea una config real, se usa
+// esa) y recien si no matchea nada cae al comportamiento viejo por tipo.
 function axleConfigFor(equipo) {
   if (!equipo) return AXLE_CONFIGS["4x2"];
+  if (equipo.configuracion_ejes && AXLE_CONFIGS[equipo.configuracion_ejes]) return AXLE_CONFIGS[equipo.configuracion_ejes];
   if (equipo.tipo === "SEMI") return AXLE_CONFIGS["semi"];
   return AXLE_CONFIGS[equipo.configuracion_ejes] || AXLE_CONFIGS["4x2"];
 }
