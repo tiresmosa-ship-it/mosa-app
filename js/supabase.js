@@ -122,6 +122,22 @@ const AXLE_CONFIGS = {
       { label: "Auxilio", type: "auxilio", ejeTipo: "auxilio", positions: [17] }
     ],
     groups: [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12], [13, 14, 15, 16], [17]]
+  },
+  // Cliente ELB: grua horquilla (1 equipo, C-GH01) -- 4 neumaticos adelante +
+  // 2 atras, y el eje trasero TAMBIEN tiene direccion (comun en gruas
+  // horquilla para maniobrar en espacios chicos), asi que ninguno de los 2
+  // ejes es "traccion" en el sentido de un camion -- ambos se tratan como
+  // tipo D (mismo objetivo de PSI, psi_delantero). Key distinta a "4x2" a
+  // proposito: un TRACTO comun con esa config es 2 delantero + 4 traccion,
+  // el layout opuesto -- si se reusara la key existente, un 4x2 real de
+  // otro cliente heredaria mal el layout de la grua (y viceversa).
+  "4x2-grua": {
+    total: 6,
+    rows: [
+      { label: "Eje 1", type: "D", ejeTipo: "D", positions: [1, 2, 3, 4] },
+      { label: "Eje 2", type: "D", ejeTipo: "D", positions: [5, 6] }
+    ],
+    groups: [[1, 2, 3, 4], [5, 6]]
   }
 };
 // Fix ELB: antes, un equipo tipo SEMI SIEMPRE caia en el layout fijo de 13
