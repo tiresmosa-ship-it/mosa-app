@@ -516,7 +516,7 @@ const db = {
     ]);
     if (e1) throw e1;
     if (e2) throw e2;
-    const SALIDA_LABEL = { transito: "Tránsito", reparacion: "Reparación", retiro_desgaste: "Retiro (desgaste)", "retiro_daño_otro": "Retiro (daño/otro)" };
+    const SALIDA_LABEL = { transito: "Tránsito", reparacion: "Reparación", retiro_desgaste: "Retiro (desgaste)", retiro_dano: "Retiro (daño)", retiro_otro: "Retiro (otro)" };
     const ENTRADA_LABEL = { nuevo: "Nuevo", transito: "Tránsito", recauchado: "Recauchado" };
     const rows = cd || [];
     const usados = new Set();
@@ -1230,10 +1230,20 @@ async function insertAlerta(a) {
   const { error } = await sb.from("alertas").insert(a);
   if (error) console.error("No se pudo registrar alerta", error);
 }
+// "Enum" de bodegas/estados de neumaticos (documentacion — neumaticos.bodega
+// y estado_actual son TEXT libres en la base, sin CHECK constraint, ver
+// migrations.sql bloques 20a/24). Mandar a NFU es terminal: sin mas
+// transiciones desde ahi salvo correccion manual de SuperAdmin.
+const BODEGA_ESTADOS = {
+  NUEVO: "nuevo", TRANSITO: "transito", RECAUCHADO: "recauchado",
+  RETIRO_DESGASTE: "retiro_desgaste", RETIRO_DANO: "retiro_dano", RETIRO_OTRO: "retiro_otro",
+  PARA_RECAUCHAR: "para_recauchar", REPARACION: "reparacion", NFU: "nfu"
+};
 async function actualizarNeumaticoSale(clienteId, s) {
-  // destino = motivo de salida: transito | reparacion | retiro_desgaste | retiro_daño_otro.
-  // bodega y estado_actual quedan iguales al destino en los 4 casos (spec del
-  // flujo de salida/retiro reestructurado).
+  // destino = motivo de salida: transito | reparacion | retiro_desgaste |
+  // retiro_dano | retiro_otro (ver BODEGA_ESTADOS mas arriba y RetiroModal en
+  // mecanico.html). bodega y estado_actual quedan iguales al destino en todos
+  // los casos (spec del flujo de salida/retiro reestructurado).
   const destino = s.motivo;
   const bodega = destino;
   const estado = destino;
@@ -1331,7 +1341,7 @@ const ALL_STOCK_FIELDS = [...NEUMATICO_FIELDS, ...PATIO_FIELDS];
 
 // Compara el conteo fisico del mecanico contra las 4 bodegas que se cuentan
 // a mano en el check diario (nuevo/transito/recauchado/reparacion). Las demas
-// bodegas (retiro_desgaste, retiro_daño_otro, para_recauchar, nfu) son estados
+// bodegas (retiro_desgaste, retiro_dano, retiro_otro, para_recauchar, nfu) son estados
 // intermedios que administra el Admin y no se cuentan aca.
 // Fix 2: fuente unica de verdad para el conteo de neumaticos por bodega —
 // usada por el check diario, el reconteo al cierre, Maestros>Inventario del
@@ -2484,7 +2494,7 @@ const adminDb = {
       getInventarioNeumaticos(clienteId),
       (() => { let q = sb.from("neumaticos").select("id_neumatico", { count: "exact", head: true }).eq("activo", true).not("equipo_actual", "is", null); q = filtroCliente(q, clienteId); return q; })()
     ]);
-    const conteos = { nuevo: 0, transito: 0, reparacion: 0, retiro_desgaste: 0, para_recauchar: 0, recauchado: 0, en_equipo: enEquipo || 0, "retiro_daño_otro": 0, nfu: 0 };
+    const conteos = { nuevo: 0, transito: 0, reparacion: 0, retiro_desgaste: 0, retiro_dano: 0, retiro_otro: 0, para_recauchar: 0, recauchado: 0, en_equipo: enEquipo || 0, nfu: 0 };
     Object.entries(bodegas).forEach(([k, v]) => { if (conteos[k] !== undefined) conteos[k] = v; });
     return conteos;
   },

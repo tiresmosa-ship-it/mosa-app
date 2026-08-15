@@ -1751,7 +1751,10 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
   function confirmarRetiro(pos, { sel, mm, justificacion, fotoUrl }) {
     const d = posData[pos];
     const esDesgaste = sel === "desgaste_normal";
-    const motivoSalida = esDesgaste ? "retiro_desgaste" : "retiro_daño_otro";
+    // Requerimiento: Dano y Otro son bodegas independientes (antes se
+    // combinaban en una sola "retiro_daño_otro") -- ver BODEGA_ESTADOS en
+    // js/supabase.js y Maestros > Inventario en admin.html.
+    const motivoSalida = esDesgaste ? "retiro_desgaste" : sel === "dano" ? "retiro_dano" : "retiro_otro";
     const milimetros = mm != null ? mm : (d.minMM || null);
     const itemRetiro = { numero_fuego: d.numero_fuego, posicion: pos, milimetros, psi: d.psi || null, motivo: motivoSalida, motivo_salida: motivoSalida, origen_mov: motivoSalida, foto_url: fotoUrl || null };
     sale.current.push(itemRetiro);
