@@ -36,7 +36,10 @@ const DEFAULT_CFG = {
   // Requerimiento 1: medidas rapidas para el selector de Auditoria/HC —
   // guardadas como JSON en config_cliente.valor (clave 'medidas_permitidas'),
   // ver fetchConfig/setConfigValor mas abajo.
-  medidas_permitidas: ["295/80R22.5", "11R22.5"]
+  medidas_permitidas: ["295/80R22.5", "11R22.5"],
+  // Default true: clientes existentes (La Portada, BYS) sin fila propia en
+  // config_cliente siguen viendo el flujo de recauchado sin cambios.
+  usa_recauchados: true
 };
 
 const TOOLS_CHECKLIST = [
@@ -356,8 +359,10 @@ const db = {
     const map = { ...DEFAULT_CFG };
     const CLAVES_TEXTO = ["formula_marca_fuego", "medida_default", "moneda"];
     const CLAVES_JSON = ["medidas_permitidas"];
+    const CLAVES_BOOL = ["usa_recauchados"];
     (data || []).forEach(r => {
       if (CLAVES_JSON.includes(r.clave)) { try { map[r.clave] = JSON.parse(r.valor); } catch (e) { map[r.clave] = DEFAULT_CFG[r.clave]; } return; }
+      if (CLAVES_BOOL.includes(r.clave)) { map[r.clave] = r.valor === true || r.valor === "true"; return; }
       const n = parseFloat(r.valor); map[r.clave] = isNaN(n) || CLAVES_TEXTO.includes(r.clave) ? r.valor : n;
     });
     setCache(LS.cfg(clienteId), map);

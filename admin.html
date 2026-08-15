@@ -3131,7 +3131,19 @@ function EntradaNeumaticosModal({ filtro, proveedores, onClose, onSaved, pushToa
   const [proveedorId, setProveedorId] = useState(""); const [numeroDoc, setNumeroDoc] = useState(""); const [fecha, setFecha] = useState(todayISO());
   const [saving, setSaving] = useState(false); const [error, setError] = useState("");
   const [moneda, setMoneda] = useState("CLP");
-  useEffect(() => { if (filtro && filtro !== "todas") db.fetchConfig(filtro).then(cfg => setMoneda(cfg.moneda || "CLP")).catch(() => {}); }, [filtro]);
+  // Requerimiento 3: si el cliente activo no maneja recauchados (usa_recauchados=false,
+  // ej. ELB), el selector de Estado inicial solo ofrece Nuevo/Tránsito.
+  const [usaRecauchados, setUsaRecauchados] = useState(true);
+  useEffect(() => {
+    if (filtro && filtro !== "todas") db.fetchConfig(filtro).then(cfg => {
+      setMoneda(cfg.moneda || "CLP");
+      setUsaRecauchados(cfg.usa_recauchados !== false);
+    }).catch(() => {});
+  }, [filtro]);
+  useEffect(() => { if (!usaRecauchados && estadoInicial === "recauchado") setEstadoInicial("nuevo"); }, [usaRecauchados]);
+  const ESTADOS_INICIALES = usaRecauchados
+    ? [["nuevo", "Nuevo"], ["transito", "Tránsito"], ["recauchado", "Recauchado"]]
+    : [["nuevo", "Nuevo"], ["transito", "Tránsito"]];
 
   function onCant(v) { setCantidad(v); const c = parseFloat(v), p = parseFloat(precioUnit); if (!isNaN(c) && !isNaN(p)) setPrecioTotal(String(Math.round(c * p))); }
   function onPU(v) { setPrecioUnit(v); const c = parseFloat(cantidad), p = parseFloat(v); if (!isNaN(c) && !isNaN(p)) setPrecioTotal(String(Math.round(c * p))); }
@@ -3155,7 +3167,7 @@ function EntradaNeumaticosModal({ filtro, proveedores, onClose, onSaved, pushToa
         proveedor_id: proveedorId || null, numero_documento: numeroDoc.trim(), fecha_ingreso: fecha, moneda
       });
       if (e1) throw e1;
-      const bodegaDestino = estadoInicial === "recauchado" ? "recauchado" : "nuevo";
+      const bodegaDestino = estadoInicial === "recauchado" ? "recauchado" : estadoInicial === "transito" ? "transito" : "nuevo";
       // numero_fuego es NOT NULL en la base real (la spec original decia dejarlo
       // vacio "a asignar en campo", pero la tabla no lo permite) — se genera un
       // provisorio unico por neumatico que el mecanico puede corregir en terreno.
@@ -3195,7 +3207,7 @@ function EntradaNeumaticosModal({ filtro, proveedores, onClose, onSaved, pushToa
         </Field>
         <Field label="Estado inicial" required>
           <div className="flex gap-2">
-            {[["nuevo", "Nuevo"], ["recauchado", "Recauchado"]].map(([id, l]) => (
+            {ESTADOS_INICIALES.map(([id, l]) => (
               <button key={id} type="button" onClick={() => setEstadoInicial(id)} className={cx("flex-1 h-11 rounded-2xl text-[13.5px] font-bold", estadoInicial === id ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{l}</button>
             ))}
           </div>

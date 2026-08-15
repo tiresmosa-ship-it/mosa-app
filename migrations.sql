@@ -728,3 +728,18 @@ ALTER TABLE equipos DROP CONSTRAINT IF EXISTS equipos_configuracion_ejes_check;
 -- (mecanico.html) ya lee esta columna -- si tiene mas de un cliente_id
 -- disponible, muestra una lista real para elegir en vez de auto-confirmar.
 ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS empresas_adicionales JSONB DEFAULT '[]'::jsonb;
+
+-- 45) config_cliente.usa_recauchados -- flag booleano por cliente que activa
+-- o desactiva todo el flujo de neumaticos recauchados (conteo en check
+-- diario, bodega "Para Recauchar"/"Recauchados", etiqueta "Recauchado" en
+-- modales de montaje, y la opcion "Recauchado" en el selector de condicion
+-- del Maestro de Neumaticos -- ver DEFAULT_CFG/fetchConfig en
+-- js/supabase.js). No requiere ALTER TABLE (config_cliente ya es
+-- clave/valor generica, ver bloque 2). Clientes sin fila propia caen al
+-- default 'true' en DEFAULT_CFG, asi que La Portada y BYS siguen igual sin
+-- necesidad de insertar nada; ELB queda explicito en false.
+INSERT INTO config_cliente (cliente_id, clave, valor) VALUES
+  ('elb', 'usa_recauchados', 'false'),
+  ('bys', 'usa_recauchados', 'false'),
+  ('la_portada', 'usa_recauchados', 'true')
+ON CONFLICT (cliente_id, clave) DO UPDATE SET valor = EXCLUDED.valor;

@@ -385,12 +385,18 @@ function Stepper({ value, onChange }) {
 // neu_dir_*/neu_trac_*/neu_libre_* ya existian en check_diario pero el codigo
 // nunca las escribia. BODEGAS_NEU son los 4 recuadros del Paso 1; TIPOS_NEU
 // son las 3 filas dentro de cada recuadro.
-const BODEGAS_NEU = [
+const BODEGAS_NEU_TODAS = [
   { key: "nuevos", label: "Nuevos", col: "nuevo" },
   { key: "transito", label: "Tránsito", col: "transito" },
   { key: "reparar", label: "Reparación", col: "reparar" },
   { key: "recauchados", label: "Recauchados", col: "recauchado" }
 ];
+// Requerimiento: si el cliente activo tiene usa_recauchados=false (ej. ELB),
+// se saca el recuadro "Recauchados" del check de inicio/cierre -- esos
+// clientes no manejan recauche, solo nuevo/transito/reparacion.
+function bodegasNeu(usaRecauchados) {
+  return usaRecauchados === false ? BODEGAS_NEU_TODAS.filter(b => b.key !== "recauchados") : BODEGAS_NEU_TODAS;
+}
 const TIPOS_NEU = [
   { key: "direccional", label: "🔹 Direccional", col: "dir" },
   { key: "traccional", label: "🔹 Traccional", col: "trac" },
@@ -402,12 +408,13 @@ const CHECK_DIARIO_DRAFT_KEY = (clienteId) => `mosa_checkdiario_draft_${clienteI
 // comparten entre CheckDiario (Paso 1/2) y ReconteoCierre (mismo Paso 1/2 al
 // cerrar la jornada), asi los dos formularios quedan visual y
 // estructuralmente identicos sin duplicar el JSX.
-function PasoStockNeumaticos({ titulo, stockNeu, toggleStockNeu, setStockNeuVal }) {
+function PasoStockNeumaticos({ titulo, stockNeu, toggleStockNeu, setStockNeuVal, bodegas }) {
+  const lista = bodegas || BODEGAS_NEU_TODAS;
   return (
     <div className="px-0 pt-4">
       <p className="font-extrabold text-[17px] mb-3">{titulo}</p>
       <p className="text-[12.5px] text-muted mb-3">Marcá el check para confirmar que revisaste el ítem, aunque tengas 0.</p>
-      {BODEGAS_NEU.map(b => (
+      {lista.map(b => (
         <Card key={b.key} className="mb-4">
           <p className="font-bold text-[15px] mb-3">{b.label}</p>
           <div className="space-y-2">
@@ -447,7 +454,8 @@ function PasoStockLlantas({ stockPatio, toggleStockPatio, setStockPatioVal, fiel
   );
 }
 
-function CheckDiario({ user, clienteId, onDone }) {
+function CheckDiario({ user, clienteId, onDone, cfg }) {
+  const BODEGAS_NEU = React.useMemo(() => bodegasNeu(cfg && cfg.usa_recauchados), [cfg]);
   // Requerimiento 3.3: restaurar el borrador (paso + conteos) si el mecanico
   // dejo el check a medias hoy y refresco/volvio a entrar.
   const draftInicial = (() => {
@@ -520,7 +528,7 @@ function CheckDiario({ user, clienteId, onDone }) {
     setSaving(true);
     const id = uuid();
     const horaInicio = nowHM();
-    const totalBodega = (bKey) => TIPOS_NEU.reduce((n, t) => n + (stockNeu[bKey][t.key].value || 0), 0);
+    const totalBodega = (bKey) => stockNeu[bKey] ? TIPOS_NEU.reduce((n, t) => n + (stockNeu[bKey][t.key].value || 0), 0) : 0;
     const totales = { nuevo: totalBodega("nuevos"), transito: totalBodega("transito"), recauchado: totalBodega("recauchados"), reparacion: totalBodega("reparar") };
     const toolsCounted = Object.fromEntries(catalogo.map(t => [t, tools[t].cantidad]));
     const discNeu = {};
@@ -625,7 +633,7 @@ function CheckDiario({ user, clienteId, onDone }) {
 
       {step === 1 && (
         <>
-          <PasoStockNeumaticos titulo="Paso 1 · Stock de neumáticos" stockNeu={stockNeu} toggleStockNeu={toggleStockNeu} setStockNeuVal={setStockNeuVal} />
+          <PasoStockNeumaticos titulo="Paso 1 · Stock de neumáticos" stockNeu={stockNeu} toggleStockNeu={toggleStockNeu} setStockNeuVal={setStockNeuVal} bodegas={BODEGAS_NEU} />
           <Button className="w-full mb-4" onClick={() => setStep(2)}>Continuar</Button>
         </>
       )}
@@ -2096,13 +2104,15 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
         <Button className="w-full" disabled={saving} onClick={finalizar}>{saving ? <span className="spinner" /> : "Finalizar hoja de cambio"}</Button>
         <div>
           <p className="text-[11.5px] font-bold text-muted tracking-wide uppercase mb-1.5">Entrada · arrastrá al mapa</p>
-          <div className="grid grid-cols-3 gap-2">
+          <div className={cx("grid gap-2", cfg && cfg.usa_recauchados === false ? "grid-cols-2" : "grid-cols-3")}>
             <button onPointerDown={(e) => onPointerDownEntrada("nuevo", e)} onPointerMove={onDragMove} onPointerUp={onDragEnd} onPointerCancel={onDragEnd}
               style={{ touchAction: "none" }} className="h-12 rounded-2xl text-[13.5px] font-bold bg-ink text-white">Nuevo{stockBodega.nuevo != null ? ` (${stockBodega.nuevo})` : ""}</button>
             <button onPointerDown={(e) => onPointerDownEntrada("transito", e)} onPointerMove={onDragMove} onPointerUp={onDragEnd} onPointerCancel={onDragEnd}
               style={{ touchAction: "none" }} className="h-12 rounded-2xl text-[13.5px] font-bold bg-[#F3F4F6]">Tránsito{stockBodega.transito != null ? ` (${stockBodega.transito})` : ""}</button>
-            <button onPointerDown={(e) => onPointerDownEntrada("recauchado", e)} onPointerMove={onDragMove} onPointerUp={onDragEnd} onPointerCancel={onDragEnd}
-              style={{ touchAction: "none" }} className="h-12 rounded-2xl text-[13.5px] font-bold bg-[#F3F4F6]">Recauchado{stockBodega.recauchado != null ? ` (${stockBodega.recauchado})` : ""}</button>
+            {cfg && cfg.usa_recauchados === false ? null : (
+              <button onPointerDown={(e) => onPointerDownEntrada("recauchado", e)} onPointerMove={onDragMove} onPointerUp={onDragEnd} onPointerCancel={onDragEnd}
+                style={{ touchAction: "none" }} className="h-12 rounded-2xl text-[13.5px] font-bold bg-[#F3F4F6]">Recauchado{stockBodega.recauchado != null ? ` (${stockBodega.recauchado})` : ""}</button>
+            )}
           </div>
         </div>
         <div>
@@ -2645,7 +2655,8 @@ function MontajeModal({ tipo, pos, equipo, clienteId, cfg, axleCfg, user, onClos
 // PasoStockNeumaticos/PasoStockLlantas -- unico bloque distinto: las llantas
 // del cierre se comparan contra `insumos` (subtipos LLANTA_CIERRE_FIELDS),
 // por eso el Paso 2 recibe un `fields` distinto al de CheckDiario.
-function ReconteoCierre({ onConfirmar, verificando }) {
+function ReconteoCierre({ onConfirmar, verificando, cfg }) {
+  const BODEGAS_NEU = React.useMemo(() => bodegasNeu(cfg && cfg.usa_recauchados), [cfg]);
   const [step, setStep] = useState(1);
   const [stockNeu, setStockNeu] = useState(() =>
     Object.fromEntries(BODEGAS_NEU.map(b => [b.key, Object.fromEntries(TIPOS_NEU.map(t => [t.key, { value: 0, checked: false }]))])));
@@ -2666,7 +2677,7 @@ function ReconteoCierre({ onConfirmar, verificando }) {
   function toggleStockLlantas(key) { setStockLlantas(s => ({ ...s, [key]: { ...s[key], checked: !s[key].checked } })); }
 
   function confirmar() {
-    const totalBodega = (bKey) => TIPOS_NEU.reduce((n, t) => n + (stockNeu[bKey][t.key].value || 0), 0);
+    const totalBodega = (bKey) => stockNeu[bKey] ? TIPOS_NEU.reduce((n, t) => n + (stockNeu[bKey][t.key].value || 0), 0) : 0;
     const totalesNeumaticos = { nuevo: totalBodega("nuevos"), transito: totalBodega("transito"), recauchado: totalBodega("recauchados"), reparacion: totalBodega("reparar") };
     const totalesLlantas = Object.fromEntries(LLANTA_CIERRE_FIELDS.map(f => [f.key, stockLlantas[f.key].value]));
     onConfirmar(totalesNeumaticos, totalesLlantas);
@@ -2690,7 +2701,7 @@ function ReconteoCierre({ onConfirmar, verificando }) {
 
       {step === 1 && (
         <>
-          <PasoStockNeumaticos titulo="Paso 1 · Stock de neumáticos" stockNeu={stockNeu} toggleStockNeu={toggleStockNeu} setStockNeuVal={setStockNeuVal} />
+          <PasoStockNeumaticos titulo="Paso 1 · Stock de neumáticos" stockNeu={stockNeu} toggleStockNeu={toggleStockNeu} setStockNeuVal={setStockNeuVal} bodegas={BODEGAS_NEU} />
           <Button className="w-full mb-4" onClick={() => setStep(2)}>Continuar</Button>
         </>
       )}
@@ -2720,7 +2731,7 @@ function ReconteoCierre({ onConfirmar, verificando }) {
 /* =====================================================================
    PANTALLA 8b - CIERRE DEL DIA
 ===================================================================== */
-function CierreDelDia({ user, clienteId, onCerrado }) {
+function CierreDelDia({ user, clienteId, onCerrado, cfg }) {
   const [resumen, setResumen] = useState(null);
   const [reconteando, setReconteando] = useState(false);
   const [cerrando, setCerrando] = useState(false);
@@ -2830,7 +2841,7 @@ function CierreDelDia({ user, clienteId, onCerrado }) {
   }
 
   if (reconteando) {
-    return <>{toastNode}<ReconteoCierre verificando={cerrando} onConfirmar={confirmarReconteo} /></>;
+    return <>{toastNode}<ReconteoCierre verificando={cerrando} onConfirmar={confirmarReconteo} cfg={cfg} /></>;
   }
 
   return (
@@ -3109,7 +3120,7 @@ function MecanicoApp({ user }) {
     return <SeleccionEmpresa user={user} onConfirm={(cid) => { setClienteId(cid); setEmpresaConfirmada(true); setTurno({ clienteId: cid, fecha: todayISO(), checkDone: false }); }} />;
   }
   if (!checkDone) {
-    return <CheckDiario user={user} clienteId={clienteId} onDone={() => setCheckDone(true)} />;
+    return <CheckDiario user={user} clienteId={clienteId} onDone={() => setCheckDone(true)} cfg={cfg} />;
   }
 
   let body;
@@ -3227,7 +3238,7 @@ function MecanicoApp({ user }) {
         onCancel={() => setFlow(null)} onFinish={() => setFlow(null)} />
     );
   } else if (tab === "cierre") {
-    body = <CierreDelDia user={user} clienteId={clienteId} onCerrado={() => setJornadaCerrada(true)} />;
+    body = <CierreDelDia user={user} clienteId={clienteId} onCerrado={() => setJornadaCerrada(true)} cfg={cfg} />;
   } else if (tab === "alertas") {
     body = <AlertasScreen user={user} clienteId={clienteId} />;
   } else if (tab === "perfil") {
