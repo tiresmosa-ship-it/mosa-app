@@ -1424,9 +1424,16 @@ async function registrarDiscrepancias(clienteId, mecanicoId, fecha, diffs) {
   syncQueue();
   return rows.map(r => r.id);
 }
-async function guardarObservacionDiscrepancia(ids, texto) {
-  if (!ids.length || !texto.trim()) return;
-  await sb.from("discrepancias_inventario").update({ observacion_mecanico: texto.trim() }).in("id", ids);
+// Requerimiento: comentario individual por item de discrepancia (antes era un
+// unico texto aplicado a todas las filas por igual). comentariosPorId es un
+// mapa { idDiscrepancia: texto } -- cada fila de discrepancias_inventario ya
+// tiene su propia columna observacion_mecanico, asi que solo hace falta
+// actualizar cada una con su comentario puntual (o dejarla sin tocar si el
+// mecanico no escribio nada para ese item en particular).
+async function guardarComentariosDiscrepancias(comentariosPorId) {
+  const entries = Object.entries(comentariosPorId || {}).filter(([id, texto]) => texto && texto.trim());
+  if (!entries.length) return;
+  await Promise.all(entries.map(([id, texto]) => sb.from("discrepancias_inventario").update({ observacion_mecanico: texto.trim() }).eq("id", id)));
 }
 async function marcarInicioJornada(clienteId, mecanicoId, fecha, horaInicio) {
   const { data: existente } = await sb.from("cierre_dia").select("id").eq("mecanico_id", mecanicoId).eq("fecha", fecha).maybeSingle();
@@ -1469,7 +1476,11 @@ async function compararStockCierre(clienteId, totalesNeumaticos, totalesLlantas)
   return { neuDiffs, llantaDiffs };
 }
 
-async function registrarDiscrepanciasCierre(clienteId, mecanico, fecha, neuDiffs, llantaDiffs, observacion) {
+// Requerimiento: cada diff puede traer su propio "comentario" (comentario
+// individual por item, cargado en la pantalla de discrepancias del cierre) en
+// vez de un unico texto aplicado a todas las filas -- ver CierreDelDia en
+// mecanico.html.
+async function registrarDiscrepanciasCierre(clienteId, mecanico, fecha, neuDiffs, llantaDiffs) {
   const rows = [];
   const alertas = [];
   if (neuDiffs.length) {
@@ -1477,7 +1488,7 @@ async function registrarDiscrepanciasCierre(clienteId, mecanico, fecha, neuDiffs
       id: uuid(), origen: "check_diario", tipo_item: "neumatico", item_detalle: d.bucket,
       valor_sistema: d.sistema, valor_fisico: d.fisico, diferencia: d.fisico - d.sistema,
       tipo_discrepancia: d.fisico > d.sistema ? "positiva" : "negativa",
-      cliente_id: clienteId, mecanico_id: mecanico.id, fecha, observacion_mecanico: observacion || null
+      cliente_id: clienteId, mecanico_id: mecanico.id, fecha, observacion_mecanico: (d.comentario && d.comentario.trim()) || null
     }));
     alertas.push({
       id: uuid(), cliente_id: clienteId, equipo_id: null, mecanico_id: mecanico.id,
@@ -1491,7 +1502,7 @@ async function registrarDiscrepanciasCierre(clienteId, mecanico, fecha, neuDiffs
       id: uuid(), origen: "check_diario", tipo_item: "llanta", item_detalle: d.subtipo,
       valor_sistema: d.sistema, valor_fisico: d.fisico, diferencia: d.fisico - d.sistema,
       tipo_discrepancia: d.fisico > d.sistema ? "positiva" : "negativa",
-      cliente_id: clienteId, mecanico_id: mecanico.id, fecha, observacion_mecanico: observacion || null
+      cliente_id: clienteId, mecanico_id: mecanico.id, fecha, observacion_mecanico: (d.comentario && d.comentario.trim()) || null
     }));
     alertas.push({
       id: uuid(), cliente_id: clienteId, equipo_id: null, mecanico_id: mecanico.id,
@@ -2047,7 +2058,11 @@ async function verificarCambiosAbandonados(clienteId) {
   return cerrados;
 }
 
-async function cerrarJornadaConResumen({ user, clienteId, fecha, horaCierre, motivoSinCierre }) {
+// Requerimiento: "Observaciones Generales de la Jornada" -- texto libre del
+// cierre (distinto de los comentarios por item de discrepancia), se guarda en
+// cierre_dia.observaciones (columna ya existente en la tabla, sin uso hasta
+// ahora -- ver CierreDelDia en mecanico.html).
+async function cerrarJornadaConResumen({ user, clienteId, fecha, horaCierre, motivoSinCierre, observacionGeneral }) {
   const { conteos, stock, detalle, cierreId } = await construirResumenJornada(user.id, clienteId, fecha);
   // Objetivo 1: si el mecanico cierra la jornada con una HC todavia abierta
   // (hora_salida null), cerrarla sola en vez de dejarla "en_proceso" para
@@ -2058,7 +2073,7 @@ async function cerrarJornadaConResumen({ user, clienteId, fecha, horaCierre, mot
       .select("id_cambio,equipo_id,bultero_id,fecha,creado_en").eq("bultero_id", user.id).eq("fecha", fecha).is("hora_salida", null);
     for (const c of (abiertos || [])) await cerrarCambioAbandonado(c, "Cerrada automáticamente: cierre de jornada");
   } catch (e) { console.error("No se pudieron cerrar las hojas de cambio abiertas al cerrar jornada", e); }
-  const update = { cerrado: true, hora_cierre: horaCierre, motivo_sin_cierre: motivoSinCierre || null, ...conteos, ...stock };
+  const update = { cerrado: true, hora_cierre: horaCierre, motivo_sin_cierre: motivoSinCierre || null, observaciones: (observacionGeneral && observacionGeneral.trim()) || null, ...conteos, ...stock };
   if (cierreId) {
     await sb.from("cierre_dia").update(update).eq("id", cierreId);
   } else {

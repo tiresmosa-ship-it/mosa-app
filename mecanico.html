@@ -483,7 +483,7 @@ function CheckDiario({ user, clienteId, onDone, cfg }) {
   const [toolsExtra, setToolsExtra] = useState(() => draftInicial ? draftInicial.toolsExtra : []);
   const [saving, setSaving] = useState(false);
   const [discrepancias, setDiscrepancias] = useState(null); // null = no evaluado, [] = sin diferencias, [...] = con diferencias
-  const [observacion, setObservacion] = useState("");
+  const [comentariosPorItem, setComentariosPorItem] = useState({}); // { idDiscrepancia: texto } -- comentario individual por item
   const [pushToast, toastNode] = useToasts();
 
   useEffect(() => {
@@ -571,11 +571,17 @@ function CheckDiario({ user, clienteId, onDone, cfg }) {
         compararHerramientasInventario(clienteId, toolsCounted).catch(e => { console.error("No se pudo comparar herramientas", e); return []; })
       ]);
       const neuIds = neuDiffs.length ? await registrarDiscrepancias(clienteId, user.id, todayISO(), neuDiffs) : [];
-      if (herrDiffs.length) await registrarDiscrepanciasHerramientas(clienteId, user.id, todayISO(), herrDiffs);
+      const herrIds = herrDiffs.length ? await registrarDiscrepanciasHerramientas(clienteId, user.id, todayISO(), herrDiffs) : [];
       if (neuDiffs.length || herrDiffs.length) {
+        // Requerimiento: cada item de discrepancia lleva su propio id de fila
+        // (discrepancias_inventario) para poder guardarle un comentario
+        // individual en vez de un unico texto para todas -- ver pantalla de
+        // discrepancias mas abajo.
         setDiscrepancias({
-          diffs: [...neuDiffs, ...herrDiffs.map(d => ({ bucket: d.nombre, label: d.nombre, sistema: d.sistema, fisico: d.fisico }))],
-          ids: neuIds
+          diffs: [
+            ...neuDiffs.map((d, i) => ({ ...d, id: neuIds[i] })),
+            ...herrDiffs.map((d, i) => ({ bucket: d.nombre, label: d.nombre, sistema: d.sistema, fisico: d.fisico, id: herrIds[i] }))
+          ]
         });
         setSaving(false);
         return;
@@ -594,19 +600,19 @@ function CheckDiario({ user, clienteId, onDone, cfg }) {
         <div className="w-14 h-14 rounded-2xl bg-[#FEE2E2] flex items-center justify-center mb-5 text-2xl">⚠</div>
         <h1 className="text-[22px] font-extrabold leading-tight mb-2">Tu conteo difiere del inventario registrado</h1>
         <p className="text-[13.5px] text-sub mb-5">Podés seguir trabajando igual. Se le enviará una alerta a tu supervisor.</p>
-        <div className="space-y-2 mb-5">
+        <div className="space-y-3 mb-5">
           {discrepancias.diffs.map(d => (
-            <div key={d.bucket} className="bg-[#FEF3C7] rounded-2xl px-4 py-3">
-              <p className="font-bold text-[14px] text-[#92400E]">{d.label}</p>
-              <p className="text-[12.5px] text-[#92400E]">Sistema: {d.sistema} · Contado: {d.fisico}</p>
+            <div key={d.id || d.bucket} className="bg-[#FEF3C7] rounded-2xl px-4 py-3">
+              <p className="font-bold text-[14px] text-[#92400E]">⚠️ Diferencia en {d.label}</p>
+              <p className="text-[12.5px] text-[#92400E] mb-2">Esperadas: {d.sistema} · Contadas: {d.fisico}</p>
+              <p className="text-[11.5px] font-semibold text-[#92400E] mb-1">💬 Observación para esta diferencia</p>
+              <TextArea placeholder="Escribe aquí la razón..." rows={2}
+                value={comentariosPorItem[d.id] || ""} onChange={e => setComentariosPorItem(c => ({ ...c, [d.id]: e.target.value }))} />
             </div>
           ))}
         </div>
-        <Field label="Observación (opcional)">
-          <TextArea placeholder="Contanos si sabés por qué difiere..." value={observacion} onChange={e => setObservacion(e.target.value)} />
-        </Field>
         <div className="flex-1" />
-        <Button className="w-full mt-5 mb-8" onClick={() => { guardarObservacionDiscrepancia(discrepancias.ids, observacion).catch(() => {}); onDone(); }}>Entendido, continuar</Button>
+        <Button className="w-full mt-5 mb-8" onClick={() => { guardarComentariosDiscrepancias(comentariosPorItem).catch(() => {}); onDone(); }}>Entendido, continuar</Button>
       </div>
     );
   }
@@ -2731,6 +2737,10 @@ function ReconteoCierre({ onConfirmar, verificando, cfg }) {
 /* =====================================================================
    PANTALLA 8b - CIERRE DEL DIA
 ===================================================================== */
+// Requerimiento 1: clave estable para el mapa de comentarios por item -- los
+// diffs de neumaticos/llantas del cierre todavia no tienen id de fila (recien
+// se crea al insertar en registrarDiscrepanciasCierre).
+function claveComentario(d, esLlanta) { return `${esLlanta ? "llanta" : "neu"}-${esLlanta ? d.subtipo : d.bucket}`; }
 function CierreDelDia({ user, clienteId, onCerrado, cfg }) {
   const [resumen, setResumen] = useState(null);
   const [reconteando, setReconteando] = useState(false);
@@ -2739,7 +2749,15 @@ function CierreDelDia({ user, clienteId, onCerrado, cfg }) {
   // Fix 3: si el reconteo difiere del sistema, antes de cerrar se muestra
   // una pantalla intermedia con el detalle (no bloquea, solo informa).
   const [discrepancias, setDiscrepancias] = useState(null); // null = sin calcular/sin diffs; { neuDiffs, llantaDiffs } = hay diferencias
-  const [observacion, setObservacion] = useState("");
+  // Requerimiento 1: comentario individual por item de discrepancia (clave =
+  // "neu-<bucket>" / "llanta-<subtipo>", ya que estos diffs todavia no tienen
+  // id de fila -- se les pega el comentario recien al armar el insert en
+  // ejecutarCierre/registrarDiscrepanciasCierre).
+  const [comentariosPorItem, setComentariosPorItem] = useState({});
+  // Requerimiento 2: observaciones generales de la jornada (distinto de los
+  // comentarios por item) -- se muestra siempre en la pantalla final, no solo
+  // cuando hay discrepancias, y se guarda en cierre_dia.observaciones.
+  const [observacionGeneral, setObservacionGeneral] = useState("");
   const [pushToast, toastNode] = useToasts();
 
   useEffect(() => {
@@ -2765,7 +2783,11 @@ function CierreDelDia({ user, clienteId, onCerrado, cfg }) {
     setCerrando(true);
     try {
       if (neuDiffs.length || llantaDiffs.length) {
-        await registrarDiscrepanciasCierre(clienteId, user, todayISO(), neuDiffs, llantaDiffs, observacion.trim() || null);
+        // Pega el comentario individual cargado en la pantalla de
+        // discrepancias a cada diff antes de insertar (ver claveComentario).
+        const neuConComentario = neuDiffs.map(d => ({ ...d, comentario: comentariosPorItem[claveComentario(d, false)] }));
+        const llantaConComentario = llantaDiffs.map(d => ({ ...d, comentario: comentariosPorItem[claveComentario(d, true)] }));
+        await registrarDiscrepanciasCierre(clienteId, user, todayISO(), neuConComentario, llantaConComentario);
         pushToast("⚠ Se detectaron diferencias de stock — se avisó a tu supervisor", "amber");
       } else {
         pushToast("✓ Stock verificado");
@@ -2774,7 +2796,7 @@ function CierreDelDia({ user, clienteId, onCerrado, cfg }) {
       console.error("No se pudo registrar la discrepancia de cierre", e);
     }
     try {
-      await cerrarJornadaConResumen({ user, clienteId, fecha: todayISO(), horaCierre: nowHM(), motivoSinCierre: null });
+      await cerrarJornadaConResumen({ user, clienteId, fecha: todayISO(), horaCierre: nowHM(), motivoSinCierre: null, observacionGeneral });
       localStorage.setItem("jornada_cerrada_hoy", "true");
       setCerrado(true);
       if (onCerrado) onCerrado();
@@ -2807,30 +2829,23 @@ function CierreDelDia({ user, clienteId, onCerrado, cfg }) {
         <div className="w-14 h-14 rounded-2xl bg-[#FEE2E2] flex items-center justify-center mb-5 text-2xl">⚠</div>
         <h1 className="text-[22px] font-extrabold leading-tight mb-2">Se encontraron diferencias en el conteo</h1>
         <p className="text-[13.5px] text-sub mb-5">Podés cerrar la jornada igual. Estas diferencias serán revisadas por el administrador.</p>
-        <div className="bg-white rounded-2xl border border-bd shadow-card overflow-hidden mb-5">
-          <table className="w-full text-[13px]">
-            <thead><tr className="text-left text-muted border-b border-bd bg-[#F9FAFB]">
-              <th className="font-semibold py-2.5 px-3">Tipo</th><th className="font-semibold py-2.5 px-3">Sistema</th>
-              <th className="font-semibold py-2.5 px-3">Contaste</th><th className="font-semibold py-2.5 px-3">Diferencia</th>
-            </tr></thead>
-            <tbody>
-              {filas.map((d, i) => {
-                const diff = d.fisico - d.sistema;
-                return (
-                  <tr key={i} className="border-b border-bd last:border-0">
-                    <td className="py-2.5 px-3 font-semibold">{d.label}</td>
-                    <td className="py-2.5 px-3">{d.sistema}</td>
-                    <td className="py-2.5 px-3">{d.fisico}</td>
-                    <td className={cx("py-2.5 px-3 font-bold", diff < 0 ? "text-[#B91C1C]" : diff > 0 ? "text-[#15803D]" : "text-muted")}>{diff > 0 ? `+${diff}` : diff}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+        <div className="space-y-3 mb-5">
+          {filas.map((d, i) => {
+            const diff = d.fisico - d.sistema;
+            const clave = claveComentario(d, d.esLlanta);
+            return (
+              <div key={i} className="bg-[#FEF3C7] rounded-2xl px-4 py-3">
+                <p className="font-bold text-[14px] text-[#92400E]">⚠️ Diferencia en {d.label}</p>
+                <p className="text-[12.5px] text-[#92400E] mb-2">
+                  Esperadas: {d.sistema} · Contadas: {d.fisico} · Diferencia: {diff > 0 ? `+${diff}` : diff}
+                </p>
+                <p className="text-[11.5px] font-semibold text-[#92400E] mb-1">💬 Observación para esta diferencia</p>
+                <TextArea placeholder="Escribe aquí la razón..." rows={2}
+                  value={comentariosPorItem[clave] || ""} onChange={e => setComentariosPorItem(c => ({ ...c, [clave]: e.target.value }))} />
+              </div>
+            );
+          })}
         </div>
-        <Field label="¿Alguna observación?" hint="Opcional">
-          <TextArea placeholder="Contanos si sabés por qué difiere..." value={observacion} onChange={e => setObservacion(e.target.value)} />
-        </Field>
         <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-bd p-4 safe-bottom z-40">
           <Button className="w-full" disabled={cerrando} onClick={() => ejecutarCierre(discrepancias.neuDiffs, discrepancias.llantaDiffs)}>
             {cerrando ? <span className="spinner" /> : "Confirmar y cerrar jornada de todas formas"}
@@ -2864,6 +2879,15 @@ function CierreDelDia({ user, clienteId, onCerrado, cfg }) {
               <p className="text-[26px] font-extrabold">{resumen.pct_receta_promedio}%</p>
             </Card>
           )}
+          {/* Requerimiento 2: bloque prominente para novedades/incidentes del
+              dia, siempre visible (no solo cuando hay discrepancias de stock),
+              se guarda en cierre_dia.observaciones. */}
+          <Card className="mb-6">
+            <p className="font-extrabold text-[16px] mb-1">Observaciones generales de la jornada</p>
+            <p className="text-[12.5px] text-muted mb-3">Contanos novedades, incidentes o notas del día (opcional).</p>
+            <TextArea rows={4} placeholder="Escribí acá cualquier novedad del día..."
+              value={observacionGeneral} onChange={e => setObservacionGeneral(e.target.value)} />
+          </Card>
           <Button className="w-full" onClick={() => setReconteando(true)}>Cerrar jornada</Button>
         </>
       )}

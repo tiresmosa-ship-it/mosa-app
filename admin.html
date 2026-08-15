@@ -2518,7 +2518,8 @@ function ReporteCierreModal({ c, empresas, onClose }) {
       ["Regulaciones PSI", c.regulaciones_psi], ["Retorqueos", c.retorqueos],
       ["Rotaciones", c.rotaciones], ["Reparaciones", c.reparaciones],
       ["% promedio instructivo", c.pct_receta_promedio != null ? `${c.pct_receta_promedio}%` : "-"],
-      ["Stock nuevos", c.stock_nuevo], ["Stock tránsito", c.stock_transito], ["Stock recauchados", c.stock_recauchado]
+      ["Stock nuevos", c.stock_nuevo], ["Stock tránsito", c.stock_transito], ["Stock recauchados", c.stock_recauchado],
+      ["Observación general", c.observaciones || ""]
     ];
     const csv = filas.map(([k, v]) => `"${k}","${v == null ? "" : v}"`).join("\n");
     const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
@@ -2543,6 +2544,7 @@ function ReporteCierreModal({ c, empresas, onClose }) {
       <p><b>% promedio instructivo:</b> ${c.pct_receta_promedio != null ? c.pct_receta_promedio + "%" : "-"}</p>
       <hr/>
       <p><b>Stock nuevos:</b> ${c.stock_nuevo} · <b>Tránsito:</b> ${c.stock_transito} · <b>Recauchados:</b> ${c.stock_recauchado}</p>
+      ${c.observaciones ? `<hr/><p><b>Observación general del día:</b></p><p>${c.observaciones.replace(/</g, "&lt;")}</p>` : ""}
     </body></html>`);
     w.document.close();
     w.focus();
@@ -2597,6 +2599,17 @@ function ReporteCierreModal({ c, empresas, onClose }) {
           <p className="text-[11px] font-extrabold text-muted uppercase tracking-wide mb-1.5">Stock al cierre</p>
           <p className="text-[13.5px]">Nuevos: <b>{c.stock_nuevo}</b> · Tránsito: <b>{c.stock_transito}</b> · Recauchados: <b>{c.stock_recauchado}</b></p>
         </div>
+
+        {/* Requerimiento 3.2: observacion_general de la jornada -- se guarda
+            en cierre_dia.observaciones (columna generica preexistente, ver
+            cerrarJornadaConResumen en js/supabase.js). Tarjeta destacada,
+            solo si el mecanico escribio algo. */}
+        {c.observaciones && (
+          <div className="bg-[#FFFBEB] border border-[#FDE68A] rounded-2xl p-4">
+            <p className="text-[11px] font-extrabold text-[#92400E] uppercase tracking-wide mb-1.5">📝 Observación general del día</p>
+            <p className="text-[13.5px] text-[#374151] whitespace-pre-wrap">{c.observaciones}</p>
+          </div>
+        )}
 
         <div className="flex gap-2 pt-2">
           <Button variant="subtle" className="flex-1 h-11 text-[13px]" onClick={exportarPDF}>📄 Exportar PDF</Button>
