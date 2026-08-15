@@ -1139,7 +1139,7 @@ function MedidaField({ cfg, value, isManual, onChange }) {
   );
 }
 function PosicionModal({ pos, equipo, cfg, clienteId, axleCfg, existing, onClose, onSave }) {
-  const [form, setForm] = useState(() => existing || { numero_fuego: "", marca: "", modelo: "", medida: cfg.medida_default || "", psi: "", mm_borde_izq: "", mm_centro: "", mm_borde_der: "", tipo_desgaste: "normal", marca_modelo_no_registrado: false, medida_no_registrada: false });
+  const [form, setForm] = useState(() => existing || { numero_fuego: "", marca: "", modelo: "", medida: cfg.medida_default || "", psi: "", mm_borde_izq: "", mm_centro: "", mm_borde_der: "", tipo_desgaste: "normal", marca_modelo_no_registrado: false, medida_no_registrada: false, url_foto_desgaste_irregular: null });
   const medidasOpciones = (cfg.medidas_permitidas && cfg.medidas_permitidas.length) ? cfg.medidas_permitidas : DEFAULT_CFG.medidas_permitidas;
   const medidaEsManual = form.medida_no_registrada || (!!form.medida && !medidasOpciones.includes(form.medida));
   const ev = evaluarPosicion(axleCfg, cfg, pos, equipo.tipo, form);
@@ -1148,6 +1148,27 @@ function PosicionModal({ pos, equipo, cfg, clienteId, axleCfg, existing, onClose
   const psiVal = parseFloat(form.psi);
   const psiAlert = form.psi !== "" && Math.abs(psiVal - ev.psiObjetivo) > (ev.psiObjetivo * cfg.psi_tolerancia_pct / 100) * 2;
   const psiWarn = form.psi !== "" && Math.abs(psiVal - ev.psiObjetivo) > (ev.psiObjetivo * cfg.psi_tolerancia_pct / 100);
+  // Requerimiento: evidencia fotografica obligatoria cuando se detecta
+  // desgaste irregular -- mismo patron que RetiroModal (subirFotoRetiro).
+  const [subiendoFoto, setSubiendoFoto] = useState(false);
+  const [fotoNombre, setFotoNombre] = useState("");
+  const [fotoError, setFotoError] = useState("");
+  const esIrregular = form.tipo_desgaste === "irregular";
+  const faltaFotoIrregular = esIrregular && !form.url_foto_desgaste_irregular;
+
+  async function onFotoDesgasteChange(e) {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    setFotoNombre(file.name); setSubiendoFoto(true); setFotoError("");
+    try {
+      const url = await subirFotoDesgasteIrregular(clienteId, pos, file);
+      setForm(f => ({ ...f, url_foto_desgaste_irregular: url }));
+    } catch (err) {
+      setFotoError("No se pudo subir la foto. Verificá que exista el bucket público 'neumaticos-evidencia' en Supabase Storage.");
+    } finally {
+      setSubiendoFoto(false);
+    }
+  }
 
   return (
     <Modal title={`Posición P${pos}`} onClose={onClose}>
@@ -1184,7 +1205,18 @@ function PosicionModal({ pos, equipo, cfg, clienteId, axleCfg, existing, onClose
             ))}
           </div>
         </Field>
-        <Button className="w-full" disabled={form.psi === "" || form.mm_borde_izq === "" || form.mm_centro === "" || form.mm_borde_der === "" || !form.tipo_desgaste}
+        {esIrregular && (
+          <Field label="Foto de evidencia" required hint="Obligatoria al marcar desgaste irregular">
+            <label className="h-14 px-5 rounded-2xl font-bold text-[15px] bg-ink text-white flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98] transition w-full">
+              <span className="text-[18px]">📷</span> {form.url_foto_desgaste_irregular ? "Cambiar foto" : "Tomar foto"}
+              <input type="file" accept="image/*" capture="environment" onChange={onFotoDesgasteChange} className="hidden" />
+            </label>
+            {subiendoFoto && <p className="text-[12.5px] text-muted mt-1">Subiendo foto...</p>}
+            {form.url_foto_desgaste_irregular && !subiendoFoto && <p className="text-[12.5px] font-bold text-[#15803D] mt-1">✓ Foto subida{fotoNombre ? `: ${fotoNombre}` : ""}</p>}
+            {fotoError && <p className="text-[12.5px] font-bold text-[#B91C1C] mt-1">{fotoError}</p>}
+          </Field>
+        )}
+        <Button className="w-full" disabled={form.psi === "" || form.mm_borde_izq === "" || form.mm_centro === "" || form.mm_borde_der === "" || !form.tipo_desgaste || faltaFotoIrregular || subiendoFoto}
           onClick={() => onSave(form)}>Guardar posición</Button>
       </div>
     </Modal>

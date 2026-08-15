@@ -1286,6 +1286,9 @@ function OrigenNeumaticoBadge({ numeroFuego }) {
   return <Badge color={ORIGEN_BADGE[origen].color}>{ORIGEN_BADGE[origen].label}</Badge>;
 }
 function PosicionDetalleModal({ n, pos, equipo, discrepanciaPendiente, setView, onClose }) {
+  // Requerimiento: evidencia fotografica de desgaste irregular (subida
+  // obligatoria por el mecanico en PosicionModal, mecanico.html).
+  const [fotoDesgasteVer, setFotoDesgasteVer] = useState(false);
   // Fix sincronizacion mapa: neumaticos.milimetros es el valor EN VIVO (lo
   // escribe el montaje de la Hoja de Cambio, ver actualizarNeumaticoEntra/
   // renombrarNeumaticoOrigen en js/supabase.js) y siempre es mas reciente que
@@ -1301,8 +1304,17 @@ function PosicionDetalleModal({ n, pos, equipo, discrepanciaPendiente, setView, 
         {n.aud && n.aud.tipo_desgaste === "irregular" && (
           <div className="bg-[#FEF3C7] rounded-xl px-3 py-2">
             <p className="text-[12.5px] font-bold text-[#92400E]">⚠ Desgaste irregular detectado en última auditoría</p>
+            {n.aud.url_foto_desgaste_irregular ? (
+              <button onClick={() => setFotoDesgasteVer(true)} className="mt-2 flex items-center gap-2">
+                <img src={n.aud.url_foto_desgaste_irregular} alt="Evidencia de desgaste irregular" className="w-14 h-14 rounded-lg object-cover border border-[#FDE68A]" />
+                <span className="text-[12px] font-bold text-[#92400E] underline">Ver foto de evidencia</span>
+              </button>
+            ) : (
+              <p className="text-[11.5px] text-[#92400E] mt-1">Sin foto de evidencia registrada.</p>
+            )}
           </div>
         )}
+        {fotoDesgasteVer && <FotoMontajeModal url={n.aud.url_foto_desgaste_irregular} titulo="Evidencia de desgaste irregular" onClose={() => setFotoDesgasteVer(false)} />}
         {/* Fix 5: discrepancia sin aprobar — a diferencia de mecanico.html, acá
             el Admin SI puede resolverla, con un boton directo a Jornada >
             Movimientos > Discrepancias. */}
@@ -1398,7 +1410,7 @@ function MapaEquipoTab({ equipo, setView }) {
         if (ultimaAud && ultimaAud[0]) {
           // Fix 4: tipo_desgaste sumado al select para poder mostrar el badge
           // de desgaste irregular en el modal de la posicion.
-          const { data: posAud } = await sb.from("auditoria_posiciones").select("numero_fuego,milimetros,psi,mm_borde_izq,mm_centro,mm_borde_der,tipo_desgaste").eq("auditoria_id", ultimaAud[0].id_auditoria).in("numero_fuego", numerosFuego);
+          const { data: posAud } = await sb.from("auditoria_posiciones").select("numero_fuego,milimetros,psi,mm_borde_izq,mm_centro,mm_borde_der,tipo_desgaste,url_foto_desgaste_irregular").eq("auditoria_id", ultimaAud[0].id_auditoria).in("numero_fuego", numerosFuego);
           (posAud || []).forEach(p => { mmPorFuego[p.numero_fuego] = p; });
         }
       }
@@ -2270,11 +2282,11 @@ function InstructivosTab({ filtro, adminUser, pushToast, onCambio }) {
 }
 
 const CAMBIO_TIPO_ICON = { entra: "↗", sale: "↙" };
-function FotoMontajeModal({ url, onClose }) {
+function FotoMontajeModal({ url, onClose, titulo = "Foto de torque" }) {
   return (
-    <Modal title="Foto de torque" onClose={onClose}>
+    <Modal title={titulo} onClose={onClose}>
       <div className="flex flex-col items-center gap-4">
-        <img src={url} alt="Foto de torque" className="max-w-full max-h-[70vh] object-contain rounded-xl" />
+        <img src={url} alt={titulo} className="max-w-full max-h-[70vh] object-contain rounded-xl" />
         <Button variant="subtle" className="w-full" onClick={() => window.open(url, "_blank")}>Descargar</Button>
       </div>
     </Modal>

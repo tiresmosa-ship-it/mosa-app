@@ -1040,6 +1040,7 @@ async function enviarAuditoria(data) {
     id: p.id, posicion: p.posicion, numero_fuego: p.numero_fuego || null,
     milimetros: p.milimetros, psi: p.psi, mm_borde_izq: p.mm_borde_izq, mm_centro: p.mm_centro, mm_borde_der: p.mm_borde_der,
     tipo_desgaste: p.tipo_desgaste || null, marca: p.marca || null, modelo: p.modelo || null,
+    url_foto_desgaste_irregular: p.url_foto_desgaste_irregular || null,
     auditoria_id: cab.id_auditoria
   }));
   if (rows.length) { const { error: e2 } = await sb.from("auditoria_posiciones").upsert(rows, { onConflict: "id" }); if (e2) throw e2; }
@@ -1631,6 +1632,18 @@ async function subirFotoRetiro(clienteId, pos, file) {
   const { data } = sb.storage.from("neumaticos-evidencia").getPublicUrl(path);
   return data.publicUrl;
 }
+// Requerimiento: evidencia fotografica obligatoria cuando el mecanico marca
+// "Desgaste Irregular" en la Auditoria (PosicionModal, mecanico.html).
+// Reusa el mismo bucket 'neumaticos-evidencia' que subirFotoRetiro (mismas
+// policies de storage ya habilitadas para anon, ver migrations.sql bloque 42)
+// para no requerir crear un bucket nuevo a mano.
+async function subirFotoDesgasteIrregular(clienteId, pos, file) {
+  const path = `${clienteId}/${Date.now()}_p${pos}_desgaste_${file.name}`;
+  const { error } = await sb.storage.from("neumaticos-evidencia").upload(path, file, { upsert: true });
+  if (error) throw error;
+  const { data } = sb.storage.from("neumaticos-evidencia").getPublicUrl(path);
+  return data.publicUrl;
+}
 
 const RETIRO_MOTIVOS = [
   { slug: "desgaste_normal", label: "Desgaste normal" },
@@ -1757,6 +1770,7 @@ async function construirYGuardarAuditoria({ user, clienteId, equipo, cfg, posDat
       mm_centro: d.mm_centro !== "" ? parseFloat(d.mm_centro) : null,
       mm_borde_der: d.mm_borde_der !== "" ? parseFloat(d.mm_borde_der) : null,
       tipo_desgaste: d.tipo_desgaste || null, marca: d.marca || null, modelo: d.modelo || null,
+      url_foto_desgaste_irregular: d.url_foto_desgaste_irregular || null,
       // Bug 1: tipo real (direccional/traccional/eje_libre) para que, si este
       // numero de fuego no existia todavia, asegurarNeumatico lo grabe bien
       // en vez de dejarlo null. No va en auditoria_posiciones (esa tabla no

@@ -743,3 +743,11 @@ INSERT INTO config_cliente (cliente_id, clave, valor) VALUES
   ('bys', 'usa_recauchados', 'false'),
   ('la_portada', 'usa_recauchados', 'true')
 ON CONFLICT (cliente_id, clave) DO UPDATE SET valor = EXCLUDED.valor;
+
+-- 46) auditoria_posiciones.url_foto_desgaste_irregular -- evidencia
+-- fotografica obligatoria cuando el mecanico marca "Tipo de desgaste:
+-- Irregular" en la Auditoria (PosicionModal, mecanico.html). Sube al mismo
+-- bucket 'neumaticos-evidencia' que ya usa el retiro por Daño/Otro (bloques
+-- 41/42 de esta migracion) -- no hace falta crear un bucket nuevo, las
+-- policies de storage.objects ya cubren ese bucket para el rol anon.
+ALTER TABLE auditoria_posiciones ADD COLUMN IF NOT EXISTS url_foto_desgaste_irregular TEXT;
