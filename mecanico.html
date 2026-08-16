@@ -3089,6 +3089,12 @@ function MecanicoApp({ user }) {
     }
   }, []);
   useEffect(() => { if (clienteId) db.fetchConfig(clienteId).then(setCfg).catch(() => setCfg(getCache(LS.cfg(clienteId), DEFAULT_CFG))); }, [clienteId]);
+  // Requerimiento 3: precarga las Configuraciones de Flota dinamicas de esta
+  // empresa para que axleConfigFor (llamado sincronicamente al armar el mapa
+  // de Auditoria/Hoja de Cambio) pueda resolver un slug nuevo -- los slugs
+  // tradicionales (4x2/6x2/6x4/semi/1+1/3+1/4x2-grua) siguen funcionando
+  // igual sin depender de esto (AXLE_CONFIGS hardcodeado, ver js/supabase.js).
+  useEffect(() => { if (clienteId) precargarConfiguracionesCliente(clienteId).catch(e => console.error("No se pudieron precargar las configuraciones de flota", e)); }, [clienteId]);
   // Modo dev: entrar directo a la Hoja de Cambio de un equipo, saltando
   // Auditoria. Reusa las mismas funciones que el flujo real -- si el equipo
   // ya tiene un instructivo 'en_proceso' de hoy lo retoma (fetchRecetaEnProcesoHoy,

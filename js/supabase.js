@@ -149,11 +149,64 @@ const AXLE_CONFIGS = {
 // con distinta cantidad de ejes (1+1=9, 3+1=17). Ahora se prioriza el
 // lookup directo por configuracion_ejes (si matchea una config real, se usa
 // esa) y recien si no matchea nada cae al comportamiento viejo por tipo.
+// Requerimiento: Configuraciones de Flota dinamicas por cliente (tabla
+// configuraciones_equipos), en vez de depender solo de AXLE_CONFIGS
+// hardcodeado. Compatibilidad: los slugs tradicionales de La Portada
+// (4x2/6x2/6x4/semi) y los de ELB (1+1/3+1/4x2-grua) siguen resolviendo
+// EXACTAMENTE igual via AXLE_CONFIGS (chequeado primero, sin cambios); las
+// configuraciones nuevas creadas desde Admin > Configuracion > "Configuraciones
+// de Flota" se resuelven desde este cache, cargado por cliente al entrar a la
+// app (ver precargarConfiguracionesCliente).
+const CONFIGURACIONES_CACHE = {}; // clienteId -> { slug: {total, rows, groups} }
+// Convierte una fila de configuraciones_equipos (ejes: [{eje,tipo}], auxiliares)
+// en el mismo formato {total, rows, groups} que ya usan AxleMap/evaluarPosicion/
+// etc. -- por eso no hizo falta tocar el motor de dibujo del mapa (mecanico.html
+// AxleMap ya lee cfg.rows de forma generica).
+function construirAxleConfigDesdeDB(row) {
+  const ejes = Array.isArray(row.ejes) ? row.ejes : [];
+  const rows = [];
+  const groups = [];
+  let pos = 1;
+  ejes.forEach((e, i) => {
+    const esDireccional = e.tipo === "direccional";
+    const n = esDireccional ? 2 : 4;
+    const positions = Array.from({ length: n }, (_, k) => pos + k);
+    pos += n;
+    // ejeTipo (regla de rotacion): direccional siempre "D". Traccion/dual en
+    // un trailer/chasis rueda libre sin sentido fijo ("T", igual que semi/ELB);
+    // en un tractor es motriz con sentido de giro fijo ("M", igual que 4x2/6x2/6x4).
+    const ejeTipo = esDireccional ? "D" : (row.categoria === "trailer" ? "T" : "M");
+    rows.push({ label: esDireccional ? "D" : `Eje ${e.eje != null ? e.eje : i + 1}`, type: esDireccional ? "D" : "M", ejeTipo, positions });
+    groups.push(positions);
+  });
+  const auxiliares = row.auxiliares || 0;
+  for (let a = 0; a < auxiliares; a++) {
+    const positions = [pos]; pos += 1;
+    rows.push({ label: auxiliares > 1 ? `Auxilio ${a + 1}` : "Auxilio", type: "auxilio", ejeTipo: "auxilio", positions });
+    groups.push(positions);
+  }
+  return { total: pos - 1, rows, groups };
+}
+// Se llama una vez por cliente activo (mecanico.html al confirmar empresa,
+// admin.html al cambiar el filtro de empresa) para que axleConfigFor pueda
+// resolver configuraciones dinamicas de forma SINCRONICA despues (igual que
+// ya se hace con el cache de equipos/cfg, ver LS.equipos/LS.cfg mas abajo).
+async function precargarConfiguracionesCliente(clienteId) {
+  if (!clienteId) return;
+  const { data, error } = await sb.from("configuraciones_equipos").select("*").eq("cliente_id", clienteId).eq("activo", true);
+  if (error) { console.error("No se pudieron cargar las configuraciones de flota", error); return; }
+  const map = {};
+  (data || []).forEach(row => { map[row.slug] = construirAxleConfigDesdeDB(row); });
+  CONFIGURACIONES_CACHE[clienteId] = map;
+}
 function axleConfigFor(equipo) {
   if (!equipo) return AXLE_CONFIGS["4x2"];
-  if (equipo.configuracion_ejes && AXLE_CONFIGS[equipo.configuracion_ejes]) return AXLE_CONFIGS[equipo.configuracion_ejes];
+  const slug = equipo.configuracion_ejes;
+  if (slug && AXLE_CONFIGS[slug]) return AXLE_CONFIGS[slug];
+  const dinamicas = CONFIGURACIONES_CACHE[equipo.cliente_id];
+  if (slug && dinamicas && dinamicas[slug]) return dinamicas[slug];
   if (equipo.tipo === "SEMI") return AXLE_CONFIGS["semi"];
-  return AXLE_CONFIGS[equipo.configuracion_ejes] || AXLE_CONFIGS["4x2"];
+  return AXLE_CONFIGS["4x2"];
 }
 function posType(cfg, pos) {
   const row = cfg.rows.find(r => r.positions.includes(pos));
@@ -346,6 +399,27 @@ const db = {
     const { data, error } = await sb.from("clientes").select("*").eq("id_cliente", clienteId).maybeSingle();
     if (error) throw error;
     return data;
+  },
+  // Requerimiento: Configuraciones de Flota (esquemas de ejes) por cliente.
+  // soloActivas=false se usa en Admin > Configuracion (gestion) para poder
+  // ver y reactivar las deshabilitadas; el selector de "Nuevo equipo" y el
+  // cache de axleConfigFor siempre piden solo las activas.
+  async fetchConfiguracionesEquipos(clienteId, soloActivas = true) {
+    let q = sb.from("configuraciones_equipos").select("*").eq("cliente_id", clienteId);
+    if (soloActivas) q = q.eq("activo", true);
+    const { data, error } = await q.order("categoria").order("nombre");
+    if (error) throw error;
+    return data || [];
+  },
+  async guardarConfiguracionEquipo(payload) {
+    const { error } = await sb.from("configuraciones_equipos").insert({ id: uuid(), activo: true, creado_en: new Date().toISOString(), ...payload });
+    if (error) throw error;
+    await precargarConfiguracionesCliente(payload.cliente_id);
+  },
+  async actualizarConfiguracionEquipo(id, clienteId, patch) {
+    const { error } = await sb.from("configuraciones_equipos").update(patch).eq("id", id);
+    if (error) throw error;
+    await precargarConfiguracionesCliente(clienteId);
   },
   async fetchEquipos(clienteId) {
     const { data, error } = await sb.from("equipos").select("*").eq("cliente_id", clienteId).eq("activo", true).order("numero_interno");

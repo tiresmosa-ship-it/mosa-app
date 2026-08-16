@@ -1067,18 +1067,41 @@ function aplicaFiltroEquipo(eq, filtroTab) {
   return true;
 }
 
+// Fallback de compatibilidad: si el cliente todavia no tiene ninguna
+// Configuracion de Flota cargada para "tractor" (Admin > Configuracion >
+// Configuraciones de Flota), se ofrecen estas 3 de siempre en vez de dejar
+// el selector vacio -- BYS y clientes nuevos no pierden la funcionalidad.
 const CONFIG_EJES_OPCIONES = ["4x2", "6x2", "6x4"];
 function EquipoModal({ equipo, filtro, empresas, onClose, onSaved, pushToast }) {
   const editando = !!equipo;
   const [numeroInterno, setNumeroInterno] = useState(equipo ? (equipo.numero_interno || "") : "");
   const [patente, setPatente] = useState(equipo ? (equipo.patente || "") : "");
   const [tipo, setTipo] = useState(equipo ? equipo.tipo : "TRACTO");
-  const [configEjes, setConfigEjes] = useState(equipo ? (equipo.configuracion_ejes || "4x2") : "4x2");
+  const [configEjes, setConfigEjes] = useState(equipo ? (equipo.configuracion_ejes || "") : "4x2");
   const [modelo, setModelo] = useState(equipo ? (equipo.modelo || "") : "");
   const [km, setKm] = useState(equipo ? (equipo.kilometros != null ? String(equipo.kilometros) : "") : "");
   const [clienteId, setClienteId] = useState(equipo ? equipo.cliente_id : (filtro !== "todas" ? filtro : ""));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  // Requerimiento 2: el selector de "Configuración" carga UNICAMENTE los
+  // esquemas dados de alta para el cliente elegido (Admin > Configuracion >
+  // Configuraciones de Flota), filtrados por categoria segun el Tipo elegido
+  // (TRACTO -> tractor, SEMI -> trailer/chasis).
+  const [configsDinamicas, setConfigsDinamicas] = useState([]);
+  useEffect(() => {
+    if (!clienteId) { setConfigsDinamicas([]); return; }
+    db.fetchConfiguracionesEquipos(clienteId, true).then(setConfigsDinamicas).catch(e => { console.error("No se pudieron cargar las configuraciones de flota", e); setConfigsDinamicas([]); });
+  }, [clienteId]);
+  const categoriasParaTipo = tipo === "TRACTO" ? ["tractor"] : ["trailer", "chasis"];
+  const opcionesDinamicas = configsDinamicas.filter(c => categoriasParaTipo.includes(c.categoria));
+  // Cambiar el Tipo resetea la Configuracion elegida a un default sensato
+  // segun la nueva categoria -- evita guardar un slug de tractor en un SEMI
+  // (o viceversa) si el usuario cambia de tipo sin volver a tocar el selector.
+  function cambiarTipo(t) {
+    if (t === tipo) return;
+    setTipo(t);
+    setConfigEjes(t === "TRACTO" ? "4x2" : "");
+  }
 
   async function guardar() {
     setError("");
@@ -1091,9 +1114,15 @@ function EquipoModal({ equipo, filtro, empresas, onClose, onSaved, pushToast }) 
       const { data: dup } = await q;
       if (dup && dup.length) { setError("Ya existe un equipo con ese número interno en esta empresa."); setSaving(false); return; }
 
+      // Requerimiento 2: antes un SEMI siempre guardaba configuracion_ejes=null
+      // (forzado); ahora puede tener un slug de trailer/chasis dinamico (ej.
+      // ELB "1+1"/"3+1") si el cliente tiene esquemas de esa categoria
+      // cargados -- si no hay ninguno disponible para elegir, sigue quedando
+      // null como antes (compatibilidad exacta con equipos.tipo==="SEMI" sin
+      // configuracion_ejes, que axleConfigFor resuelve al layout fijo "semi").
       const payload = {
         numero_interno: numeroInterno.trim(), patente: patente.trim().toUpperCase(), tipo,
-        configuracion_ejes: tipo === "TRACTO" ? configEjes : null,
+        configuracion_ejes: configEjes || null,
         modelo: modelo.trim() || null, kilometros: km ? parseInt(km, 10) : 0
       };
       if (editando) {
@@ -1133,7 +1162,7 @@ function EquipoModal({ equipo, filtro, empresas, onClose, onSaved, pushToast }) 
         <Field label="Tipo" required>
           <div className="flex gap-2">
             {["TRACTO", "SEMI"].map(t => (
-              <button key={t} type="button" onClick={() => setTipo(t)}
+              <button key={t} type="button" onClick={() => cambiarTipo(t)}
                 className={cx("flex-1 h-11 rounded-2xl text-[13.5px] font-bold", tipo === t ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>
                 {t === "TRACTO" ? "Tracto" : "Semi"}
               </button>
@@ -1141,11 +1170,23 @@ function EquipoModal({ equipo, filtro, empresas, onClose, onSaved, pushToast }) 
           </div>
         </Field>
         {tipo === "TRACTO" && (
-          <Field label="Configuración de ejes" required>
-            <div className="flex gap-2">
-              {CONFIG_EJES_OPCIONES.map(c => (
-                <button key={c} type="button" onClick={() => setConfigEjes(c)}
-                  className={cx("flex-1 h-11 rounded-2xl text-[13.5px] font-bold", configEjes === c ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{c}</button>
+          <Field label="Configuración" required>
+            <div className="flex gap-2 flex-wrap">
+              {(opcionesDinamicas.length ? opcionesDinamicas.map(c => [c.slug, c.nombre]) : CONFIG_EJES_OPCIONES.map(c => [c, c])).map(([slug, label]) => (
+                <button key={slug} type="button" onClick={() => setConfigEjes(slug)}
+                  className={cx("h-11 px-3.5 rounded-2xl text-[13px] font-bold", configEjes === slug ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{label}</button>
+              ))}
+            </div>
+          </Field>
+        )}
+        {tipo === "SEMI" && !!opcionesDinamicas.length && (
+          <Field label="Configuración" hint="Opcional — si no elegís ninguna, se usa el layout estándar de semi (13 posiciones)">
+            <div className="flex gap-2 flex-wrap">
+              <button type="button" onClick={() => setConfigEjes("")}
+                className={cx("h-11 px-3.5 rounded-2xl text-[13px] font-bold", !configEjes ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>Estándar</button>
+              {opcionesDinamicas.map(c => (
+                <button key={c.slug} type="button" onClick={() => setConfigEjes(c.slug)}
+                  className={cx("h-11 px-3.5 rounded-2xl text-[13px] font-bold", configEjes === c.slug ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{c.nombre}</button>
               ))}
             </div>
           </Field>
@@ -1175,6 +1216,15 @@ function EquiposView({ empresaCtl, adminUser, setView }) {
     fetchEquiposConEstado(filtro).then(data => { setEquipos(data); setLoading(false); }).catch(e => { console.error("No se pudo cargar equipos", e); setLoading(false); });
   }
   useEffect(() => { cargar(); }, [filtro]);
+  // Requerimiento 3: axleConfigFor necesita el cache de Configuraciones de
+  // Flota (CONFIGURACIONES_CACHE) ya poblado para poder resolver un slug
+  // dinamico de forma sincronica al dibujar el mapa (Mapa/Instructivo del
+  // equipo). Se precarga por cliente al entrar a Equipos, igual que en
+  // mecanico.html al confirmar empresa.
+  useEffect(() => {
+    if (filtro === "todas") { (empresas || []).forEach(e => precargarConfiguracionesCliente(e.id_cliente)); }
+    else precargarConfiguracionesCliente(filtro);
+  }, [filtro, empresas]);
 
   const filtrados = equipos.filter(eq => {
     if (!aplicaFiltroEquipo(eq, filtroTab)) return false;
@@ -1247,7 +1297,9 @@ function InfoEquipoTab({ equipo, ultimaAuditoria }) {
     ["Patente", equipo.patente || "-"],
     ["Interno", equipo.numero_interno || "-"],
     ["Tipo", equipo.tipo === "SEMI" ? "Semirremolque" : "Tracto"],
-    ["Configuración de ejes", equipo.tipo === "SEMI" ? "Semi (13 posiciones)" : (equipo.configuracion_ejes || "No definida")],
+    // Requerimiento 3: un SEMI ahora puede tener un slug dinamico (ej. ELB
+    // "1+1"/"3+1") en vez de siempre el layout fijo de 13 posiciones.
+    ["Configuración de ejes", equipo.configuracion_ejes || (equipo.tipo === "SEMI" ? "Semi estándar (13 posiciones)" : "No definida")],
     ["Modelo", equipo.modelo || "-"],
     ["Km actuales", equipo.kilometros ? equipo.kilometros.toLocaleString() : "-"],
     ["Última auditoría", ultimaAuditoria === undefined ? "…" : ultimaAuditoria ? `N°${ultimaAuditoria.numero_auditoria} · ${formatDateLong(ultimaAuditoria.fecha)}` : "Sin auditorías registradas"]
@@ -5148,6 +5200,170 @@ const TIPO_NEUMATICO_OPCIONES = [
 ];
 const TIPO_NEUMATICO_LABELS = Object.fromEntries(TIPO_NEUMATICO_OPCIONES.map(t => [t.id, t.label]));
 
+// Requerimiento: Configuraciones de Flota -- esquemas de ejes/neumaticos
+// dinamicos por cliente (tabla configuraciones_equipos), en vez de la lista
+// fija hardcodeada. slug = mismo valor que se guarda en
+// equipos.configuracion_ejes (ver construirAxleConfigDesdeDB/axleConfigFor
+// en js/supabase.js).
+const CATEGORIA_LABELS = { tractor: "Tractor", trailer: "Trailer", chasis: "Chasis" };
+function slugify(nombre) {
+  return nombre.trim().toLowerCase()
+    .normalize("NFD").replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || uuid().slice(0, 8);
+}
+function ConfiguracionEquipoModal({ filtro, onClose, onSaved, pushToast }) {
+  const [nombre, setNombre] = useState("");
+  const [categoria, setCategoria] = useState("tractor");
+  const [numeroEjes, setNumeroEjes] = useState(2);
+  const [tiposPorEje, setTiposPorEje] = useState({ 1: "direccional", 2: "traccion" });
+  const [auxiliares, setAuxiliares] = useState(0);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  function setNumEjes(n) {
+    setNumeroEjes(n);
+    setTiposPorEje(prev => {
+      const next = {};
+      for (let i = 1; i <= n; i++) next[i] = prev[i] || (i === 1 ? "direccional" : "traccion");
+      return next;
+    });
+  }
+
+  // Vista previa en vivo del total de posiciones -- mismo calculo que
+  // construirAxleConfigDesdeDB (2 ruedas direccional, 4 traccion, +1 por auxiliar).
+  const totalPreview = Array.from({ length: numeroEjes }, (_, i) => tiposPorEje[i + 1])
+    .reduce((n, t) => n + (t === "direccional" ? 2 : 4), 0) + auxiliares;
+
+  async function guardar() {
+    setError("");
+    if (!nombre.trim()) { setError("El nombre es obligatorio."); return; }
+    setSaving(true);
+    try {
+      const ejes = Array.from({ length: numeroEjes }, (_, i) => ({ eje: i + 1, tipo: tiposPorEje[i + 1] }));
+      await db.guardarConfiguracionEquipo({
+        cliente_id: filtro, nombre: nombre.trim(), categoria, slug: slugify(nombre),
+        numero_ejes: numeroEjes, ejes, auxiliares
+      });
+      pushToast("✓ Configuración creada");
+      onSaved();
+    } catch (e) {
+      console.error("No se pudo guardar la configuración de flota", e);
+      setError(e.message && e.message.includes("duplicate") ? "Ya existe una configuración con ese nombre para esta empresa." : "No se pudo guardar. Intentá de nuevo.");
+    }
+    setSaving(false);
+  }
+
+  return (
+    <Modal title="Nueva configuración de flota" onClose={onClose}>
+      <div className="space-y-4">
+        <Field label="Nombre de la configuración" required>
+          <TextInput value={nombre} onChange={e => setNombre(e.target.value)} placeholder='Ej: "Chasis 8x4 ELB"' />
+        </Field>
+        <Field label="Categoría" required>
+          <div className="flex gap-2">
+            {["tractor", "trailer", "chasis"].map(c => (
+              <button key={c} type="button" onClick={() => setCategoria(c)}
+                className={cx("flex-1 h-11 rounded-2xl text-[13.5px] font-bold", categoria === c ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>
+                {CATEGORIA_LABELS[c]}
+              </button>
+            ))}
+          </div>
+        </Field>
+        <Field label="Número de ejes" required>
+          <div className="flex gap-2 flex-wrap">
+            {[1, 2, 3, 4, 5, 6].map(n => (
+              <button key={n} type="button" onClick={() => setNumEjes(n)}
+                className={cx("w-11 h-11 rounded-2xl text-[13.5px] font-bold", numeroEjes === n ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{n}</button>
+            ))}
+          </div>
+        </Field>
+        <div className="space-y-3">
+          {Array.from({ length: numeroEjes }, (_, i) => i + 1).map(n => (
+            <Field key={n} label={`Eje ${n}`} required>
+              <div className="flex gap-2">
+                {[["direccional", "Direccional / Sencillo (2 ruedas)"], ["traccion", "Tracción / Dual (4 ruedas)"]].map(([v, l]) => (
+                  <button key={v} type="button" onClick={() => setTiposPorEje(p => ({ ...p, [n]: v }))}
+                    className={cx("flex-1 h-11 rounded-2xl text-[12.5px] font-bold px-2", tiposPorEje[n] === v ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{l}</button>
+                ))}
+              </div>
+            </Field>
+          ))}
+        </div>
+        <Field label="Cantidad de auxiliares/repuestos" required>
+          <div className="flex gap-2">
+            {[0, 1, 2].map(n => (
+              <button key={n} type="button" onClick={() => setAuxiliares(n)}
+                className={cx("flex-1 h-11 rounded-2xl text-[13.5px] font-bold", auxiliares === n ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{n}</button>
+            ))}
+          </div>
+        </Field>
+        <p className="text-[12px] text-muted">Total de posiciones en el mapa: <b>{totalPreview}</b></p>
+        {error && <p className="text-[12.5px] font-bold text-[#B91C1C]">{error}</p>}
+        <Button className="w-full" disabled={saving} onClick={guardar}>{saving ? <span className="spinner" /> : "Crear configuración"}</Button>
+      </div>
+    </Modal>
+  );
+}
+function ConfiguracionesFlotaSection({ filtro, pushToast }) {
+  const [lista, setLista] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [modal, setModal] = useState(false);
+
+  function cargar() {
+    setLoading(true);
+    db.fetchConfiguracionesEquipos(filtro, false).then(setLista).catch(e => console.error("No se pudo cargar Configuraciones de Flota", e)).finally(() => setLoading(false));
+  }
+  useEffect(() => { cargar(); }, [filtro]);
+
+  async function toggleActivo(item) {
+    try {
+      await db.actualizarConfiguracionEquipo(item.id, filtro, { activo: !item.activo });
+      setLista(ls => ls.map(x => x.id === item.id ? { ...x, activo: !item.activo } : x));
+      pushToast(item.activo ? "✓ Desactivada" : "✓ Activada");
+    } catch (e) { console.error("No se pudo actualizar la configuración", e); pushToast("✕ No se pudo actualizar", "red"); }
+  }
+
+  return (
+    <div>
+      <div className="flex items-center justify-between gap-3 mb-2 flex-wrap">
+        <p className="font-bold text-[15px]">Configuraciones de flota</p>
+        <Button className="h-10 px-4 text-[13px]" onClick={() => setModal(true)}>+ Nueva configuración</Button>
+      </div>
+      <p className="text-[11.5px] text-muted mb-3">Esquemas de ejes/neumáticos disponibles para esta empresa al dar de alta un equipo. Las configuraciones desactivadas no aparecen en el selector de "Nuevo equipo", pero los equipos que ya las usan siguen funcionando igual.</p>
+      {loading ? <div className="flex justify-center py-8"><span className="spinner" /></div> : (
+        <div className="bg-white rounded-2xl border border-bd shadow-card overflow-x-auto mb-6">
+          <table className="w-full text-[13.5px] min-w-[520px]">
+            <thead><tr className="text-left text-muted border-b border-bd">
+              <th className="font-semibold py-3 px-4">Nombre</th><th className="font-semibold py-3 px-4">Categoría</th>
+              <th className="font-semibold py-3 px-4">Ejes</th><th className="font-semibold py-3 px-4">Auxiliares</th>
+              <th className="font-semibold py-3 px-4">Estado</th><th className="font-semibold py-3 px-4"></th>
+            </tr></thead>
+            <tbody>
+              {lista.map(item => (
+                <tr key={item.id} className="border-b border-bd last:border-0">
+                  <td className="py-2.5 px-4 font-bold">{item.nombre}<span className="block text-[11px] text-muted font-normal">slug: {item.slug}</span></td>
+                  <td className="py-2.5 px-4">{CATEGORIA_LABELS[item.categoria] || item.categoria}</td>
+                  <td className="py-2.5 px-4">{item.numero_ejes}</td>
+                  <td className="py-2.5 px-4">{item.auxiliares}</td>
+                  <td className="py-2.5 px-4"><Badge color={item.activo ? "green" : "gray"}>{item.activo ? "Activa" : "Inactiva"}</Badge></td>
+                  <td className="py-2.5 px-4">
+                    <button onClick={() => toggleActivo(item)} className="text-[11.5px] font-bold text-ink px-2.5 py-1.5 rounded-full bg-[#F3F4F6] whitespace-nowrap">{item.activo ? "Desactivar" : "Activar"}</button>
+                  </td>
+                </tr>
+              ))}
+              {!lista.length && <tr><td colSpan="6" className="text-center text-muted py-8">Sin configuraciones para esta empresa.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {modal && (
+        <ConfiguracionEquipoModal filtro={filtro} pushToast={pushToast}
+          onClose={() => setModal(false)} onSaved={() => { setModal(false); cargar(); }} />
+      )}
+    </div>
+  );
+}
+
 function CatalogoNeumaticoModal({ item, filtro, onClose, onSaved, pushToast }) {
   const editando = !!item;
   const [marca, setMarca] = useState(item ? item.marca : "");
@@ -5417,6 +5633,8 @@ function ConfiguracionEmpresaView({ filtro, pushToast }) {
         onGuardar={async (next) => { await db.setConfigValor(filtro, "medidas_permitidas", next); setConfig(c => ({ ...c, medidas_permitidas: next })); }} />
 
       <CatalogoNeumaticosSection filtro={filtro} pushToast={pushToast} />
+
+      <ConfiguracionesFlotaSection filtro={filtro} pushToast={pushToast} />
 
       <Button variant="danger" className="w-full max-w-md" onClick={() => setRestaurando(true)}>Restaurar valores por defecto</Button>
       {restaurando && (

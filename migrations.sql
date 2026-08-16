@@ -763,3 +763,57 @@ ALTER TABLE auditoria_posiciones ADD COLUMN IF NOT EXISTS url_foto_desgaste_irre
 -- migracion (bloques 15/20b/21/23/24): se saca la restriccion en vez de
 -- mantenerla sincronizada a mano cada vez que se agrega una bodega.
 ALTER TABLE neumaticos DROP CONSTRAINT IF EXISTS neumaticos_bodega_check;
+
+
+-- 48) Configuraciones de Flota (esquemas de ejes/neumaticos) dinamicas por
+-- cliente, en vez de la lista fija CONFIG_EJES_OPCIONES=["4x2","6x2","6x4"]
+-- hardcodeada en admin.html y AXLE_CONFIGS hardcodeado en js/supabase.js.
+-- "slug" es el valor que se guarda en equipos.configuracion_ejes (mismo
+-- string de siempre, ej. "4x2"/"1+1"/"4x2-grua") -- axleConfigFor sigue
+-- revisando AXLE_CONFIGS PRIMERO para esos slugs tradicionales (compatibilidad
+-- exacta, sin cambios de comportamiento), y recien si no matchea ahi cae a
+-- esta tabla (configuraciones nuevas creadas desde Admin > Configuracion >
+-- "Configuraciones de Flota"). "ejes" es un JSONB [{eje:1,tipo:"direccional"|
+-- "traccion"}, ...] -- direccional=2 ruedas, traccion=4 ruedas (ver
+-- construirAxleConfigDesdeDB en js/supabase.js).
+CREATE TABLE IF NOT EXISTS configuraciones_equipos (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  cliente_id TEXT NOT NULL REFERENCES clientes(id_cliente),
+  nombre TEXT NOT NULL,
+  categoria TEXT NOT NULL CHECK (categoria IN ('tractor', 'trailer', 'chasis')),
+  slug TEXT NOT NULL,
+  numero_ejes INT NOT NULL CHECK (numero_ejes BETWEEN 1 AND 6),
+  ejes JSONB NOT NULL,
+  auxiliares INT NOT NULL DEFAULT 0 CHECK (auxiliares BETWEEN 0 AND 2),
+  activo BOOLEAN NOT NULL DEFAULT true,
+  creado_en TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (cliente_id, slug)
+);
+GRANT SELECT, INSERT, UPDATE ON configuraciones_equipos TO anon;
+ALTER TABLE configuraciones_equipos ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS anon_all ON configuraciones_equipos;
+CREATE POLICY anon_all ON configuraciones_equipos FOR ALL TO anon USING (true) WITH CHECK (true);
+
+-- Carga inicial: los esquemas que La Portada y ELB ya usan hoy (ver
+-- AXLE_CONFIGS en js/supabase.js), para que aparezcan listados en Admin >
+-- Configuracion > "Configuraciones de Flota" desde el arranque. Estos slugs
+-- YA renderizan correctamente porque AXLE_CONFIGS los resuelve primero -- esta
+-- carga es solo para que el Admin los vea/gestione en la pantalla nueva
+-- (algunos matices de rotacion de 6x2/6x4/grua no se pueden expresar 1:1 en
+-- el esquema simple del asistente, no afecta el render real).
+INSERT INTO configuraciones_equipos (cliente_id, nombre, categoria, slug, numero_ejes, ejes, auxiliares) VALUES
+  ('la_portada', 'Tracto 4x2', 'tractor', '4x2', 2,
+    '[{"eje":1,"tipo":"direccional"},{"eje":2,"tipo":"traccion"}]', 0),
+  ('la_portada', 'Tracto 6x2', 'tractor', '6x2', 3,
+    '[{"eje":1,"tipo":"direccional"},{"eje":2,"tipo":"traccion"},{"eje":3,"tipo":"traccion"}]', 0),
+  ('la_portada', 'Tracto 6x4', 'tractor', '6x4', 3,
+    '[{"eje":1,"tipo":"direccional"},{"eje":2,"tipo":"traccion"},{"eje":3,"tipo":"traccion"}]', 0),
+  ('la_portada', 'Semirremolque 3 ejes + auxilio', 'trailer', 'semi', 3,
+    '[{"eje":1,"tipo":"traccion"},{"eje":2,"tipo":"traccion"},{"eje":3,"tipo":"traccion"}]', 1),
+  ('elb', 'Trailer 1+1', 'trailer', '1+1', 2,
+    '[{"eje":1,"tipo":"traccion"},{"eje":2,"tipo":"traccion"}]', 1),
+  ('elb', 'Trailer 3+1', 'trailer', '3+1', 4,
+    '[{"eje":1,"tipo":"traccion"},{"eje":2,"tipo":"traccion"},{"eje":3,"tipo":"traccion"},{"eje":4,"tipo":"traccion"}]', 1),
+  ('elb', 'Grúa Horquilla 4x2', 'chasis', '4x2-grua', 2,
+    '[{"eje":1,"tipo":"traccion"},{"eje":2,"tipo":"direccional"}]', 0)
+ON CONFLICT (cliente_id, slug) DO NOTHING;
