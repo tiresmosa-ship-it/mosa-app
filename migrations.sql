@@ -751,3 +751,15 @@ ON CONFLICT (cliente_id, clave) DO UPDATE SET valor = EXCLUDED.valor;
 -- 41/42 de esta migracion) -- no hace falta crear un bucket nuevo, las
 -- policies de storage.objects ya cubren ese bucket para el rol anon.
 ALTER TABLE auditoria_posiciones ADD COLUMN IF NOT EXISTS url_foto_desgaste_irregular TEXT;
+
+-- 47) BUG encontrado en pruebas: neumaticos_bodega_check seguia restringido
+-- a una lista fija vieja (nuevo/recauchado/transito/reparacion/baja/salidas,
+-- ver bloque 20a) que NUNCA incluyo retiro_dano/retiro_otro (la bodega
+-- combinada retiro_daño_otro se separo en dos despues de ese bloque). Se
+-- confirmo con inserts de prueba reales: retiro_desgaste/reparacion/nfu/
+-- para_recauchar insertan OK, retiro_dano/retiro_otro rechazan con 23514.
+-- Resultado: nadie pudo usar Retiro por Daño ni Retiro por Otro desde que
+-- se separaron esas bodegas. Mismo criterio que otros CHECK de esta
+-- migracion (bloques 15/20b/21/23/24): se saca la restriccion en vez de
+-- mantenerla sincronizada a mano cada vez que se agrega una bodega.
+ALTER TABLE neumaticos DROP CONSTRAINT IF EXISTS neumaticos_bodega_check;
