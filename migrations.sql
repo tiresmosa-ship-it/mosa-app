@@ -817,3 +817,24 @@ INSERT INTO configuraciones_equipos (cliente_id, nombre, categoria, slug, numero
   ('elb', 'Grúa Horquilla 4x2', 'chasis', '4x2-grua', 2,
     '[{"eje":1,"tipo":"traccion"},{"eje":2,"tipo":"direccional"}]', 0)
 ON CONFLICT (cliente_id, slug) DO NOTHING;
+
+
+-- 49) auditorias.estado -- separa el estado de la AUDITORIA en si (lecturas
+-- de posiciones tomadas y enviadas) del estado del INSTRUCTIVO/Hoja de
+-- Cambio (auditorias_receta.estado: en_proceso/pendiente/parcial/completado).
+-- Bug: el badge "Aud. Abierta" de la lista de equipos (mecanico.html,
+-- equipoAuditEstado en js/supabase.js) usaba auditorias_receta.estado
+-- (!== 'completado') para decidir si la auditoria seguia abierta -- eso
+-- mezclaba dos cosas distintas: un equipo con la auditoria YA terminada
+-- (todas las posiciones medidas y enviadas) pero con tareas de Hoja de
+-- Cambio pendientes para despues (recetaEstado='pendiente', ej. "Cerrar sin
+-- cambios") quedaba mal marcado como "Aud. Abierta" cuando en realidad la
+-- auditoria esta completa. Con esta columna, la auditoria se marca
+-- 'completada' apenas se envian las lecturas (construirYGuardarAuditoria,
+-- ver onContinuar/onCerrar del Instructivo en mecanico.html),
+-- independientemente de si el instructivo genero o no tareas pendientes.
+ALTER TABLE auditorias ADD COLUMN IF NOT EXISTS estado TEXT NOT NULL DEFAULT 'en_proceso'
+  CHECK (estado IN ('en_proceso', 'completada'));
+-- Auditorias historicas: ya tienen sus lecturas guardadas (auditoria_posiciones),
+-- asi que se marcan completadas para no mostrar equipos viejos como "abiertos".
+UPDATE auditorias SET estado = 'completada' WHERE estado = 'en_proceso';

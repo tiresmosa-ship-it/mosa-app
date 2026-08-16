@@ -467,50 +467,39 @@ const db = {
     if (error) throw error;
     return data || [];
   },
-  // Estado de auditoria por equipo (para los 4 badges de la lista de equipos):
-  // ultima auditoria de cada equipo + estado de su auditorias_receta, mas si
-  // el equipo tiene una auditoria de HOY con receta en_proceso (excepcion del
-  // boton "Continuar hoja de cambio").
+  // Estado de auditoria por equipo (para los 4 badges de la lista de equipos).
+  // Requerimiento: el badge "Aud. Abierta" refleja el estado de la AUDITORIA
+  // en si (auditorias.estado: 'en_proceso' hasta que se envian las lecturas
+  // de todas las posiciones, 'completada' de ahi en mas) -- ya NO el estado
+  // del instructivo/Hoja de Cambio (auditorias_receta.estado), que puede
+  // seguir con tareas pendientes despues de una auditoria ya terminada (ej.
+  // "Cerrar sin cambios" deja recetaEstado='pendiente' con la auditoria
+  // completa igual). Ver construirYGuardarAuditoria mas abajo.
   async fetchEstadoAuditorias(clienteId) {
     const { data: eqs, error: eErr } = await sb.from("equipos").select("id_equipo").eq("cliente_id", clienteId).eq("activo", true);
     if (eErr) throw eErr;
     const equipoIds = (eqs || []).map(e => e.id_equipo);
     if (!equipoIds.length) return {};
-    const { data: auds, error } = await sb.from("auditorias").select("id_auditoria,equipo_id,fecha").in("equipo_id", equipoIds);
+    const { data: auds, error } = await sb.from("auditorias").select("id_auditoria,equipo_id,fecha,estado").in("equipo_id", equipoIds);
     if (error) throw error;
     const porEquipo = {};
     (auds || []).forEach(a => {
       const cur = porEquipo[a.equipo_id];
       if (!cur || (a.fecha || "") > (cur.fecha || "")) porEquipo[a.equipo_id] = a;
     });
-    const idsUltimas = Object.values(porEquipo).map(a => a.id_auditoria);
-    let recetaPorAuditoria = {};
-    if (idsUltimas.length) {
-      const { data: recetas } = await sb.from("auditorias_receta").select("auditoria_id,estado").in("auditoria_id", idsUltimas);
-      (recetas || []).forEach(r => { recetaPorAuditoria[r.auditoria_id] = r.estado; });
-    }
-    const hoy = todayISO();
-    const idsHoy = (auds || []).filter(a => a.fecha === hoy).map(a => a.id_auditoria);
-    let enProcesoEquipos = {};
-    if (idsHoy.length) {
-      const { data: recetasHoy } = await sb.from("auditorias_receta").select("auditoria_id,estado").in("auditoria_id", idsHoy).eq("estado", "en_proceso");
-      const audMapHoy = {}; (auds || []).filter(a => a.fecha === hoy).forEach(a => { audMapHoy[a.id_auditoria] = a; });
-      (recetasHoy || []).forEach(r => { const a = audMapHoy[r.auditoria_id]; if (a) enProcesoEquipos[a.equipo_id] = true; });
-    }
     const resultado = {};
     Object.entries(porEquipo).forEach(([equipoId, a]) => {
-      resultado[equipoId] = { fecha: a.fecha, estadoReceta: recetaPorAuditoria[a.id_auditoria] || null, enProcesoHoy: !!enProcesoEquipos[equipoId] };
+      resultado[equipoId] = { fecha: a.fecha, estadoAuditoria: a.estado };
     });
     return resultado;
   },
   // Estado de auditoria de UN equipo (usado al elegirlo, para pintar el boton
   // Auditoria en rojo si esta vencida/sin auditoria).
   async fetchEstadoAuditoriaEquipo(equipoId) {
-    const { data: auds, error } = await sb.from("auditorias").select("id_auditoria,fecha").eq("equipo_id", equipoId).order("fecha", { ascending: false }).limit(1);
+    const { data: auds, error } = await sb.from("auditorias").select("id_auditoria,fecha,estado").eq("equipo_id", equipoId).order("fecha", { ascending: false }).limit(1);
     if (error) throw error;
     if (!auds || !auds.length) return null;
-    const { data: receta } = await sb.from("auditorias_receta").select("estado").eq("auditoria_id", auds[0].id_auditoria).limit(1);
-    return { fecha: auds[0].fecha, estadoReceta: (receta && receta[0] && receta[0].estado) || null };
+    return { fecha: auds[0].fecha, estadoAuditoria: auds[0].estado };
   },
   // Instructivo en curso (auditorias_receta.estado='en_proceso') de la auditoria
   // de HOY de este equipo, para retomar la hoja de cambio sin pasar de nuevo
@@ -906,7 +895,7 @@ function dentroDePeriodoAuditoria(fechaISO, meses) {
 function equipoAuditEstado(info, mesesVencimiento) {
   if (!info) return "sin_auditoria";
   if (dentroDePeriodoAuditoria(info.fecha, mesesVencimiento)) {
-    return info.estadoReceta === "completado" ? "al_dia" : "abierta";
+    return info.estadoAuditoria === "completada" ? "al_dia" : "abierta";
   }
   return "vencida";
 }
@@ -1801,7 +1790,13 @@ async function compararNeumaticosAuditoria(clienteId, equipoId, posData) {
 /* =====================================================================
    GUARDADO DE AUDITORIA (encabezado + posiciones + receta)
 ===================================================================== */
-async function construirYGuardarAuditoria({ user, clienteId, equipo, cfg, posData, axleCfg, km, checklist, recsInfo, discrepanciasNeumaticos, recetaEstado }) {
+// Requerimiento: "auditoriaCompletada" es el estado de la AUDITORIA en si
+// (lecturas de posiciones tomadas y enviadas), independiente del estado del
+// instructivo/Hoja de Cambio (recetaEstado). Default true: los 2 call sites
+// reales (onContinuar/onCerrar del Instructivo en mecanico.html) siempre
+// mandan el posData completo de una auditoria terminada, generen o no tareas
+// pendientes. Solo el flujo dev (entrarDevHC, posData vacio) manda false.
+async function construirYGuardarAuditoria({ user, clienteId, equipo, cfg, posData, axleCfg, km, checklist, recsInfo, discrepanciasNeumaticos, recetaEstado, auditoriaCompletada = true }) {
   const numero_auditoria = await siguienteNumeroAuditoria(clienteId, cfg).catch(() => String(Date.now()).slice(-6));
   const sistemaTotal = checklist.filter(c => !c.extra).length;
   const cumplidas = checklist.filter(c => !c.extra && c.done).length;
@@ -1890,6 +1885,7 @@ async function construirYGuardarAuditoria({ user, clienteId, equipo, cfg, posDat
   const cab = {
     id_auditoria: uuid(), equipo_id: equipo.id_equipo, bultero_id: user.id, cliente_id: clienteId,
     fecha: todayISO(), kilometraje: parseInt(km, 10) || equipo.kilometros, numero_auditoria,
+    estado: auditoriaCompletada ? "completada" : "en_proceso",
     posiciones,
     receta: {
       id: recetaId, cliente_id: clienteId,

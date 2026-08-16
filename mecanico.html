@@ -903,21 +903,44 @@ function KmModal({ equipo, clienteId, mecanicoId, km, setKm, onContinue }) {
 // solo las de hoy") -- ya no se pregunta nada, la consolidacion es
 // incondicional (ver db.consolidarTareasPendientes en js/supabase.js). Este
 // modal es puramente informativo, un solo boton "Entendido".
+// Requerimiento 2: 3 variantes segun tareas nuevas (x, de la auditoria
+// actual) vs tareas pendientes acumuladas (y, de auditorias anteriores /
+// asignadas por Admin) -- evita el "0 pendientes" redundante y marca en
+// verde cuando no hay nada arrastrado de antes.
 function ResumenInstructivoModal({ resumen, onEntendido }) {
-  const total = (resumen.x || 0) + (resumen.y || 0);
+  const x = resumen.x || 0, y = resumen.y || 0;
+
+  if (x === 0 && y === 0) {
+    return (
+      <Modal title="🟢 Equipo al 100%">
+        <p className="text-[14px] font-semibold text-emerald-600 bg-emerald-50 rounded-xl px-3 py-2.5 mb-5">
+          No hay tareas pendientes ni recomendaciones registradas para este equipo.
+        </p>
+        <Button className="w-full" onClick={onEntendido}>➔ Entendido</Button>
+      </Modal>
+    );
+  }
+
+  if (y === 0) {
+    return (
+      <Modal title="🟢 Instructivo Generado">
+        <p className="text-[14px] text-[#374151] mb-3">
+          Se cargaron <span className="font-bold">{x} tarea{x !== 1 ? "s" : ""} nueva{x !== 1 ? "s" : ""}</span> de la auditoría.
+        </p>
+        <p className="text-[13.5px] font-semibold text-emerald-600 bg-emerald-50 rounded-xl px-3 py-2.5 mb-5">
+          Sin tareas pendientes acumuladas para este equipo.
+        </p>
+        <Button className="w-full" onClick={onEntendido}>➔ Entendido</Button>
+      </Modal>
+    );
+  }
+
   return (
     <Modal title="📋 Instructivo Generado">
-      <p className="text-[14px] text-[#374151] mb-4">
-        Se han cargado <span className="font-bold">{total} tarea{total !== 1 ? "s" : ""}</span> para este equipo:
+      <p className="text-[14px] text-[#374151] mb-5">
+        Se cargaron <span className="font-bold">{x} tarea{x !== 1 ? "s" : ""} nueva{x !== 1 ? "s" : ""}</span> de la auditoría actual y{" "}
+        <span className="font-bold">{y} tarea{y !== 1 ? "s" : ""} pendiente{y !== 1 ? "s" : ""}</span> acumulada{y !== 1 ? "s" : ""}.
       </p>
-      <ul className="space-y-2 mb-5">
-        <li className="text-[13.5px] text-[#374151] bg-[#F3F4F6] rounded-xl px-3 py-2">
-          <span className="font-bold">{resumen.x || 0}</span> tarea{resumen.x !== 1 ? "s" : ""} de la auditoría actual.
-        </li>
-        <li className="text-[13.5px] text-[#92400E] bg-[#FEF3C7] rounded-xl px-3 py-2">
-          <span className="font-bold">{resumen.y || 0}</span> tarea{resumen.y !== 1 ? "s" : ""} pendiente{resumen.y !== 1 ? "s" : ""} acumulada{resumen.y !== 1 ? "s" : ""} (auditorías anteriores / asignadas por Admin).
-        </li>
-      </ul>
       <Button className="w-full" onClick={onEntendido}>➔ Entendido</Button>
     </Modal>
   );
@@ -3117,7 +3140,10 @@ function MecanicoApp({ user }) {
       if (!receta) {
         const res = await construirYGuardarAuditoria({
           user, clienteId, equipo: eq, cfg, posData: {}, axleCfg, km: eq.kilometros || 0,
-          checklist: [], recsInfo: { recs: [] }, discrepanciasNeumaticos: [], recetaEstado: "en_proceso"
+          checklist: [], recsInfo: { recs: [] }, discrepanciasNeumaticos: [], recetaEstado: "en_proceso",
+          // Requerimiento: este stub de modo dev no mide ninguna posicion real
+          // (posData vacio) -- no debe marcar la auditoria como completada.
+          auditoriaCompletada: false
         });
         syncQueue();
         receta = { id: res.recetaId, posiciones_alerta: {} };
