@@ -1240,12 +1240,29 @@ const BODEGA_ESTADOS = {
   RETIRO_DESGASTE: "retiro_desgaste", RETIRO_DANO: "retiro_dano", RETIRO_OTRO: "retiro_otro",
   PARA_RECAUCHAR: "para_recauchar", REPARACION: "reparacion", NFU: "nfu"
 };
+// Requerimiento: bloqueo estricto de transferencia a Transito para
+// neumaticos con MM<=3, para TODAS las empresas (La Portada/ELB/BYS). Unica
+// excepcion: SuperAdmin, para correcciones operativas de inventario. Se
+// llama desde la funcion centralizada de cambio de bodega/estado
+// (actualizarNeumaticoSale, mas abajo) y desde accionMoverBodega en
+// admin.html, para que la regla se aplique parejo sin importar el origen
+// de la transicion (mecanico.html o Maestros > Inventario).
+function validarDestinoTransito(mm, esSuperAdmin) {
+  if (esSuperAdmin) return;
+  if (mm != null && mm <= 3) {
+    throw new Error("No se puede mover a Tránsito un neumático con 3 mm o menos.");
+  }
+}
 async function actualizarNeumaticoSale(clienteId, s) {
   // destino = motivo de salida: transito | reparacion | retiro_desgaste |
   // retiro_dano | retiro_otro (ver BODEGA_ESTADOS mas arriba y RetiroModal en
   // mecanico.html). bodega y estado_actual quedan iguales al destino en todos
   // los casos (spec del flujo de salida/retiro reestructurado).
   const destino = s.motivo;
+  // Regla de negocio: mecanico.html nunca opera como SuperAdmin -- esta es
+  // la ultima linea de defensa si por algun motivo el bloqueo del lado del
+  // mecanico (ejecutarSalida) se salteara.
+  if (destino === "transito") validarDestinoTransito(s.milimetros, false);
   const bodega = destino;
   const estado = destino;
   const { data: existente } = await sb.from("neumaticos").select("*").eq("cliente_id", clienteId).eq("numero_fuego", s.numero_fuego).maybeSingle();

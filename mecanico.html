@@ -1757,6 +1757,16 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
     const d = posData[pos];
     // Retiro: pide confirmacion + motivo (modal aparte, 2 pasos). Transito/reparacion: confirmacion directa.
     if (motivo === "retiro") { setRetiroSel({ pos }); return; }
+    // Requerimiento: bloqueo estricto de transferencia a Transito con
+    // MM<=3, para TODAS las empresas -- el mecanico nunca es SuperAdmin,
+    // asi que ademas del guard central en actualizarNeumaticoSale
+    // (js/supabase.js) se corta aca, antes de abrir el dialogo de
+    // confirmacion, para no dejar avanzar el flujo ni un paso.
+    if (motivo === "transito" && d.minMM != null && d.minMM <= 3) {
+      if (navigator.vibrate) navigator.vibrate(200);
+      pushToast("🛑 Acción No Permitida — Los neumáticos con 3 mm o menos no pueden enviarse a Tránsito. Seleccioná un motivo de retiro (Desgaste, Daño u Otro) para derivarlo a NFU, Recauche o Reparación.", "red");
+      return;
+    }
     const label = motivo === "transito" ? "tránsito" : "reparación";
     const origenMov = motivo === "transito" ? "desmontaje_transito" : "desmontaje_reparacion";
     setConfirmDlg({

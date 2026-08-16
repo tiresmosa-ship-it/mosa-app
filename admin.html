@@ -216,7 +216,7 @@ function Modal({ title, onClose, children, wide, footer }) {
 }
 function Toast({ msg, onDone, color = "green" }) {
   useEffect(() => { const t = setTimeout(onDone, 2000); return () => clearTimeout(t); }, []);
-  const styles = color === "amber" ? { background: "#FEF3C7", color: "#92400E" } : { background: "#DCFCE7", color: "#15803D" };
+  const styles = color === "amber" ? { background: "#FEF3C7", color: "#92400E" } : color === "red" ? { background: "#FEE2E2", color: "#B91C1C" } : { background: "#DCFCE7", color: "#15803D" };
   return (
     <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[80] px-4 py-3 rounded-2xl shadow-lg text-sm font-semibold flex items-center gap-3" style={styles}>
       <span>{msg}</span>
@@ -3314,17 +3314,30 @@ function BodegaMultiAccionSeccion({ filtro, pushToast, onCambio, bodegaOrigen, c
     if (esSuperAdmin || !accion.deshabilitadaSi) return false;
     return filasSeleccionadas.some(n => accion.deshabilitadaSi(n, extra));
   }
+  // Requerimiento: "indicando los numeros a fuego que no cumplen el
+  // requisito" -- lista los N° de fuego seleccionados que bloquean esta
+  // accion, para que el Admin sepa cuales sacar de la seleccion.
+  function fuegosBloqueando(accion) {
+    if (esSuperAdmin || !accion.deshabilitadaSi) return [];
+    return filasSeleccionadas.filter(n => accion.deshabilitadaSi(n, extra)).map(n => n.numero_fuego || "(sin fuego)");
+  }
 
   async function confirmar() {
     if (!accionActiva) return;
     if (accionActiva.requiereJustificacion && !justificacion.trim()) return;
     setSaving(true);
     try {
-      await accionActiva.aplicar(seleccionados, lista, justificacion.trim());
+      // extra se pasa para que accionMoverBodega pueda re-validar
+      // deshabilitadaSi justo antes de escribir (defensa en profundidad,
+      // por si el boton deshabilitado se saltea de algun modo).
+      await accionActiva.aplicar(seleccionados, lista, justificacion.trim(), extra);
       pushToast(`✓ ${accionActiva.toastLabel(seleccionados.length)}`);
       setAccionActiva(null); setJustificacion("");
       cargar(); onCambio && onCambio();
-    } catch (e) { console.error("No se pudo aplicar la accion de bodega", e); }
+    } catch (e) {
+      console.error("No se pudo aplicar la accion de bodega", e);
+      pushToast(`✕ ${e.message || "No se pudo completar la acción"}`, "red");
+    }
     setSaving(false);
   }
 
@@ -3353,13 +3366,24 @@ function BodegaMultiAccionSeccion({ filtro, pushToast, onCambio, bodegaOrigen, c
         </table>
       </div>
       {!!acciones.length && (
-        <div className="flex flex-wrap gap-2">
-          {acciones.map(accion => (
-            <Button key={accion.id} variant={accion.variant || "primary"} className="h-11 px-4 text-[13.5px]"
-              disabled={!seleccionados.length || accionBloqueada(accion)} onClick={() => setAccionActiva(accion)}>
-              {accion.label} ({seleccionados.length})
-            </Button>
-          ))}
+        <div className="mb-2">
+          <div className="flex flex-wrap gap-2">
+            {acciones.map(accion => (
+              <Button key={accion.id} variant={accion.variant || "primary"} className="h-11 px-4 text-[13.5px]"
+                disabled={!seleccionados.length || accionBloqueada(accion)} onClick={() => setAccionActiva(accion)}>
+                {accion.label} ({seleccionados.length})
+              </Button>
+            ))}
+          </div>
+          {acciones.map(accion => {
+            const fuegos = fuegosBloqueando(accion);
+            if (!fuegos.length) return null;
+            return (
+              <p key={accion.id} className="text-[12px] font-semibold text-[#B91C1C] mt-2">
+                🛑 "{accion.label}" bloqueado — MM≤3 en: {fuegos.join(", ")}
+              </p>
+            );
+          })}
         </div>
       )}
       {accionActiva && (
@@ -3384,10 +3408,20 @@ function BodegaMultiAccionSeccion({ filtro, pushToast, onCambio, bodegaOrigen, c
 }
 // Fabrica de acciones "Mandar a <bodega>" -- evita repetir el mismo
 // update+insert de movimientos_bodega en cada seccion.
-function accionMoverBodega(filtro, { id, label, variant, bodegaDestino, estadoDestino, origenMov, tituloConfirm, descConfirm, toastLabel, requiereJustificacion, deshabilitadaSi }) {
+function accionMoverBodega(filtro, { id, label, variant, bodegaDestino, estadoDestino, origenMov, tituloConfirm, descConfirm, toastLabel, requiereJustificacion, deshabilitadaSi, esSuperAdmin }) {
   return {
     id, label, variant, requiereJustificacion: !!requiereJustificacion, deshabilitadaSi, tituloConfirm, descConfirm, toastLabel,
-    aplicar: async (seleccionados, lista, justificacion) => {
+    aplicar: async (seleccionados, lista, justificacion, extra) => {
+      // Requerimiento: defensa en profundidad -- revalida deshabilitadaSi
+      // (la misma regla que ya deshabilita el boton en la UI) justo antes
+      // de escribir, por si esa proteccion se salteara de algun modo.
+      // Unica excepcion: SuperAdmin.
+      if (!esSuperAdmin && deshabilitadaSi) {
+        const bloqueados = lista.filter(n => seleccionados.includes(n.id_neumatico) && deshabilitadaSi(n, extra));
+        if (bloqueados.length) {
+          throw new Error(`No se puede mover a "${bodegaDestino}" — MM≤3 en: ${bloqueados.map(n => n.numero_fuego || "(sin fuego)").join(", ")}`);
+        }
+      }
       await sb.from("neumaticos").update({ bodega: bodegaDestino, estado_actual: estadoDestino }).in("id_neumatico", seleccionados);
       await sb.from("movimientos_bodega").insert(seleccionados.map(id => {
         const n = lista.find(x => x.id_neumatico === id);
@@ -3511,6 +3545,7 @@ function RetiroOtroSeccion({ filtro, pushToast, onCambio, esSuperAdmin }) {
       // directo a transito -- salvo el SuperAdmin (ver esSuperAdmin en
       // BodegaMultiAccionSeccion.accionBloqueada).
       deshabilitadaSi: (n, extra) => { const mm = extra.mm[n.numero_fuego]; return mm == null || mm <= 3; },
+      esSuperAdmin,
       tituloConfirm: "Pase a Tránsito directo", descConfirm: (n) => `Vas a enviar ${n} neumáticos de retiro por otro directo a Tránsito. ¿Confirmar?`,
       toastLabel: (n) => `${n} neumáticos enviados a Tránsito`
     })
@@ -3538,7 +3573,7 @@ function ReparacionSeccion({ filtro, pushToast, onCambio, esSuperAdmin }) {
   const acciones = [
     accionMoverBodega(filtro, {
       id: "transito", label: "✅ Reparado ➔ Tránsito", bodegaDestino: "transito", estadoDestino: "transito", origenMov: "pase_reparacion_transito",
-      deshabilitadaSi: (n) => !(n.milimetros > 3),
+      deshabilitadaSi: (n) => !(n.milimetros > 3), esSuperAdmin,
       tituloConfirm: "Pase a Tránsito", descConfirm: (n) => `Vas a pasar ${n} neumáticos de reparación a tránsito. ¿Confirmar?`,
       toastLabel: (n) => `${n} neumáticos pasados a Tránsito`
     }),
