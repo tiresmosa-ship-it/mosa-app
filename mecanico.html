@@ -2299,6 +2299,9 @@ function TireInfoModal({ pos, data, cfg, equipo, axleCfg, onClose, onRegularPsi,
   // Requerimiento: la alargadera solo aplica al neumatico interno de una
   // rueda doble (dupla) -- en direccionales/externos no se muestra el check.
   const mostrarAlargadera = onToggleAlargadera && esPosicionInterna(axleCfg, pos);
+  // Requerimiento: el checkpoint solo aplica a ruedas externas/sencillas --
+  // en las internas de una dupla no se puede acceder para verificarlo.
+  const mostrarCheckpoint = onToggleCheckpoint && !esPosicionInterna(axleCfg, pos);
   return (
     <Modal title={`Posición P${pos}`} onClose={onClose}>
       <div className="mb-4">
@@ -2330,7 +2333,7 @@ function TireInfoModal({ pos, data, cfg, equipo, axleCfg, onClose, onRegularPsi,
       </div>
       {/* Requerimiento 2: alargadera/checkpoint colocados en esta posicion —
           solo en la HC (no en la revision de solo consulta previa). */}
-      {(mostrarAlargadera || onToggleCheckpoint) && (
+      {(mostrarAlargadera || mostrarCheckpoint) && (
         <div className="space-y-2 mb-4">
           {mostrarAlargadera && (
             <div className="flex items-center justify-between bg-[#F9FAFB] rounded-xl px-3 py-2.5">
@@ -2341,9 +2344,9 @@ function TireInfoModal({ pos, data, cfg, equipo, axleCfg, onClose, onRegularPsi,
               </div>
             </div>
           )}
-          {onToggleCheckpoint && (
+          {mostrarCheckpoint && (
             <div className="flex items-center justify-between bg-[#F9FAFB] rounded-xl px-3 py-2.5">
-              <p className="text-[13px] font-bold">🔘 Checkpoint colocado</p>
+              <p className="text-[13px] font-bold">✅ Checkpoint colocado</p>
               <div className="flex gap-1.5">
                 <button onClick={() => onToggleCheckpoint(true)} className={cx("h-8 px-3 rounded-full text-[12px] font-bold", data.checkpoint ? "bg-ink text-white" : "bg-white border border-bd")}>Sí</button>
                 <button onClick={() => onToggleCheckpoint(false)} className={cx("h-8 px-3 rounded-full text-[12px] font-bold", !data.checkpoint ? "bg-ink text-white" : "bg-white border border-bd")}>No</button>
