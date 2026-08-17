@@ -1460,9 +1460,9 @@ function TireCircleReadOnly({ pos, filled, status, mm, psi, selected, onTap, ala
       className={cx("relative w-[54px] h-[54px] rounded-full flex flex-col items-center justify-center shrink-0 shadow-sm transition",
         styles[key], selected && "ring-2 ring-ink")}>
       {filled && (alargadera || checkpoint) && (
-        <span className="absolute -bottom-1 -left-1 flex gap-0.5 text-[10px] leading-none">
-          {alargadera && <span title="Alargadera colocada">🔘</span>}
-          {checkpoint && <span title="Checkpoint colocado">✅</span>}
+        <span className="absolute -bottom-1 -left-1 flex gap-0.5 items-center leading-none">
+          {alargadera && <Icon.alargaderaManguera width="11" height="11" title="Alargadera colocada" />}
+          {checkpoint && <Icon.checkpointPin width="11" height="11" title="Checkpoint colocado" />}
         </span>
       )}
       <span className="text-[9.5px] font-bold opacity-70 leading-none">P{pos}</span>

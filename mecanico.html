@@ -823,9 +823,9 @@ function TireCircle({ pos, filled, status, mm, psi, fuego, selected, onTap, drag
       {filled && desgasteIrregular && <span className="absolute -top-1.5 -right-1 text-[13px] leading-none">⚠️</span>}
       {filled && pendienteAprobacion && <span className="absolute -bottom-1 -right-1 text-[13px] leading-none">🔒</span>}
       {filled && (alargadera || checkpoint) && (
-        <span className="absolute -bottom-1 -left-1 flex gap-0.5 text-[10px] leading-none">
-          {alargadera && <span title="Alargadera colocada">🔘</span>}
-          {checkpoint && <span title="Checkpoint colocado">✅</span>}
+        <span className="absolute -bottom-1 -left-1 flex gap-0.5 items-center leading-none">
+          {alargadera && <Icon.alargaderaManguera width="11" height="11" title="Alargadera colocada" />}
+          {checkpoint && <Icon.checkpointPin width="11" height="11" title="Checkpoint colocado" />}
         </span>
       )}
       <span className="text-[9.5px] font-bold opacity-70 leading-none">P{pos}</span>
