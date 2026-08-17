@@ -343,7 +343,7 @@ const costosDb = {
     }).sort((a, b) => (a.nombre || "").localeCompare(b.nombre || ""));
   },
   async fetchConsumoPeriodo(clienteId, desde, hasta) {
-    let q = sb.from("movimientos_bodega").select("cliente_id,fecha,origen,numero_fuego").eq("categoria", "neumatico").eq("tipo", "salida").gte("fecha", desde).lte("fecha", hasta).in("origen", ["retiro_desgaste", "retiro_daño_otro"]);
+    let q = sb.from("movimientos_bodega").select("cliente_id,fecha,origen,numero_fuego").eq("categoria", "neumatico").eq("tipo", "salida").gte("fecha", desde).lte("fecha", hasta).in("origen", ["retiro_desgaste", "retiro_dano", "retiro_otro", "retiro_daño_otro"]);
     q = filtroCliente(q, clienteId);
     const { data } = await q;
     const bajas = data || [];
@@ -409,7 +409,7 @@ const costosDb = {
   async fetchBajasPorMes(clienteId, meses) {
     const hoy = new Date();
     const desdeISO = new Date(hoy.getFullYear(), hoy.getMonth() - (meses - 1), 1).toISOString().slice(0, 10);
-    let q = sb.from("movimientos_bodega").select("cliente_id,fecha,origen,numero_fuego").eq("categoria", "neumatico").eq("tipo", "salida").gte("fecha", desdeISO).in("origen", ["retiro_desgaste", "retiro_daño_otro"]);
+    let q = sb.from("movimientos_bodega").select("cliente_id,fecha,origen,numero_fuego").eq("categoria", "neumatico").eq("tipo", "salida").gte("fecha", desdeISO).in("origen", ["retiro_desgaste", "retiro_dano", "retiro_otro", "retiro_daño_otro"]);
     q = filtroCliente(q, clienteId);
     const { data } = await q;
     const bajas = data || [];
@@ -454,9 +454,9 @@ const costosDb = {
     q = filtroCliente(q, clienteId);
     const { data } = await q;
     const precios = await fetchPrecioPorMarca(clienteId);
-    const labels = { nuevo: "Nuevo", transito: "Tránsito", reparacion: "En reparación", retiro_desgaste: "Retiro Desgaste", para_recauchar: "Para Recauchar", recauchado: "Recauchado", en_equipos: "En equipos", "retiro_daño_otro": "Retiro Daño/Otro", nfu: "NFU", otro: "Otro / sin bodega" };
-    const filas = { nuevo: [], transito: [], reparacion: [], retiro_desgaste: [], para_recauchar: [], recauchado: [], en_equipos: [], "retiro_daño_otro": [], nfu: [], otro: [] };
-    const cantidad = { nuevo: 0, transito: 0, reparacion: 0, retiro_desgaste: 0, para_recauchar: 0, recauchado: 0, en_equipos: 0, "retiro_daño_otro": 0, nfu: 0, otro: 0 };
+    const labels = { nuevo: "Nuevo", transito: "Tránsito", reparacion: "En reparación", retiro_desgaste: "Retiro Desgaste", para_recauchar: "Para Recauchar", recauchado: "Recauchado", en_equipos: "En equipos", retiro_dano: "Retiro Daño", retiro_otro: "Retiro Otro", nfu: "NFU", otro: "Otro / sin bodega" };
+    const filas = { nuevo: [], transito: [], reparacion: [], retiro_desgaste: [], para_recauchar: [], recauchado: [], en_equipos: [], retiro_dano: [], retiro_otro: [], nfu: [], otro: [] };
+    const cantidad = { nuevo: 0, transito: 0, reparacion: 0, retiro_desgaste: 0, para_recauchar: 0, recauchado: 0, en_equipos: 0, retiro_dano: 0, retiro_otro: 0, nfu: 0, otro: 0 };
     (data || []).forEach(n => {
       const key = n.equipo_actual ? "en_equipos" : (filas[n.bodega] !== undefined ? n.bodega : "otro");
       const p = precioDeMarca(precios, n.marca);

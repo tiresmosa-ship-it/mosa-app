@@ -640,7 +640,7 @@ const costosDb = {
   // tipo=entrada). Si no hay match, ese retiro se cuenta pero no aporta $
   // (no se inventa un precio).
   async fetchConsumoPeriodo(clienteId, desde, hasta) {
-    let q = sb.from("movimientos_bodega").select("cliente_id,fecha,origen,numero_fuego").eq("categoria", "neumatico").eq("tipo", "salida").gte("fecha", desde).lte("fecha", hasta).in("origen", ["retiro_desgaste", "retiro_daño_otro"]);
+    let q = sb.from("movimientos_bodega").select("cliente_id,fecha,origen,numero_fuego").eq("categoria", "neumatico").eq("tipo", "salida").gte("fecha", desde).lte("fecha", hasta).in("origen", ["retiro_desgaste", "retiro_dano", "retiro_otro", "retiro_daño_otro"]);
     q = filtroCliente(q, clienteId);
     const { data } = await q;
     const bajas = data || [];
@@ -717,7 +717,7 @@ const costosDb = {
   async fetchBajasPorMes(clienteId, meses) {
     const hoy = new Date();
     const desdeISO = new Date(hoy.getFullYear(), hoy.getMonth() - (meses - 1), 1).toISOString().slice(0, 10);
-    let q = sb.from("movimientos_bodega").select("cliente_id,fecha,origen,numero_fuego").eq("categoria", "neumatico").eq("tipo", "salida").gte("fecha", desdeISO).in("origen", ["retiro_desgaste", "retiro_daño_otro"]);
+    let q = sb.from("movimientos_bodega").select("cliente_id,fecha,origen,numero_fuego").eq("categoria", "neumatico").eq("tipo", "salida").gte("fecha", desdeISO).in("origen", ["retiro_desgaste", "retiro_dano", "retiro_otro", "retiro_daño_otro"]);
     q = filtroCliente(q, clienteId);
     const { data } = await q;
     const bajas = data || [];
@@ -769,9 +769,9 @@ const costosDb = {
     q = filtroCliente(q, clienteId);
     const { data } = await q;
     const precios = await fetchPrecioPorMarca(clienteId);
-    const labels = { nuevo: "Nuevo", transito: "Tránsito", reparacion: "En reparación", retiro_desgaste: "Retiro Desgaste", para_recauchar: "Para Recauchar", recauchado: "Recauchado", en_equipos: "En equipos", "retiro_daño_otro": "Retiro Daño/Otro", nfu: "NFU", otro: "Otro / sin bodega" };
-    const filas = { nuevo: [], transito: [], reparacion: [], retiro_desgaste: [], para_recauchar: [], recauchado: [], en_equipos: [], "retiro_daño_otro": [], nfu: [], otro: [] };
-    const cantidad = { nuevo: 0, transito: 0, reparacion: 0, retiro_desgaste: 0, para_recauchar: 0, recauchado: 0, en_equipos: 0, "retiro_daño_otro": 0, nfu: 0, otro: 0 };
+    const labels = { nuevo: "Nuevo", transito: "Tránsito", reparacion: "En reparación", retiro_desgaste: "Retiro Desgaste", para_recauchar: "Para Recauchar", recauchado: "Recauchado", en_equipos: "En equipos", retiro_dano: "Retiro Daño", retiro_otro: "Retiro Otro", nfu: "NFU", otro: "Otro / sin bodega" };
+    const filas = { nuevo: [], transito: [], reparacion: [], retiro_desgaste: [], para_recauchar: [], recauchado: [], en_equipos: [], retiro_dano: [], retiro_otro: [], nfu: [], otro: [] };
+    const cantidad = { nuevo: 0, transito: 0, reparacion: 0, retiro_desgaste: 0, para_recauchar: 0, recauchado: 0, en_equipos: 0, retiro_dano: 0, retiro_otro: 0, nfu: 0, otro: 0 };
     (data || []).forEach(n => {
       const key = n.equipo_actual ? "en_equipos" : (filas[n.bodega] !== undefined ? n.bodega : "otro");
       const p = precioDeMarca(precios, n.marca);
@@ -1279,7 +1279,8 @@ function DashboardTecnico({ empresaCtl, onAbrirMecanico, setView, adminUser }) {
         <KpiCard label="Para Recauchar" value={stock ? stock.para_recauchar : null} />
         <KpiCard label="Recauchados" value={stock ? stock.recauchado : null} />
         <KpiCard label="En equipo" value={stock ? stock.en_equipo : null} />
-        <KpiCard label="Retiro Daño/Otro" value={stock ? stock["retiro_daño_otro"] : null} />
+        <KpiCard label="Retiro Daño" value={stock ? stock.retiro_dano : null} />
+        <KpiCard label="Retiro Otro" value={stock ? stock.retiro_otro : null} />
         <KpiCard label="NFU" value={stock ? stock.nfu : null} />
       </div>
 
@@ -3347,15 +3348,15 @@ const BODEGA_BUCKETS = [
   { id: "nuevo", label: "Nuevos" }, { id: "transito", label: "Tránsito" },
   { id: "reparacion", label: "Reparación" }, { id: "retiro_desgaste", label: "Retiro Desgaste" },
   { id: "para_recauchar", label: "Para Recauchar" }, { id: "recauchado", label: "Recauchados" },
-  { id: "en_equipo", label: "En equipo" }, { id: "retiro_daño_otro", label: "Retiro Daño/Otro" },
-  { id: "nfu", label: "NFU" }
+  { id: "en_equipo", label: "En equipo" }, { id: "retiro_dano", label: "Retiro Daño" },
+  { id: "retiro_otro", label: "Retiro Otro" }, { id: "nfu", label: "NFU" }
 ];
 async function fetchBodegaCounts(clienteId) {
   let q = sb.from("neumaticos").select("bodega,equipo_actual").eq("activo", true);
   q = filtroCliente(q, clienteId);
   const { data, error } = await q;
   if (error) throw error;
-  const counts = { nuevo: 0, transito: 0, reparacion: 0, retiro_desgaste: 0, para_recauchar: 0, recauchado: 0, en_equipo: 0, "retiro_daño_otro": 0, nfu: 0 };
+  const counts = { nuevo: 0, transito: 0, reparacion: 0, retiro_desgaste: 0, retiro_dano: 0, retiro_otro: 0, para_recauchar: 0, recauchado: 0, en_equipo: 0, nfu: 0 };
   (data || []).forEach(n => {
     if (n.equipo_actual) counts.en_equipo++;
     else if (n.bodega && counts[n.bodega] != null) counts[n.bodega]++;
@@ -3630,14 +3631,15 @@ function diasDesde(fechaISO) {
   const ms = Date.now() - new Date(fechaISO + "T00:00:00").getTime();
   return Math.floor(ms / 86400000);
 }
-function ChecklistBodegaSeccion({ filtro, pushToast, onCambio, bodegaOrigen, columnas, sinDatosLabel, botonLabel, tituloConfirm, descConfirm, toastLabel, requiereJustificacion, aplicar }) {
+function BodegaMultiAccionSeccion({ filtro, pushToast, onCambio, bodegaOrigen, columnas, sinDatosLabel, acciones, resaltarRiesgo, esSuperAdmin }) {
   const [lista, setLista] = useState([]);
   const [extra, setExtra] = useState({});
   const [sel, setSel] = useState({});
   const [loading, setLoading] = useState(true);
-  const [confirmando, setConfirmando] = useState(false);
+  const [accionActiva, setAccionActiva] = useState(null);
   const [justificacion, setJustificacion] = useState("");
   const [saving, setSaving] = useState(false);
+  const [fotoVer, setFotoVer] = useState(null);
 
   async function cargar() {
     setLoading(true);
@@ -3651,16 +3653,22 @@ function ChecklistBodegaSeccion({ filtro, pushToast, onCambio, bodegaOrigen, col
   useEffect(() => { cargar(); }, [filtro, bodegaOrigen]);
 
   const seleccionados = Object.keys(sel).filter(k => sel[k]);
+  const filasSeleccionadas = lista.filter(n => sel[n.id_neumatico]);
+  function accionBloqueada(accion) {
+    if (esSuperAdmin || !accion.deshabilitadaSi) return false;
+    return filasSeleccionadas.some(n => accion.deshabilitadaSi(n, extra));
+  }
 
   async function confirmar() {
-    if (requiereJustificacion && !justificacion.trim()) return;
+    if (!accionActiva) return;
+    if (accionActiva.requiereJustificacion && !justificacion.trim()) return;
     setSaving(true);
     try {
-      await aplicar(seleccionados, lista, justificacion.trim());
-      pushToast(`✓ ${toastLabel(seleccionados.length)}`);
-      setConfirmando(false); setJustificacion("");
+      await accionActiva.aplicar(seleccionados, lista, justificacion.trim());
+      pushToast(`✓ ${accionActiva.toastLabel(seleccionados.length)}`);
+      setAccionActiva(null); setJustificacion("");
       cargar(); onCambio && onCambio();
-    } catch (e) { console.error("No se pudo confirmar el pase", e); }
+    } catch (e) { console.error("No se pudo aplicar la accion de bodega", e); }
     setSaving(false);
   }
 
@@ -3674,83 +3682,207 @@ function ChecklistBodegaSeccion({ filtro, pushToast, onCambio, bodegaOrigen, col
             {columnas.headers.map(h => <th key={h} className="font-semibold py-3 px-4">{h}</th>)}
           </tr></thead>
           <tbody>
-            {lista.map(n => (
-              <tr key={n.id_neumatico} className="border-b border-bd last:border-0">
-                <td className="py-2.5 px-4"><input type="checkbox" checked={!!sel[n.id_neumatico]} onChange={e => setSel(s => ({ ...s, [n.id_neumatico]: e.target.checked }))} /></td>
-                {columnas.renderRow(n, extra)}
-              </tr>
-            ))}
+            {lista.map(n => {
+              const mm = columnas.mmDe ? columnas.mmDe(n, extra) : null;
+              const enRiesgo = resaltarRiesgo && mm != null && mm <= 3;
+              return (
+                <tr key={n.id_neumatico} className={cx("border-b border-bd last:border-0", enRiesgo && "bg-red-100/60 border-l-4 border-red-500")}>
+                  <td className="py-2.5 px-4"><input type="checkbox" checked={!!sel[n.id_neumatico]} onChange={e => setSel(s => ({ ...s, [n.id_neumatico]: e.target.checked }))} /></td>
+                  {columnas.renderRow(n, extra, setFotoVer)}
+                </tr>
+              );
+            })}
             {!lista.length && <tr><td colSpan={columnas.headers.length + 1} className="text-center text-muted py-8">{sinDatosLabel}</td></tr>}
           </tbody>
         </table>
       </div>
-      <Button disabled={!seleccionados.length} onClick={() => setConfirmando(true)}>{botonLabel} ({seleccionados.length})</Button>
-      {confirmando && (
-        <Modal title={tituloConfirm} onClose={() => setConfirmando(false)}>
-          <p className="text-[14px] text-[#374151] mb-4">{descConfirm(seleccionados.length)}</p>
-          {requiereJustificacion && (
+      {!!acciones.length && (
+        <div className="flex flex-wrap gap-2">
+          {acciones.map(accion => (
+            <Button key={accion.id} variant={accion.variant || "primary"} className="h-11 px-4 text-[13.5px]"
+              disabled={!seleccionados.length || accionBloqueada(accion)} onClick={() => setAccionActiva(accion)}>
+              {accion.label} ({seleccionados.length})
+            </Button>
+          ))}
+        </div>
+      )}
+      {accionActiva && (
+        <Modal title={accionActiva.tituloConfirm} onClose={() => { setAccionActiva(null); setJustificacion(""); }}>
+          <p className="text-[14px] text-[#374151] mb-4">{accionActiva.descConfirm(seleccionados.length)}</p>
+          {accionActiva.requiereJustificacion && (
             <Field label="Justificación" required><TextArea value={justificacion} onChange={e => setJustificacion(e.target.value)} /></Field>
           )}
-          <Button className="w-full mt-4" variant={requiereJustificacion ? "danger" : "primary"} disabled={saving || (requiereJustificacion && !justificacion.trim())} onClick={confirmar}>
+          <Button className="w-full mt-4" variant={accionActiva.variant === "danger" ? "danger" : "primary"}
+            disabled={saving || (accionActiva.requiereJustificacion && !justificacion.trim())} onClick={confirmar}>
             {saving ? <span className="spinner" /> : "Confirmar"}
           </Button>
+        </Modal>
+      )}
+      {fotoVer && (
+        <Modal title="Foto de evidencia" onClose={() => setFotoVer(null)}>
+          <img src={fotoVer} alt="Evidencia" className="w-full rounded-xl border border-bd" />
         </Modal>
       )}
     </div>
   );
 }
-function ReparacionTransitoSeccion({ filtro, pushToast, onCambio }) {
+function accionMoverBodega(filtro, { id, label, variant, bodegaDestino, estadoDestino, origenMov, tituloConfirm, descConfirm, toastLabel, requiereJustificacion, deshabilitadaSi }) {
+  return {
+    id, label, variant, requiereJustificacion: !!requiereJustificacion, deshabilitadaSi, tituloConfirm, descConfirm, toastLabel,
+    aplicar: async (seleccionados, lista, justificacion) => {
+      await sb.from("neumaticos").update({ bodega: bodegaDestino, estado_actual: estadoDestino }).in("id_neumatico", seleccionados);
+      await sb.from("movimientos_bodega").insert(seleccionados.map(id => {
+        const n = lista.find(x => x.id_neumatico === id);
+        return { id: uuid(), cliente_id: n ? n.cliente_id : filtro, fecha: todayISO(), categoria: "neumatico", tipo: "salida", origen: origenMov, numero_fuego: n ? n.numero_fuego : null, motivo: justificacion || null };
+      }));
+    }
+  };
+}
+function RetiroDesgasteSeccion({ filtro, pushToast, onCambio, usaRecauchados, esSuperAdmin }) {
   const columnas = {
-    headers: ["N° fuego", "Marca", "Modelo", "Días en reparación"],
+    headers: ["N° fuego", "Marca", "Modelo", "MM retiro", "Fecha"],
+    fetchExtra: async (fuegos) => {
+      const [mm, fechas] = await Promise.all([
+        fetchUltimoPorFuego("cambio_detalle", "milimetros", { tipo: "sale", motivo_salida: "retiro_desgaste" }, fuegos),
+        fetchUltimoPorFuego("movimientos_bodega", "fecha", {}, fuegos)
+      ]);
+      return { mm, fechas };
+    },
+    mmDe: (n, extra) => extra.mm[n.numero_fuego],
+    renderRow: (n, extra) => (
+      <>
+        <td className="py-2.5 px-4 font-bold">{n.numero_fuego || "-"}</td><td className="py-2.5 px-4">{n.marca || "-"}</td>
+        <td className="py-2.5 px-4">{n.modelo || "-"}</td><td className="py-2.5 px-4">{extra.mm[n.numero_fuego] != null ? extra.mm[n.numero_fuego] : "-"}</td>
+        <td className="py-2.5 px-4">{extra.fechas[n.numero_fuego] ? formatFecha(extra.fechas[n.numero_fuego]) : "-"}</td>
+      </>
+    )
+  };
+  const acciones = [
+    accionMoverBodega(filtro, {
+      id: "nfu", label: "➔ Mandar a NFU", variant: "danger", bodegaDestino: "nfu", estadoDestino: "nfu", origenMov: "pase_nfu", requiereJustificacion: true,
+      tituloConfirm: "Pase a NFU", descConfirm: (n) => `Vas a pasar ${n} neumáticos a NFU (estado final, sin más movimientos). ¿Confirmar?`,
+      toastLabel: (n) => `${n} neumáticos pasados a NFU`
+    })
+  ];
+  if (usaRecauchados) {
+    acciones.push(accionMoverBodega(filtro, {
+      id: "recauchar", label: "➔ Mandar a Recauchar", bodegaDestino: "para_recauchar", estadoDestino: "para_recauchar", origenMov: "pase_para_recauchar",
+      tituloConfirm: "Pase a Para Recauchar", descConfirm: (n) => `Vas a enviar ${n} neumáticos de retiro por desgaste a Para Recauchar. ¿Confirmar?`,
+      toastLabel: (n) => `${n} neumáticos enviados a Para Recauchar`
+    }));
+  }
+  return (
+    <BodegaMultiAccionSeccion filtro={filtro} pushToast={pushToast} onCambio={onCambio} bodegaOrigen="retiro_desgaste" columnas={columnas}
+      sinDatosLabel="No hay neumáticos en retiro por desgaste normal." acciones={acciones} esSuperAdmin={esSuperAdmin} />
+  );
+}
+function columnasRetiroConEvidencia(motivoSalida, extraExtra) {
+  return {
+    headers: ["N° fuego", "Marca", "Modelo", "MM retiro", ...(extraExtra ? extraExtra.headers : []), "Evidencia", "Fecha"],
+    fetchExtra: async (fuegos) => {
+      const [mm, foto, fechas, extra2] = await Promise.all([
+        fetchUltimoPorFuego("cambio_detalle", "milimetros", { tipo: "sale", motivo_salida: motivoSalida }, fuegos),
+        fetchUltimoPorFuego("cambio_detalle", "foto_url", { tipo: "sale", motivo_salida: motivoSalida }, fuegos),
+        fetchUltimoPorFuego("movimientos_bodega", "fecha", {}, fuegos),
+        extraExtra ? extraExtra.fetchExtra(fuegos) : Promise.resolve({})
+      ]);
+      return { mm, foto, fechas, ...extra2 };
+    },
+    mmDe: (n, extra) => extra.mm[n.numero_fuego],
+    renderRow: (n, extra, verFoto) => (
+      <>
+        <td className="py-2.5 px-4 font-bold">{n.numero_fuego || "-"}</td><td className="py-2.5 px-4">{n.marca || "-"}</td>
+        <td className="py-2.5 px-4">{n.modelo || "-"}</td><td className="py-2.5 px-4">{extra.mm[n.numero_fuego] != null ? extra.mm[n.numero_fuego] : "-"}</td>
+        {extraExtra ? extraExtra.renderCeldas(n, extra) : null}
+        <td className="py-2.5 px-4">
+          {extra.foto[n.numero_fuego]
+            ? <button onClick={() => verFoto(extra.foto[n.numero_fuego])} className="text-[11.5px] font-bold text-ink px-2.5 py-1.5 rounded-full bg-[#F3F4F6]">📷 Ver foto</button>
+            : "-"}
+        </td>
+        <td className="py-2.5 px-4">{extra.fechas[n.numero_fuego] ? formatFecha(extra.fechas[n.numero_fuego]) : "-"}</td>
+      </>
+    )
+  };
+}
+function RetiroDanoSeccion({ filtro, pushToast, onCambio, esSuperAdmin }) {
+  const columnas = columnasRetiroConEvidencia("retiro_dano");
+  const acciones = [
+    accionMoverBodega(filtro, {
+      id: "nfu", label: "➔ Mandar a NFU", variant: "danger", bodegaDestino: "nfu", estadoDestino: "nfu", origenMov: "pase_nfu", requiereJustificacion: true,
+      tituloConfirm: "Pase a NFU", descConfirm: (n) => `Vas a pasar ${n} neumáticos a NFU (estado final, sin más movimientos). ¿Confirmar?`,
+      toastLabel: (n) => `${n} neumáticos pasados a NFU`
+    }),
+    accionMoverBodega(filtro, {
+      id: "reparacion", label: "➔ Mandar a Reparación", bodegaDestino: "reparacion", estadoDestino: "reparacion", origenMov: "pase_reparacion",
+      tituloConfirm: "Pase a Reparación", descConfirm: (n) => `Vas a enviar ${n} neumáticos de retiro por daño a Reparación. ¿Confirmar?`,
+      toastLabel: (n) => `${n} neumáticos enviados a Reparación`
+    })
+  ];
+  return (
+    <BodegaMultiAccionSeccion filtro={filtro} pushToast={pushToast} onCambio={onCambio} bodegaOrigen="retiro_dano" columnas={columnas}
+      sinDatosLabel="No hay neumáticos en retiro por daño." acciones={acciones} resaltarRiesgo esSuperAdmin={esSuperAdmin} />
+  );
+}
+function RetiroOtroSeccion({ filtro, pushToast, onCambio, esSuperAdmin }) {
+  const columnas = columnasRetiroConEvidencia("retiro_otro", {
+    headers: ["Motivo"],
+    fetchExtra: (fuegos) => fetchUltimoPorFuego("alertas", "descripcion", { tipo: "baja_prematura" }, fuegos).then(motivos => ({ motivos })),
+    renderCeldas: (n, extra) => <td className="py-2.5 px-4">{extra.motivos[n.numero_fuego] || "-"}</td>
+  });
+  const acciones = [
+    accionMoverBodega(filtro, {
+      id: "nfu", label: "➔ Mandar a NFU", variant: "danger", bodegaDestino: "nfu", estadoDestino: "nfu", origenMov: "pase_nfu", requiereJustificacion: true,
+      tituloConfirm: "Pase a NFU", descConfirm: (n) => `Vas a pasar ${n} neumáticos a NFU (estado final, sin más movimientos). ¿Confirmar?`,
+      toastLabel: (n) => `${n} neumáticos pasados a NFU`
+    }),
+    accionMoverBodega(filtro, {
+      id: "reparacion", label: "➔ Mandar a Reparación", bodegaDestino: "reparacion", estadoDestino: "reparacion", origenMov: "pase_reparacion",
+      tituloConfirm: "Pase a Reparación", descConfirm: (n) => `Vas a enviar ${n} neumáticos de retiro por otro a Reparación. ¿Confirmar?`,
+      toastLabel: (n) => `${n} neumáticos enviados a Reparación`
+    }),
+    accionMoverBodega(filtro, {
+      id: "transito", label: "➔ Mandar a Tránsito Directo", bodegaDestino: "transito", estadoDestino: "transito", origenMov: "pase_transito_directo",
+      deshabilitadaSi: (n, extra) => { const mm = extra.mm[n.numero_fuego]; return mm == null || mm <= 3; },
+      tituloConfirm: "Pase a Tránsito directo", descConfirm: (n) => `Vas a enviar ${n} neumáticos de retiro por otro directo a Tránsito. ¿Confirmar?`,
+      toastLabel: (n) => `${n} neumáticos enviados a Tránsito`
+    })
+  ];
+  return (
+    <BodegaMultiAccionSeccion filtro={filtro} pushToast={pushToast} onCambio={onCambio} bodegaOrigen="retiro_otro" columnas={columnas}
+      sinDatosLabel="No hay neumáticos en retiro por otro." acciones={acciones} resaltarRiesgo esSuperAdmin={esSuperAdmin} />
+  );
+}
+function ReparacionSeccion({ filtro, pushToast, onCambio, esSuperAdmin }) {
+  const columnas = {
+    headers: ["N° fuego", "Marca", "Modelo", "MM actual", "Días en reparación"],
     fetchExtra: async () => ({}),
     renderRow: (n) => (
       <>
         <td className="py-2.5 px-4 font-bold">{n.numero_fuego || "-"}</td><td className="py-2.5 px-4">{n.marca || "-"}</td>
-        <td className="py-2.5 px-4">{n.modelo || "-"}</td><td className="py-2.5 px-4">{diasDesde(n.fecha_ingreso) != null ? `${diasDesde(n.fecha_ingreso)} días` : "-"}</td>
+        <td className="py-2.5 px-4">{n.modelo || "-"}</td><td className="py-2.5 px-4">{n.milimetros != null ? n.milimetros : "-"}</td>
+        <td className="py-2.5 px-4">{diasDesde(n.fecha_ingreso) != null ? `${diasDesde(n.fecha_ingreso)} días` : "-"}</td>
       </>
     )
   };
-  async function aplicar(seleccionados, lista) {
-    await sb.from("neumaticos").update({ bodega: "transito", estado_actual: "transito" }).in("id_neumatico", seleccionados);
-    await sb.from("movimientos_bodega").insert(seleccionados.map(id => {
-      const n = lista.find(x => x.id_neumatico === id);
-      return { id: uuid(), cliente_id: n ? n.cliente_id : filtro, fecha: todayISO(), categoria: "neumatico", tipo: "salida", origen: "pase_reparacion_transito", numero_fuego: n ? n.numero_fuego : null };
-    }));
-  }
+  const acciones = [
+    accionMoverBodega(filtro, {
+      id: "transito", label: "✅ Reparado ➔ Tránsito", bodegaDestino: "transito", estadoDestino: "transito", origenMov: "pase_reparacion_transito",
+      deshabilitadaSi: (n) => !(n.milimetros > 3),
+      tituloConfirm: "Pase a Tránsito", descConfirm: (n) => `Vas a pasar ${n} neumáticos de reparación a tránsito. ¿Confirmar?`,
+      toastLabel: (n) => `${n} neumáticos pasados a Tránsito`
+    }),
+    accionMoverBodega(filtro, {
+      id: "nfu", label: "❌ Rechazado ➔ NFU", variant: "danger", bodegaDestino: "nfu", estadoDestino: "nfu", origenMov: "pase_nfu", requiereJustificacion: true,
+      tituloConfirm: "Pase a NFU", descConfirm: (n) => `Vas a pasar ${n} neumáticos rechazados en reparación a NFU (estado final). ¿Confirmar?`,
+      toastLabel: (n) => `${n} neumáticos pasados a NFU`
+    })
+  ];
   return (
-    <ChecklistBodegaSeccion filtro={filtro} pushToast={pushToast} onCambio={onCambio} bodegaOrigen="reparacion" columnas={columnas}
-      sinDatosLabel="No hay neumáticos en reparación." botonLabel="Pasar a Tránsito"
-      tituloConfirm="Pase a Tránsito" descConfirm={(n) => `Vas a pasar ${n} neumáticos de reparación a tránsito. ¿Confirmar?`}
-      toastLabel={(n) => `${n} neumáticos pasados a Tránsito`} requiereJustificacion={false} aplicar={aplicar} />
+    <BodegaMultiAccionSeccion filtro={filtro} pushToast={pushToast} onCambio={onCambio} bodegaOrigen="reparacion" columnas={columnas}
+      sinDatosLabel="No hay neumáticos en reparación." acciones={acciones} esSuperAdmin={esSuperAdmin} />
   );
 }
-function RetiroDesgastePararRecaucharSeccion({ filtro, pushToast, onCambio }) {
-  const columnas = {
-    headers: ["N° fuego", "Marca", "Modelo", "MM retiro", "Fecha"],
-    fetchExtra: (fuegos) => fetchUltimoPorFuego("cambio_detalle", "milimetros", { tipo: "sale", motivo_salida: "retiro_desgaste" }, fuegos),
-    renderRow: (n, extra) => (
-      <>
-        <td className="py-2.5 px-4 font-bold">{n.numero_fuego || "-"}</td><td className="py-2.5 px-4">{n.marca || "-"}</td>
-        <td className="py-2.5 px-4">{n.modelo || "-"}</td><td className="py-2.5 px-4">{extra[n.numero_fuego] != null ? extra[n.numero_fuego] : "-"}</td>
-        <td className="py-2.5 px-4">{n.fecha_ingreso || "-"}</td>
-      </>
-    )
-  };
-  async function aplicar(seleccionados, lista) {
-    await sb.from("neumaticos").update({ bodega: "para_recauchar", estado_actual: "para_recauchar" }).in("id_neumatico", seleccionados);
-    await sb.from("movimientos_bodega").insert(seleccionados.map(id => {
-      const n = lista.find(x => x.id_neumatico === id);
-      return { id: uuid(), cliente_id: n ? n.cliente_id : filtro, fecha: todayISO(), categoria: "neumatico", tipo: "salida", origen: "pase_para_recauchar", numero_fuego: n ? n.numero_fuego : null };
-    }));
-  }
-  return (
-    <ChecklistBodegaSeccion filtro={filtro} pushToast={pushToast} onCambio={onCambio} bodegaOrigen="retiro_desgaste" columnas={columnas}
-      sinDatosLabel="No hay neumáticos en retiro por desgaste." botonLabel="Pasar a Para Recauchar"
-      tituloConfirm="Pase a Para Recauchar" descConfirm={(n) => `Vas a enviar ${n} neumáticos de retiro por desgaste a Para Recauchar. ¿Confirmar?`}
-      toastLabel={(n) => `${n} neumáticos enviados a Para Recauchar`} requiereJustificacion={false} aplicar={aplicar} />
-  );
-}
-function ParaRecaucharRecauchadoSeccion({ filtro, pushToast, onCambio }) {
+function ParaRecaucharSeccion({ filtro, pushToast, onCambio, esSuperAdmin }) {
   const columnas = {
     headers: ["N° fuego", "Marca", "Modelo", "Días en espera"],
     fetchExtra: async () => ({}),
@@ -3761,54 +3893,52 @@ function ParaRecaucharRecauchadoSeccion({ filtro, pushToast, onCambio }) {
       </>
     )
   };
-  async function aplicar(seleccionados, lista) {
-    await sb.from("neumaticos").update({ bodega: "recauchado", estado_actual: "recauchado" }).in("id_neumatico", seleccionados);
-    await sb.from("movimientos_bodega").insert(seleccionados.map(id => {
-      const n = lista.find(x => x.id_neumatico === id);
-      return { id: uuid(), cliente_id: n ? n.cliente_id : filtro, fecha: todayISO(), categoria: "neumatico", tipo: "salida", origen: "pase_recauchado", numero_fuego: n ? n.numero_fuego : null };
-    }));
-  }
+  const acciones = [
+    accionMoverBodega(filtro, {
+      id: "recauchado", label: "➔ Mandar a Recauchado", bodegaDestino: "recauchado", estadoDestino: "recauchado", origenMov: "pase_recauchado",
+      tituloConfirm: "Pase a Recauchado", descConfirm: (n) => `Vas a pasar ${n} neumáticos de Para Recauchar a Recauchado. ¿Confirmar?`,
+      toastLabel: (n) => `${n} neumáticos pasados a Recauchado`
+    })
+  ];
   return (
-    <ChecklistBodegaSeccion filtro={filtro} pushToast={pushToast} onCambio={onCambio} bodegaOrigen="para_recauchar" columnas={columnas}
-      sinDatosLabel="No hay neumáticos esperando recauchado." botonLabel="Confirmar pase a Recauchado"
-      tituloConfirm="Pase a Recauchado" descConfirm={(n) => `Vas a pasar ${n} neumáticos de Para Recauchar a Recauchado. ¿Confirmar?`}
-      toastLabel={(n) => `${n} neumáticos pasados a Recauchado`} requiereJustificacion={false} aplicar={aplicar} />
+    <BodegaMultiAccionSeccion filtro={filtro} pushToast={pushToast} onCambio={onCambio} bodegaOrigen="para_recauchar" columnas={columnas}
+      sinDatosLabel="No hay neumáticos esperando recauchado." acciones={acciones} esSuperAdmin={esSuperAdmin} />
   );
 }
-function RetiroDanoOtroNfuSeccion({ filtro, pushToast, onCambio }) {
+function NfuSeccion({ filtro, pushToast, onCambio, esSuperAdmin }) {
   const columnas = {
-    headers: ["N° fuego", "Marca", "Modelo", "Motivo", "Fecha"],
-    fetchExtra: (fuegos) => fetchUltimoPorFuego("alertas", "descripcion", { tipo: "baja_prematura" }, fuegos),
+    headers: ["N° fuego", "Marca", "Modelo", "Fecha"],
+    fetchExtra: (fuegos) => fetchUltimoPorFuego("movimientos_bodega", "fecha", {}, fuegos).then(fechas => ({ fechas })),
     renderRow: (n, extra) => (
       <>
         <td className="py-2.5 px-4 font-bold">{n.numero_fuego || "-"}</td><td className="py-2.5 px-4">{n.marca || "-"}</td>
-        <td className="py-2.5 px-4">{n.modelo || "-"}</td><td className="py-2.5 px-4">{extra[n.numero_fuego] || "-"}</td>
-        <td className="py-2.5 px-4">{n.fecha_ingreso || "-"}</td>
+        <td className="py-2.5 px-4">{n.modelo || "-"}</td>
+        <td className="py-2.5 px-4">{extra.fechas[n.numero_fuego] ? formatFecha(extra.fechas[n.numero_fuego]) : "-"}</td>
       </>
     )
   };
-  async function aplicar(seleccionados, lista, justificacion) {
-    await sb.from("neumaticos").update({ bodega: "nfu", estado_actual: "nfu" }).in("id_neumatico", seleccionados);
-    await sb.from("movimientos_bodega").insert(seleccionados.map(id => {
-      const n = lista.find(x => x.id_neumatico === id);
-      return { id: uuid(), cliente_id: n ? n.cliente_id : filtro, fecha: todayISO(), categoria: "neumatico", tipo: "salida", origen: "pase_nfu", numero_fuego: n ? n.numero_fuego : null, motivo: justificacion };
-    }));
-  }
+  const acciones = esSuperAdmin ? [
+    accionMoverBodega(filtro, {
+      id: "transito", label: "🔧 Corrección: Mandar a Tránsito", bodegaDestino: "transito", estadoDestino: "transito", origenMov: "correccion_superadmin",
+      tituloConfirm: "Corrección de SuperAdmin", descConfirm: (n) => `Vas a corregir ${n} neumáticos de NFU de vuelta a Tránsito. Esta es una corrección operativa excepcional. ¿Confirmar?`,
+      toastLabel: (n) => `${n} neumáticos corregidos a Tránsito`, requiereJustificacion: true
+    })
+  ] : [];
   return (
-    <ChecklistBodegaSeccion filtro={filtro} pushToast={pushToast} onCambio={onCambio} bodegaOrigen="retiro_daño_otro" columnas={columnas}
-      sinDatosLabel="No hay neumáticos en retiro por daño/otro." botonLabel="Pasar a NFU"
-      tituloConfirm="Pase a NFU" descConfirm={(n) => `Vas a pasar ${n} neumáticos a NFU (estado final, sin más movimientos). ¿Confirmar?`}
-      toastLabel={(n) => `${n} neumáticos pasados a NFU`} requiereJustificacion={true} aplicar={aplicar} />
+    <BodegaMultiAccionSeccion filtro={filtro} pushToast={pushToast} onCambio={onCambio} bodegaOrigen="nfu" columnas={columnas}
+      sinDatosLabel="No hay neumáticos en NFU." acciones={acciones} esSuperAdmin={esSuperAdmin} />
   );
 }
-const INVENTARIO_TABS = [
+const INVENTARIO_TABS_BASE = [
   { id: "resumen", label: "Resumen" }, { id: "insumos", label: "Insumos" },
-  { id: "reparacion_transito", label: "Reparación → Tránsito" },
-  { id: "retiro_desgaste_recauchar", label: "Retiro Desgaste → Para Recauchar" },
-  { id: "para_recauchar_recauchado", label: "Para Recauchar → Recauchado" },
-  { id: "retiro_dano_nfu", label: "Retiro Daño/Otro → NFU" }
+  { id: "retiro_desgaste", label: "Retiro por Desgaste Normal" },
+  { id: "retiro_dano", label: "Retiro por Daño" },
+  { id: "retiro_otro", label: "Retiro por Otro" },
+  { id: "reparacion", label: "En Reparación" },
+  { id: "para_recauchar", label: "Para Recauchar" },
+  { id: "nfu", label: "NFU" }
 ];
-function InventarioMaestroView({ empresaCtl, onBack }) {
+function InventarioMaestroView({ empresaCtl, onBack, adminUser }) {
   const { filtro } = empresaCtl;
   const [tab, setTab] = useState("resumen");
   const [counts, setCounts] = useState(null);
@@ -3819,6 +3949,18 @@ function InventarioMaestroView({ empresaCtl, onBack }) {
   const [modalEntradaNeumaticos, setModalEntradaNeumaticos] = useState(false);
   const [salidaInsumo, setSalidaInsumo] = useState(null);
   const [pushToast, toastNode] = useToasts();
+  const [usaRecauchados, setUsaRecauchados] = useState(true);
+  const esSuperAdmin = adminUser && adminUser.rol === "superadmin";
+
+  useEffect(() => {
+    if (filtro && filtro !== "todas") db.fetchConfig(filtro).then(cfg => setUsaRecauchados(cfg.usa_recauchados !== false)).catch(() => {});
+    else setUsaRecauchados(true);
+  }, [filtro]);
+
+  const tabs = React.useMemo(() => {
+    if (usaRecauchados) return INVENTARIO_TABS_BASE;
+    return INVENTARIO_TABS_BASE.filter(t => t.id !== "para_recauchar");
+  }, [usaRecauchados]);
 
   function cargar() {
     setLoading(true);
@@ -3841,7 +3983,7 @@ function InventarioMaestroView({ empresaCtl, onBack }) {
         <Button className="h-11 px-4 text-[13.5px]" onClick={() => setModalEntradaNeumaticos(true)}>+ Entrada de neumáticos</Button>
       </div>
       <div className="flex gap-2 mb-5 overflow-x-auto">
-        {INVENTARIO_TABS.map(t => (
+        {tabs.map(t => (
           <button key={t.id} onClick={() => setTab(t.id)} className={cx("px-4 py-2 rounded-full text-[13px] font-bold whitespace-nowrap", tab === t.id ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{t.label}</button>
         ))}
       </div>
@@ -3875,10 +4017,12 @@ function InventarioMaestroView({ empresaCtl, onBack }) {
               </div>
             </div>
           )}
-          {tab === "reparacion_transito" && <ReparacionTransitoSeccion filtro={filtro} pushToast={pushToast} onCambio={cargar} />}
-          {tab === "retiro_desgaste_recauchar" && <RetiroDesgastePararRecaucharSeccion filtro={filtro} pushToast={pushToast} onCambio={cargar} />}
-          {tab === "para_recauchar_recauchado" && <ParaRecaucharRecauchadoSeccion filtro={filtro} pushToast={pushToast} onCambio={cargar} />}
-          {tab === "retiro_dano_nfu" && <RetiroDanoOtroNfuSeccion filtro={filtro} pushToast={pushToast} onCambio={cargar} />}
+          {tab === "retiro_desgaste" && <RetiroDesgasteSeccion filtro={filtro} pushToast={pushToast} onCambio={cargar} usaRecauchados={usaRecauchados} esSuperAdmin={esSuperAdmin} />}
+          {tab === "retiro_dano" && <RetiroDanoSeccion filtro={filtro} pushToast={pushToast} onCambio={cargar} esSuperAdmin={esSuperAdmin} />}
+          {tab === "retiro_otro" && <RetiroOtroSeccion filtro={filtro} pushToast={pushToast} onCambio={cargar} esSuperAdmin={esSuperAdmin} />}
+          {tab === "reparacion" && <ReparacionSeccion filtro={filtro} pushToast={pushToast} onCambio={cargar} esSuperAdmin={esSuperAdmin} />}
+          {tab === "para_recauchar" && usaRecauchados && <ParaRecaucharSeccion filtro={filtro} pushToast={pushToast} onCambio={cargar} esSuperAdmin={esSuperAdmin} />}
+          {tab === "nfu" && <NfuSeccion filtro={filtro} pushToast={pushToast} onCambio={cargar} esSuperAdmin={esSuperAdmin} />}
         </>
       )}
       {modalEntrada && (
@@ -4081,11 +4225,11 @@ function HerramientasMaestroView({ empresaCtl, onBack }) {
 /* =====================================================================
    MAESTROS · MENU PRINCIPAL
 ===================================================================== */
-function MaestrosView({ empresaCtl }) {
+function MaestrosView({ empresaCtl, adminUser }) {
   const [sub, setSub] = useState(null);
   if (sub === "mecanicos") return <MecanicosMaestroView empresaCtl={empresaCtl} onBack={() => setSub(null)} />;
   if (sub === "proveedores") return <ProveedoresMaestroView empresaCtl={empresaCtl} onBack={() => setSub(null)} />;
-  if (sub === "inventario") return <InventarioMaestroView empresaCtl={empresaCtl} onBack={() => setSub(null)} />;
+  if (sub === "inventario") return <InventarioMaestroView empresaCtl={empresaCtl} onBack={() => setSub(null)} adminUser={adminUser} />;
   if (sub === "herramientas") return <HerramientasMaestroView empresaCtl={empresaCtl} onBack={() => setSub(null)} />;
   return (
     <div>
@@ -6391,7 +6535,7 @@ function AdminApp({ user, onLogout }) {
   else if (view === "jornada") body = <JornadaView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} />;
   else if (view === "productividad") body = <ProductividadView key={refreshToken} empresaCtl={empresaCtl} esSuperAdmin={true} />;
   else if (view === "costos") body = <CostosView key={refreshToken} empresaCtl={empresaCtl} />;
-  else if (view === "maestros") body = <MaestrosView key={refreshToken} empresaCtl={empresaCtl} />;
+  else if (view === "maestros") body = <MaestrosView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} />;
   else if (view === "alertas") body = <AlertasAdminView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} setView={setView} />;
   else if (view === "clientes") body = <ClientesView key={refreshToken} empresaCtl={empresaCtl} />;
   else if (view === "usuarios") body = <UsuariosView key={refreshToken} empresaCtl={empresaCtl} />;
