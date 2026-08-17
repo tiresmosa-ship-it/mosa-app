@@ -1696,15 +1696,15 @@ function generarRecomendaciones(posData, axleCfg, equipoTipo, cfg) {
   });
 
   const conPsiFuera = Object.values(posData).filter(d => (d.motivos || []).some(m => m.startsWith("psi"))).sort((a, b) => a.posicion - b.posicion);
-  conPsiFuera.forEach(d => recs.push({ id: "psi_" + d.posicion, key: "rec_calibrar_psi", texto: `Calibrar presión de aire en P${d.posicion} (actual ${d.psi} psi)` }));
+  conPsiFuera.forEach(d => recs.push({ id: uuid(), key: "rec_calibrar_psi", texto: `Calibrar presión de aire en P${d.posicion} (actual ${d.psi} psi)` }));
 
   const criticos = Object.values(posData).filter(d => d.status === "alerta" && (d.motivos || []).some(m => m.startsWith("mm"))).sort((a, b) => a.posicion - b.posicion);
-  criticos.forEach(d => recs.push({ id: "cambiar_" + d.posicion, key: "rec_cambiar_neumaticos", texto: `Cambiar neumático en P${d.posicion} (${d.minMM} mm)` }));
+  criticos.forEach(d => recs.push({ id: uuid(), key: "rec_cambiar_neumaticos", texto: `Cambiar neumático en P${d.posicion} (${d.minMM} mm)` }));
 
   // Requerimiento 1 (motor de reglas): desgaste irregular detectado en la
   // auditoria (tipo_desgaste, ver PosicionModal) -> tarea de revision/rotacion.
   const irregulares = Object.values(posData).filter(d => d.tipo_desgaste === "irregular").sort((a, b) => a.posicion - b.posicion);
-  irregulares.forEach(d => recs.push({ id: "irregular_" + d.posicion, key: "rec_revisar_irregular", texto: `Revisar / rotar posición P${d.posicion} (desgaste irregular)` }));
+  irregulares.forEach(d => recs.push({ id: uuid(), key: "rec_revisar_irregular", texto: `Revisar / rotar posición P${d.posicion} (desgaste irregular)` }));
 
   axleCfg.groups.forEach((grupo, i) => {
     const mms = grupo.map(p => posData[p] && posData[p].minMM).filter(v => v != null);
@@ -1713,12 +1713,19 @@ function generarRecomendaciones(posData, axleCfg, equipoTipo, cfg) {
     if (max > 0 && ((max - min) / max) * 100 >= cfg.mm_rotacion_pct) {
       const row = axleCfg.rows[i];
       const label = row ? row.label : `Eje ${i + 1}`;
-      if (row && row.type === "D") recs.push({ id: "rot_" + i, key: "rec_rotar_delanteros", texto: `Rotar neumáticos delanteros (desgaste desparejo, eje ${label})` });
-      else recs.push({ id: "rot_" + i, key: equipoTipo === "SEMI" ? `rec_rotar_semi_e${i + 1}` : "rec_rotar_traccionales", texto: `Rotar neumáticos del eje ${label} (desgaste desparejo)` });
+      // Bug de seleccion/accion masiva en Tareas Pendientes: estos ids eran
+      // deterministicos ("psi_"+pos, "cambiar_"+pos, "rot_"+i, etc.), asi que
+      // dos tareas generadas en distintas auditorias para la misma posicion/
+      // eje terminaban con el MISMO id al consolidarse en un solo checklist
+      // (ver consolidarTareasPendientes) -- eso hacia que tildar o derivar
+      // una tarea a Pendiente afectara a todas las que compartian ese id.
+      // Cada tarea ahora nace con un uuid propio, unico e independiente.
+      if (row && row.type === "D") recs.push({ id: uuid(), key: "rec_rotar_delanteros", texto: `Rotar neumáticos delanteros (desgaste desparejo, eje ${label})` });
+      else recs.push({ id: uuid(), key: equipoTipo === "SEMI" ? `rec_rotar_semi_e${i + 1}` : "rec_rotar_traccionales", texto: `Rotar neumáticos del eje ${label} (desgaste desparejo)` });
     }
   });
 
-  if (!recs.length) recs.push({ id: "ok", key: null, texto: "Todo en orden, sin tareas pendientes" });
+  if (!recs.length) recs.push({ id: uuid(), key: null, texto: "Todo en orden, sin tareas pendientes" });
   return { recs, posicionesAlerta };
 }
 

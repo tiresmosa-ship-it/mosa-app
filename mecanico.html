@@ -2206,6 +2206,10 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
 
       <p className="font-bold text-[15px] mb-2">Instructivo</p>
       <div className="space-y-2 mb-3">
+        {/* Requerimiento: checkbox y "A Pendiente" operan exclusivamente sobre
+            c.id -- el bug de seleccion masiva era que algunas tareas
+            compartian un id deterministico (posicion/eje) en vez de uno
+            propio, ver generarRecomendaciones en js/supabase.js. */}
         {checklist.map(c => {
           // HC-9: si la tarea menciona una posicion especifica ("posición N"/"pos N",
           // o "PN" que es el formato real de generarRecomendaciones, ej. "en P3 (...")
@@ -3373,7 +3377,7 @@ function MecanicoApp({ user }) {
           // bug que pide arreglar Fix 2). r.key existe solo en recomendaciones
           // reales.
           const checklist = [
-            ...recsInfo.recs.filter(r => r.key).map(r => ({ id: r.id, texto: r.texto, done: false, extra: false })),
+            ...recsInfo.recs.filter(r => r.key).map(r => ({ id: r.id || uuid(), texto: r.texto, done: false, extra: false })),
             ...(tareasExtra || []).map(t => ({ id: uuid(), texto: t.texto, done: false, extra: true, origen: t.origen || null }))
           ];
           let discrepanciasNeumaticos = [];
