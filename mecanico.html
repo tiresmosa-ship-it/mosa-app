@@ -185,7 +185,8 @@ function Card({ className = "", children }) {
 function Badge({ children, color = "gray" }) {
   const colors = {
     gray: "bg-[#F3F4F6] text-[#374151]", green: "bg-[#DCFCE7] text-[#15803D]",
-    red: "bg-[#FEE2E2] text-[#B91C1C]", amber: "bg-[#FEF3C7] text-[#92400E]", black: "bg-ink text-white"
+    red: "bg-[#FEE2E2] text-[#B91C1C]", amber: "bg-[#FEF3C7] text-[#92400E]", black: "bg-ink text-white",
+    blue: "bg-[#DBEAFE] text-[#1D4ED8]"
   };
   return <span className={cx("px-3 py-1 rounded-full text-[12px] font-bold", colors[color])}>{children}</span>;
 }
@@ -706,6 +707,7 @@ function CheckDiario({ user, clienteId, onDone, cfg }) {
 function SeleccionEquipo({ clienteId, cfg, onPick }) {
   const [equipos, setEquipos] = useState(() => getCache(LS.equipos(clienteId), []));
   const [estadosByEquipo, setEstadosByEquipo] = useState({});
+  const [pendientesByEquipo, setPendientesByEquipo] = useState({});
   const [filter, setFilter] = useState("todos");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
@@ -717,15 +719,20 @@ function SeleccionEquipo({ clienteId, cfg, onPick }) {
         const eqs = await db.fetchEquipos(clienteId);
         if (cancel) return;
         setEquipos(eqs);
-        const estados = await db.fetchEstadoAuditorias(clienteId);
-        if (!cancel) setEstadosByEquipo(estados);
+        const [estados, pendientes] = await Promise.all([
+          db.fetchEstadoAuditorias(clienteId),
+          db.fetchTareasPendientesPorEquipo(clienteId).catch(e => { console.error(e); return {}; })
+        ]);
+        if (!cancel) { setEstadosByEquipo(estados); setPendientesByEquipo(pendientes); }
       } catch (e) { console.error(e); } finally { if (!cancel) setLoading(false); }
     })();
     return () => { cancel = true; };
   }, [clienteId]);
 
+  const estadoDe = (eq) => equipoAuditEstado(estadosByEquipo[eq.id_equipo], cfg.meses_vencimiento_auditoria, !!pendientesByEquipo[eq.id_equipo]);
+
   const filtered = equipos.filter(eq => {
-    const estado = equipoAuditEstado(estadosByEquipo[eq.id_equipo], cfg.meses_vencimiento_auditoria);
+    const estado = estadoDe(eq);
     if (filter !== "todos" && filter !== estado) return false;
     if (search) {
       const s = search.toLowerCase();
@@ -742,14 +749,14 @@ function SeleccionEquipo({ clienteId, cfg, onPick }) {
       </div>
       <TextInput placeholder="Buscar por patente o número interno" value={search} onChange={e => setSearch(e.target.value)} className="mb-4" />
       <div className="flex gap-2 mb-5 overflow-x-auto">
-        {[["todos", "Todos"], ["al_dia", "Al día"], ["abierta", "Aud. Abierta"], ["vencida", "Aud. Vencida"], ["sin_auditoria", "Sin Auditoría"]].map(([k, l]) => (
+        {[["todos", "Todos"], ["al_dia", "Al día"], ["pendientes", "Tareas Pendientes"], ["abierta", "Aud. Abierta"], ["vencida", "Aud. Vencida"], ["sin_auditoria", "Sin Auditoría"]].map(([k, l]) => (
           <button key={k} onClick={() => setFilter(k)} className={cx("px-4 py-2 rounded-full text-[13px] font-bold whitespace-nowrap", filter === k ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{l}</button>
         ))}
       </div>
       {loading && <div className="flex justify-center py-10"><span className="spinner" /></div>}
       <div className="space-y-3">
         {filtered.map(eq => {
-          const estado = equipoAuditEstado(estadosByEquipo[eq.id_equipo], cfg.meses_vencimiento_auditoria);
+          const estado = estadoDe(eq);
           return (
             <button key={eq.id_equipo} onClick={() => onPick(eq)} className="w-full text-left bg-white rounded-[20px] border border-bd shadow-card p-4 flex items-center gap-3">
               <div className="w-[52px] h-[52px] rounded-2xl bg-[#F3F4F6] flex items-center justify-center shrink-0"><Icon.truck width="26" height="26" /></div>
@@ -768,9 +775,19 @@ function SeleccionEquipo({ clienteId, cfg, onPick }) {
 }
 
 function AccionEquipo({ equipo, estadoInfo, onClose, onAuditoria, onContinuarCambio }) {
+  // Requerimiento 2: las tareas pendientes acumuladas no se cargan directo --
+  // solo se avisan aca; el mecanico siempre pasa primero por Auditoria, que
+  // es donde se consolidan y terminan apareciendo en la Hoja de Cambio.
+  const tareasPendientes = (estadoInfo && estadoInfo.tareasPendientes) || 0;
   return (
     <Modal title={`${equipo.numero_interno || ""} · ${equipo.patente}`} onClose={onClose}>
       <div className="space-y-3">
+        {tareasPendientes > 0 && !(estadoInfo && estadoInfo.enProcesoHoy) && (
+          <div className="bg-[#FEF3C7] rounded-xl px-3 py-2.5">
+            <p className="text-[13px] font-bold text-[#92400E]">🟡 {tareasPendientes} tarea{tareasPendientes !== 1 ? "s" : ""} pendiente{tareasPendientes !== 1 ? "s" : ""}</p>
+            <p className="text-[12px] text-[#92400E] mt-0.5">Se van a cargar en la Hoja de Cambio después de completar la Auditoría.</p>
+          </div>
+        )}
         <Button className="w-full" variant={estadoInfo && estadoInfo.vencida ? "danger" : "primary"} onClick={onAuditoria}><Icon.audit width="20" height="20" /> Auditoría</Button>
         {estadoInfo && estadoInfo.enProcesoHoy && (
           <Button variant="subtle" className="w-full" onClick={onContinuarCambio}><Icon.swap width="20" height="20" /> Continuar hoja de cambio</Button>
@@ -3349,7 +3366,7 @@ function MecanicoApp({ user }) {
     body = <PerfilScreen user={user} />;
   } else {
     body = <SeleccionEquipo clienteId={clienteId} cfg={cfg} onPick={async (eq) => {
-      let vencida = false, enProcesoHoy = false;
+      let vencida = false, enProcesoHoy = false, tareasPendientes = 0;
       try {
         const info = await db.fetchEstadoAuditoriaEquipo(eq.id_equipo);
         const estado = equipoAuditEstado(info, cfg.meses_vencimiento_auditoria);
@@ -3359,7 +3376,15 @@ function MecanicoApp({ user }) {
         const receta = await db.fetchRecetaEnProcesoHoy(eq.id_equipo);
         enProcesoHoy = !!receta;
       } catch (e) { console.error(e); }
-      setFlow({ stage: "accion", equipo: eq, estadoInfo: { vencida, enProcesoHoy } });
+      // Requerimiento 2: aunque el equipo tenga tareas pendientes acumuladas,
+      // no se salta la Auditoria -- se muestran aca solo como aviso; se
+      // consolidan y aparecen en la HC recien despues de generar el
+      // instructivo (ver db.consolidarTareasPendientes).
+      try {
+        const pendientes = await db.fetchTareasPendientesEquipo(eq.id_equipo);
+        tareasPendientes = (pendientes || []).length;
+      } catch (e) { console.error(e); }
+      setFlow({ stage: "accion", equipo: eq, estadoInfo: { vencida, enProcesoHoy, tareasPendientes } });
     }} />;
   }
 

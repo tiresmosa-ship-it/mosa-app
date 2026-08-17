@@ -664,6 +664,32 @@ const db = {
     const { error: e2 } = await sb.from("auditorias_receta").update({ posiciones_alerta: { ...pa, tareas_diferidas: [...diferidas, nueva] } }).eq("id", recetaId);
     if (e2) throw e2;
   },
+  // Cantidad de tareas PENDIENTE por equipo, para TODA la flota del cliente
+  // de una sola pasada -- usado por el badge/filtro "Tareas Pendientes" de
+  // la lista de equipos (mecanico.html), analogo a fetchEstadoAuditorias.
+  async fetchTareasPendientesPorEquipo(clienteId) {
+    const { data: eqs, error: eErr } = await sb.from("equipos").select("id_equipo").eq("cliente_id", clienteId).eq("activo", true);
+    if (eErr) throw eErr;
+    const equipoIds = (eqs || []).map(e => e.id_equipo);
+    if (!equipoIds.length) return {};
+    const { data: auds, error: eAud } = await sb.from("auditorias").select("id_auditoria,equipo_id").in("equipo_id", equipoIds);
+    if (eAud) throw eAud;
+    const audEquipoMap = {};
+    (auds || []).forEach(a => { audEquipoMap[a.id_auditoria] = a.equipo_id; });
+    const audIds = Object.keys(audEquipoMap);
+    if (!audIds.length) return {};
+    const { data: recetas, error: eRec } = await sb.from("auditorias_receta").select("auditoria_id,posiciones_alerta").in("auditoria_id", audIds);
+    if (eRec) throw eRec;
+    const resultado = {};
+    (recetas || []).forEach(r => {
+      const equipoId = audEquipoMap[r.auditoria_id];
+      if (!equipoId) return;
+      const diferidas = Array.isArray((r.posiciones_alerta || {}).tareas_diferidas) ? r.posiciones_alerta.tareas_diferidas : [];
+      const count = diferidas.filter(t => t.estado === "PENDIENTE").length;
+      if (count) resultado[equipoId] = (resultado[equipoId] || 0) + count;
+    });
+    return resultado;
+  },
   // Todas las tareas PENDIENTE derivadas para este equipo, de cualquier
   // auditoria (no solo la ultima) -- para la pestaña "Tareas Pendientes e
   // Historial" del Admin y el arrastre automatico a la proxima auditoria/HC.
@@ -892,18 +918,29 @@ function dentroDePeriodoAuditoria(fechaISO, meses) {
   limite.setMonth(limite.getMonth() - (parseFloat(meses) || 0));
   return new Date(fechaISO + "T00:00:00") >= limite;
 }
-function equipoAuditEstado(info, mesesVencimiento) {
+// Requerimiento: "Tareas Pendientes" (amarillo) se distingue de "Al dia"
+// (verde) segun si el equipo tiene tareas PENDIENTE acumuladas (ver
+// fetchTareasPendientesPorEquipo) -- ambos casos requieren la auditoria del
+// periodo vigente ya completada; "Aud. Abierta" (azul) es la lectura de
+// posiciones sin terminar, no tiene relacion con las tareas de la HC.
+function equipoAuditEstado(info, mesesVencimiento, tienePendientes) {
   if (!info) return "sin_auditoria";
   if (dentroDePeriodoAuditoria(info.fecha, mesesVencimiento)) {
-    return info.estadoAuditoria === "completada" ? "al_dia" : "abierta";
+    if (info.estadoAuditoria !== "completada") return "abierta";
+    return tienePendientes ? "pendientes" : "al_dia";
   }
   return "vencida";
 }
 function equipoAuditColor(estado) {
-  return estado === "al_dia" ? "green" : estado === "abierta" ? "amber" : "red";
+  if (estado === "al_dia") return "green";
+  if (estado === "pendientes") return "amber";
+  if (estado === "abierta") return "blue";
+  if (estado === "vencida") return "red";
+  return "gray";
 }
 function equipoAuditLabel(estado) {
   if (estado === "al_dia") return "Al día";
+  if (estado === "pendientes") return "Tareas Pendientes";
   if (estado === "abierta") return "Aud. Abierta";
   if (estado === "vencida") return "Aud. Vencida";
   return "Sin Auditoría";
