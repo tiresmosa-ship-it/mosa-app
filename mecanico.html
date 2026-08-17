@@ -130,6 +130,13 @@ const Icon = {
   wrench: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M14.7 6.3a4 4 0 10-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 005.4-5.4l-2.6 2.6-2-2z"/></svg>,
   bandage: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><rect x="3" y="9" width="18" height="6" rx="3" transform="rotate(45 12 12)"/><circle cx="9.5" cy="9.5" r=".6" fill="currentColor"/><circle cx="14.5" cy="14.5" r=".6" fill="currentColor"/></svg>,
   eye: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>,
+  info: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><circle cx="12" cy="12" r="9"/><path d="M12 11v6"/><circle cx="12" cy="7.5" r=".9" fill="currentColor" stroke="none"/></svg>,
+  // Pin de Checkpoint (torque/verificacion) -- amarillo con centro blanco,
+  // usado en la barra/modal de referencias del mapa.
+  checkpointPin: (p) => <svg viewBox="0 0 24 24" {...p}><path fill="#F59E0B" stroke="#92400E" strokeWidth="1.3" d="M12 2C8.1 2 5 5.1 5 9c0 5.2 7 13 7 13s7-7.8 7-13c0-3.9-3.1-7-7-7z"/><circle cx="12" cy="9" r="2.6" fill="#FFFBEB"/></svg>,
+  // Manguera de Alargadera (extensor de valvula) -- trazo negro, usado en la
+  // barra/modal de referencias del mapa.
+  alargaderaManguera: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="#111827" strokeWidth="2" strokeLinecap="round" {...p}><circle cx="3" cy="12" r="1.6" fill="#111827"/><path d="M4.5 12c1.5-3.5 3-3.5 4.5 0s3 3.5 4.5 0 3-3.5 4.5 0"/><circle cx="21" cy="12" r="1.6" fill="#111827"/></svg>,
 };
 
 /* =====================================================================
@@ -862,6 +869,64 @@ function AxleMap({ cfg, posData, selectedPos, onTap, getDragHandlers, pendientes
   );
 }
 
+// Requerimiento: barra unica de referencias del mapa (semaforo de profundidad
+// + accesorios + alertas), compartida entre Auditoria/Instructivo/Cambio en
+// mecanico.html y la ficha de equipo de admin.html. Un solo array de datos
+// alimenta tanto la franja horizontal como el modal de glosario completo.
+const REFERENCIAS_MAPA = [
+  { key: "en_rango", tipo: "circulo", border: "#D1D5DB", bg: "#FFFFFF", label: "En rango", desc: "El neumático está dentro de los parámetros normales de profundidad y presión." },
+  { key: "atencion", tipo: "circulo", border: "#F59E0B", bg: "#FEF3C7", label: "Atención", desc: "Profundidad o presión cerca del límite — conviene hacerle seguimiento." },
+  { key: "critico", tipo: "circulo", border: "#EF4444", bg: "#FEE2E2", label: "Crítico", desc: "Profundidad igual o menor al mínimo permitido — requiere acción inmediata." },
+  { key: "sin_neumatico", tipo: "circulo", border: "#D1D5DB", bg: "#F9FAFB", dashed: true, label: "Sin neumático", desc: "Posición del eje sin neumático montado." },
+  { key: "checkpoint", tipo: "icon", icon: "checkpointPin", label: "Checkpoint", desc: "Verificación de torque (checkpoint) realizada en esta posición. Solo aplica a ruedas externas/sencillas." },
+  { key: "alargadera", tipo: "icon", icon: "alargaderaManguera", label: "Alargadera", desc: "Extensor de válvula colocado. Solo aplica al neumático interno de una rueda doble." },
+  { key: "aprobacion", tipo: "emoji", icon: "🔒", label: "Aprobación", desc: "Discrepancia de neumático detectada en la última auditoría, pendiente de aprobación del supervisor." },
+  { key: "irregular", tipo: "emoji", icon: "⚠️", label: "Irregular", desc: "Desgaste irregular detectado en la última auditoría para esta posición." }
+];
+function ReferenciaSimbolo({ item, size = 12 }) {
+  if (item.tipo === "circulo") {
+    return <span className="rounded-full inline-block shrink-0" style={{ width: size, height: size, border: `2px solid ${item.border}`, background: item.bg, borderStyle: item.dashed ? "dashed" : "solid" }} />;
+  }
+  if (item.tipo === "icon") {
+    const IconCmp = Icon[item.icon];
+    return <IconCmp width={size + 2} height={size + 2} />;
+  }
+  return <span className="leading-none" style={{ fontSize: size }}>{item.icon}</span>;
+}
+function MapaLeyenda({ onAbrirReferencias }) {
+  return (
+    <div className="flex items-center gap-3 mt-5 pt-4 border-t border-bd overflow-x-auto">
+      {REFERENCIAS_MAPA.map(item => (
+        <span key={item.key} className="flex items-center gap-1.5 shrink-0">
+          <ReferenciaSimbolo item={item} />
+          <span className="text-[11px] text-sub whitespace-nowrap">{item.label}</span>
+        </span>
+      ))}
+      <button type="button" onClick={onAbrirReferencias}
+        className="flex items-center gap-1 shrink-0 ml-auto pl-2 text-[11px] font-bold text-ink whitespace-nowrap">
+        <Icon.info width="14" height="14" /> Referencias
+      </button>
+    </div>
+  );
+}
+function ReferenciasModal({ onClose }) {
+  return (
+    <Modal title="Referencias del mapa" onClose={onClose}>
+      <div className="space-y-3">
+        {REFERENCIAS_MAPA.map(item => (
+          <div key={item.key} className="flex items-start gap-3">
+            <span className="w-6 flex items-center justify-center shrink-0 mt-0.5"><ReferenciaSimbolo item={item} size={14} /></span>
+            <div>
+              <p className="text-[13.5px] font-bold">{item.label}</p>
+              <p className="text-[12.5px] text-muted mt-0.5">{item.desc}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+    </Modal>
+  );
+}
+
 function GhostTire({ x, y }) {
   return (
     <div className="fixed z-[90] pointer-events-none rounded-full w-[54px] h-[54px] -translate-x-1/2 -translate-y-1/2 shadow-lg flex items-center justify-center"
@@ -978,6 +1043,7 @@ function AuditoriaForm({ user, clienteId, equipo, cfg, onCancel, onGenerarInstru
   const [posData, setPosData] = useState({});
   const [editingPos, setEditingPos] = useState(null);
   const [generando, setGenerando] = useState(false);
+  const [showReferencias, setShowReferencias] = useState(false);
   const startedAt = useRef(Date.now());
 
   // Requerimiento: consolidacion automatica e incondicional -- ya no se le
@@ -1063,7 +1129,9 @@ function AuditoriaForm({ user, clienteId, equipo, cfg, onCancel, onGenerarInstru
       <Card className="mt-6 mb-4">
         <p className="text-[13px] mb-4"><span className="font-bold">{equipo.numero_interno ? equipo.numero_interno + " · " : ""}{equipo.patente}</span> <span className="text-muted">· {equipo.configuracion_ejes || "semi"} · Interno {equipo.numero_interno || "-"}</span></p>
         <AxleMap cfg={axleCfg} posData={posData} selectedPos={editingPos} onTap={abrirPosicion} />
+        <MapaLeyenda onAbrirReferencias={() => setShowReferencias(true)} />
       </Card>
+      {showReferencias && <ReferenciasModal onClose={() => setShowReferencias(false)} />}
 
       <p className="text-[12.5px] text-muted px-1">{completas}/{allPositions.length} posiciones cargadas</p>
 
@@ -1273,6 +1341,7 @@ function Instructivo({ equipo, axleCfg, posData, recsInfo, checklist, setCheckli
   // al cerrar, se vuelve al instructivo tal cual estaba (no se pierde nada,
   // es el mismo checklist/estado, solo se cierra un modal encima).
   const [infoPos, setInfoPos] = useState(null);
+  const [showReferencias, setShowReferencias] = useState(false);
   const sistemaTotal = checklist.filter(c => !c.extra).length;
   const cumplidas = checklist.filter(c => !c.extra && c.done).length;
   const extra = checklist.filter(c => c.extra).length;
@@ -1292,12 +1361,9 @@ function Instructivo({ equipo, axleCfg, posData, recsInfo, checklist, setCheckli
 
       <Card className="mb-4">
         <AxleMap cfg={axleCfg} posData={posData} selectedPos={infoPos} onTap={(p) => posData[p] && setInfoPos(p)} />
-        <div className="flex items-center gap-4 mt-5 pt-4 border-t border-bd">
-          {[["#D1D5DB", "OK"], ["#F59E0B", "Atención"], ["#EF4444", "Alerta"]].map(([c, l]) => (
-            <div key={l} className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full" style={{ border: `2px solid ${c}` }} /><span className="text-[11.5px] text-sub">{l}</span></div>
-          ))}
-        </div>
+        <MapaLeyenda onAbrirReferencias={() => setShowReferencias(true)} />
       </Card>
+      {showReferencias && <ReferenciasModal onClose={() => setShowReferencias(false)} />}
 
       {/* Fix 2: si la auditoria no genera ninguna recomendacion, no tiene
           sentido mostrar un checklist vacio (baja el % sin motivo) — se
@@ -1702,6 +1768,7 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
   }, [recetaId.current]);
   const [nuevaTarea, setNuevaTarea] = useState("");
   const [infoPos, setInfoPos] = useState(null);
+  const [showReferencias, setShowReferencias] = useState(false);
   const [montaje, setMontaje] = useState(null); // { tipo, pos }
   const [retiroSel, setRetiroSel] = useState(null); // { pos }
   const [confirmDlg, setConfirmDlg] = useState(null); // { title, desc, onConfirm }
@@ -2133,7 +2200,9 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
         <AxleMap cfg={axleCfg} posData={posData} selectedPos={null} onTap={() => {}}
           pendientesPos={new Set(Object.values(posData).filter(d => d.numero_fuego && fuegosPendientes.includes(d.numero_fuego)).map(d => d.posicion))}
           getDragHandlers={(p) => posData[p] ? { onPointerDown: (e) => onPointerDownTire(p, e), onPointerMove: onDragMove, onPointerUp: onDragEnd, onPointerCancel: onDragEnd } : undefined} />
+        <MapaLeyenda onAbrirReferencias={() => setShowReferencias(true)} />
       </Card>
+      {showReferencias && <ReferenciasModal onClose={() => setShowReferencias(false)} />}
 
       <p className="font-bold text-[15px] mb-2">Instructivo</p>
       <div className="space-y-2 mb-3">
