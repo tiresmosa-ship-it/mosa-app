@@ -3097,14 +3097,11 @@ const BODEGA_BUCKETS = [
 ];
 // Fix 2: usa getInventarioNeumaticos (misma fuente que check diario, cierre y
 // stock rapido del Dashboard) para que Maestros>Inventario muestre el mismo
-// numero que ve el mecanico para la misma bodega.
+// numero que ve el mecanico para la misma bodega. "en_equipo" ya es una
+// bodega mas (BODEGA_ESTADOS.EN_EQUIPO) y sale de la misma consulta.
 async function fetchBodegaCounts(clienteId) {
-  const [bodegas, { count: enEquipo, error }] = await Promise.all([
-    getInventarioNeumaticos(clienteId),
-    (() => { let q = sb.from("neumaticos").select("id_neumatico", { count: "exact", head: true }).eq("activo", true).not("equipo_actual", "is", null); q = filtroCliente(q, clienteId); return q; })()
-  ]);
-  if (error) throw error;
-  const counts = { nuevo: 0, transito: 0, reparacion: 0, retiro_desgaste: 0, retiro_dano: 0, retiro_otro: 0, para_recauchar: 0, recauchado: 0, en_equipo: enEquipo || 0, nfu: 0 };
+  const bodegas = await getInventarioNeumaticos(clienteId);
+  const counts = { nuevo: 0, transito: 0, reparacion: 0, retiro_desgaste: 0, retiro_dano: 0, retiro_otro: 0, para_recauchar: 0, recauchado: 0, en_equipo: 0, nfu: 0 };
   Object.entries(bodegas).forEach(([k, v]) => { if (counts[k] !== undefined) counts[k] = v; });
   return counts;
 }

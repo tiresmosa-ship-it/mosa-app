@@ -1093,7 +1093,11 @@ async function asegurarNeumatico(clienteId, numeroFuego, equipoId, posicion, ext
     // quedan en el inventario maestro, no solo en auditoria_posiciones.
     psi_actual: (extra && extra.psi != null) ? extra.psi : null,
     milimetros: (extra && extra.milimetros != null) ? extra.milimetros : null,
-    estado_actual: "en_uso", bodega: null, equipo_actual: equipoId, posicion_actual: posicion,
+    // equipoId puede venir null aca (alta de un neumatico de salida en
+    // enviarCambio, ver mas abajo) -- en ese caso lo deja sin bodega
+    // temporalmente, actualizarNeumaticoSale la fija al destino real acto
+    // seguido. Si viene con equipo real, queda en la bodega "en_equipo".
+    estado_actual: "en_uso", bodega: equipoId ? BODEGA_ESTADOS.EN_EQUIPO : null, equipo_actual: equipoId, posicion_actual: posicion,
     fecha_ingreso: todayISO(), activo: true
   });
 }
@@ -1338,7 +1342,12 @@ async function insertAlerta(a) {
 const BODEGA_ESTADOS = {
   NUEVO: "nuevo", TRANSITO: "transito", RECAUCHADO: "recauchado",
   RETIRO_DESGASTE: "retiro_desgaste", RETIRO_DANO: "retiro_dano", RETIRO_OTRO: "retiro_otro",
-  PARA_RECAUCHAR: "para_recauchar", REPARACION: "reparacion", NFU: "nfu"
+  PARA_RECAUCHAR: "para_recauchar", REPARACION: "reparacion", NFU: "nfu",
+  // Requerimiento: los neumaticos montados en un equipo ya no quedan con
+  // bodega=NULL (imposible de contar/filtrar de forma directa) -- pasan a
+  // esta bodega explicita, en paralelo a equipo_actual/posicion_actual que
+  // siguen siendo la fuente de verdad de EN QUE equipo/posicion estan.
+  EN_EQUIPO: "en_equipo"
 };
 // Requerimiento: bloqueo estricto de transferencia a Transito para
 // neumaticos con MM<=3, para TODAS las empresas (La Portada/ELB/BYS). Unica
@@ -1376,7 +1385,7 @@ async function actualizarNeumaticoSale(clienteId, s) {
 }
 async function actualizarNeumaticoEntra(clienteId, equipoId, en) {
   // Montaje: el neumatico queda montado en el equipo -> estado_actual='en_uso',
-  // bodega=NULL (spec hoja de cambio). El origen del montaje (nuevo/transito/
+  // bodega=BODEGA_ESTADOS.EN_EQUIPO. El origen del montaje (nuevo/transito/
   // recauchado) queda registrado en cambio_detalle.estado; en.tipo es el tipo
   // real del neumatico (direccional/traccional/eje_libre, ver
   // inferirTipoNeumatico en mecanico.html) y SI se graba en neumaticos.tipo
@@ -1388,7 +1397,7 @@ async function actualizarNeumaticoEntra(clienteId, equipoId, en) {
   // valores del mapa (construirPosDataDesdeEquipo los lee de aca primero).
   const { data: existente } = await sb.from("neumaticos").select("*").eq("cliente_id", clienteId).eq("numero_fuego", en.numero_fuego).maybeSingle();
   if (existente) {
-    const update = { estado_actual: "en_uso", bodega: null, equipo_actual: equipoId, posicion_actual: en.posicion || null };
+    const update = { estado_actual: "en_uso", bodega: BODEGA_ESTADOS.EN_EQUIPO, equipo_actual: equipoId, posicion_actual: en.posicion || null };
     if (en.tipo) update.tipo = en.tipo;
     if (en.psi != null) update.psi_actual = en.psi;
     if (en.milimetros != null) update.milimetros = en.milimetros;
@@ -1399,7 +1408,7 @@ async function actualizarNeumaticoEntra(clienteId, equipoId, en) {
       id_neumatico: uuid(), numero_fuego: en.numero_fuego, cliente_id: clienteId,
       marca: en.marca || null, modelo: en.modelo || null, medida: en.medida || null, tipo: en.tipo || null,
       psi_actual: en.psi != null ? en.psi : null, milimetros: en.milimetros != null ? en.milimetros : null,
-      estado_actual: "en_uso", bodega: null,
+      estado_actual: "en_uso", bodega: BODEGA_ESTADOS.EN_EQUIPO,
       equipo_actual: equipoId, posicion_actual: en.posicion || null, fecha_ingreso: todayISO(), activo: true
     });
     if (error) throw error;
@@ -1414,7 +1423,7 @@ async function actualizarNeumaticoEntra(clienteId, equipoId, en) {
 // numero_fuego), se renombra esa misma fila al codigo oficial y se monta.
 async function renombrarNeumaticoOrigen(idNeumaticoOrigen, equipoId, en) {
   const update = {
-    numero_fuego: en.numero_fuego, estado_actual: "en_uso", bodega: null,
+    numero_fuego: en.numero_fuego, estado_actual: "en_uso", bodega: BODEGA_ESTADOS.EN_EQUIPO,
     equipo_actual: equipoId, posicion_actual: en.posicion || null
   };
   if (en.tipo) update.tipo = en.tipo;
@@ -1791,14 +1800,22 @@ async function compararNeumaticosAuditoria(clienteId, equipoId, posData) {
   // auditoria de un equipo todavia no hay ningun neumatico vinculado a el en
   // `neumaticos` (equipo_actual nunca se seteo), asi que comparar contra esa
   // tabla vacia marcaria "numero_fuego no coincide" en TODAS las posiciones
-  // (sistema="" vs lo que tipeo el mecanico). Se detecta consultando si ya
-  // existe alguna auditoria previa para este equipo; si no hay ninguna, se
-  // asume que lo que carga el mecanico ES la linea base oficial y no se
-  // genera ninguna discrepancia (asegurarNeumatico igual la deja guardada
-  // como estado inicial al procesar la auditoria, ver enviarAuditoria).
-  const { data: previas, error: ePrevias } = await sb.from("auditorias").select("id_auditoria").eq("equipo_id", equipoId).limit(1);
-  if (ePrevias) throw ePrevias;
-  if (!previas || !previas.length) return [];
+  // (sistema="" vs lo que tipeo el mecanico).
+  // Bug corregido: antes esto se detectaba consultando si existia alguna fila
+  // en `auditorias` para el equipo -- una señal INDIRECTA que puede
+  // divergir de la realidad (ej. una auditoria previa que quedo a medio
+  // sincronizar y nunca llego a poblar `neumaticos`, o un equipo migrado con
+  // historial de auditorias pero sin neumaticos cargados todavia), y en esos
+  // casos disparaba discrepancias falsas de "sin registro" en TODAS las
+  // posiciones de lo que en la practica seguia siendo la primera carga real.
+  // Ahora se consulta DIRECTO la tabla contra la que se va a comparar
+  // (`neumaticos` con equipo_actual=este equipo): si no hay ninguna fila
+  // todavia, no hay contra que comparar y no se genera discrepancia alguna.
+  const { count: yaTieneBase, error: eBase } = await sb.from("neumaticos")
+    .select("id_neumatico", { count: "exact", head: true })
+    .eq("cliente_id", clienteId).eq("equipo_actual", equipoId).eq("activo", true);
+  if (eBase) throw eBase;
+  if (!yaTieneBase) return [];
   const { data: neus, error } = await sb.from("neumaticos")
     .select("numero_fuego, marca, medida, posicion_actual")
     .eq("cliente_id", clienteId).eq("equipo_actual", equipoId).eq("activo", true);
@@ -2006,11 +2023,12 @@ async function buscarInstructivoPendiente(equipoId) {
 // dejarlo fijo en "ok" (gris) sin importar si el ultimo valor conocido esta
 // realmente fuera de rango.
 async function construirPosDataDesdeEquipo(equipoId, cfg, axleCfg, equipo) {
-  // bodega debe ser NULL para un neumatico realmente montado (asi lo dejan
-  // montarNeumatico/actualizarNeumaticoEntra). Filtrar por esto evita que una
-  // fila vieja con equipo_actual sin limpiar (dato sucio, bodega='transito'
-  // pero todavia apuntando a este equipo) le gane a la fila real en el mapa.
-  const { data, error } = await sb.from("neumaticos").select("*").eq("equipo_actual", equipoId).eq("activo", true).is("bodega", null);
+  // bodega debe ser BODEGA_ESTADOS.EN_EQUIPO para un neumatico realmente
+  // montado (asi lo dejan montarNeumatico/actualizarNeumaticoEntra). Filtrar
+  // por esto evita que una fila vieja con equipo_actual sin limpiar (dato
+  // sucio, bodega='transito' pero todavia apuntando a este equipo) le gane a
+  // la fila real en el mapa.
+  const { data, error } = await sb.from("neumaticos").select("*").eq("equipo_actual", equipoId).eq("activo", true).eq("bodega", BODEGA_ESTADOS.EN_EQUIPO);
   if (error || !data) return {};
   const map = {};
   data.forEach(n => {
@@ -2632,14 +2650,11 @@ const adminDb = {
     }).sort((x, y) => (x.fecha || "").localeCompare(y.fecha || ""));
   },
   // Fix 2: usa getInventarioNeumaticos (misma fuente que check diario/cierre/
-  // Maestros>Inventario) para los conteos por bodega. "en_equipo" es una
-  // dimension aparte (equipo_actual, no bodega) que se suma por separado.
+  // Maestros>Inventario) para los conteos por bodega. "en_equipo" ya es una
+  // bodega mas (BODEGA_ESTADOS.EN_EQUIPO) y sale de la misma consulta.
   async fetchStockRapido(clienteId) {
-    const [bodegas, { count: enEquipo }] = await Promise.all([
-      getInventarioNeumaticos(clienteId),
-      (() => { let q = sb.from("neumaticos").select("id_neumatico", { count: "exact", head: true }).eq("activo", true).not("equipo_actual", "is", null); q = filtroCliente(q, clienteId); return q; })()
-    ]);
-    const conteos = { nuevo: 0, transito: 0, reparacion: 0, retiro_desgaste: 0, retiro_dano: 0, retiro_otro: 0, para_recauchar: 0, recauchado: 0, en_equipo: enEquipo || 0, nfu: 0 };
+    const bodegas = await getInventarioNeumaticos(clienteId);
+    const conteos = { nuevo: 0, transito: 0, reparacion: 0, retiro_desgaste: 0, retiro_dano: 0, retiro_otro: 0, para_recauchar: 0, recauchado: 0, en_equipo: 0, nfu: 0 };
     Object.entries(bodegas).forEach(([k, v]) => { if (conteos[k] !== undefined) conteos[k] = v; });
     return conteos;
   },
@@ -2890,11 +2905,11 @@ async function resolverDiscrepanciaAuditoria(discrepancia, aprobar, justificacio
       // El neumatico que el mecanico encontro queda montado en esa posicion.
       const { data: existente } = await sb.from("neumaticos").select("id_neumatico").eq("cliente_id", discrepancia.cliente_id).eq("numero_fuego", discrepancia.valor_fisico).maybeSingle();
       if (existente) {
-        await sb.from("neumaticos").update({ equipo_actual: discrepancia.equipo_id, posicion_actual: discrepancia.posicion, estado_actual: "en_uso", bodega: null }).eq("id_neumatico", existente.id_neumatico);
+        await sb.from("neumaticos").update({ equipo_actual: discrepancia.equipo_id, posicion_actual: discrepancia.posicion, estado_actual: "en_uso", bodega: BODEGA_ESTADOS.EN_EQUIPO }).eq("id_neumatico", existente.id_neumatico);
       } else {
         await sb.from("neumaticos").insert({
           id_neumatico: uuid(), numero_fuego: discrepancia.valor_fisico, cliente_id: discrepancia.cliente_id,
-          equipo_actual: discrepancia.equipo_id, posicion_actual: discrepancia.posicion, estado_actual: "en_uso", bodega: null,
+          equipo_actual: discrepancia.equipo_id, posicion_actual: discrepancia.posicion, estado_actual: "en_uso", bodega: BODEGA_ESTADOS.EN_EQUIPO,
           fecha_ingreso: todayISO(), activo: true
         });
       }

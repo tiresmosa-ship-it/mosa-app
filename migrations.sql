@@ -838,3 +838,16 @@ ALTER TABLE auditorias ADD COLUMN IF NOT EXISTS estado TEXT NOT NULL DEFAULT 'en
 -- Auditorias historicas: ya tienen sus lecturas guardadas (auditoria_posiciones),
 -- asi que se marcan completadas para no mostrar equipos viejos como "abiertos".
 UPDATE auditorias SET estado = 'completada' WHERE estado = 'en_proceso';
+
+
+-- 50) bodega "en_equipo" -- los neumaticos montados en un camion quedaban con
+-- bodega=NULL (equipo_actual era la unica senal de "esta en un equipo"), lo
+-- que hacia imposible contarlos/filtrarlos por bodega como al resto del
+-- inventario (Maestros>Inventario, stock rapido, check diario). Ahora pasan a
+-- una bodega explicita ('en_equipo', BODEGA_ESTADOS.EN_EQUIPO en
+-- js/supabase.js) en paralelo a equipo_actual/posicion_actual, que siguen
+-- siendo la fuente de verdad de EN QUE equipo/posicion esta cada uno.
+-- Esto es un UPDATE, no un borrado (Regla Cero Borrados) -- solo corrige el
+-- valor de bodega de filas que ya existen y ya estan activas/montadas.
+UPDATE neumaticos SET bodega = 'en_equipo'
+  WHERE activo = true AND equipo_actual IS NOT NULL AND bodega IS NULL;
