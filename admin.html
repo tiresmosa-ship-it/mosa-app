@@ -3366,107 +3366,6 @@ function EntradaNeumaticosModal({ filtro, proveedores, onClose, onSaved, pushToa
     </Modal>
   );
 }
-// Requerimiento: carga de saldo inicial de Transito, neumatico por
-// neumatico (no un lote generico como EntradaNeumaticosModal) -- cada fila
-// es un neumatico FISICO real que ya esta en la faena, con su numero de
-// fuego real y sus milimetros medidos, no un placeholder "PEND..." a
-// corregir despues en terreno. Pensado para usarse una sola vez por
-// cliente al migrar el inventario existente.
-function filaSaldoTransitoVacia() {
-  return { id: uuid(), numero_fuego: "", marca: "", medida: "", milimetros: "", precio: "" };
-}
-function SaldoInicialTransitoModal({ filtro, adminUser, onClose, onSaved, pushToast }) {
-  const [filas, setFilas] = useState([filaSaldoTransitoVacia()]);
-  const [fecha, setFecha] = useState(todayISO());
-  const [moneda, setMoneda] = useState("CLP");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    if (filtro && filtro !== "todas") db.fetchConfig(filtro).then(cfg => setMoneda(cfg.moneda || "CLP")).catch(() => {});
-  }, [filtro]);
-
-  function actualizarFila(id, campo, valor) {
-    setFilas(fs => fs.map(f => f.id === id ? { ...f, [campo]: valor } : f));
-  }
-  function agregarFila() { setFilas(fs => [...fs, filaSaldoTransitoVacia()]); }
-  function quitarFila(id) { setFilas(fs => fs.length > 1 ? fs.filter(f => f.id !== id) : fs); }
-
-  async function guardar() {
-    setError("");
-    if (!filtro || filtro === "todas") { setError("Elegí una empresa específica en el selector de arriba."); return; }
-    const validas = filas.filter(f => f.numero_fuego.trim());
-    if (!validas.length) { setError("Cargá al menos un neumático con N° de fuego."); return; }
-    const fuegos = validas.map(f => f.numero_fuego.trim().toUpperCase());
-    const repetidos = fuegos.filter((f, i) => fuegos.indexOf(f) !== i);
-    if (repetidos.length) { setError(`N° de fuego repetido dentro de la carga: ${[...new Set(repetidos)].join(", ")}`); return; }
-    setSaving(true);
-    try {
-      // No pisar neumaticos que ya existan en el sistema con ese fuego
-      // (colisión con algo que ya esta cargado, ej. bodega 'nuevo').
-      const { data: existentes, error: eEx } = await sb.from("neumaticos").select("numero_fuego").eq("cliente_id", filtro).in("numero_fuego", fuegos);
-      if (eEx) throw eEx;
-      const yaExisten = new Set((existentes || []).map(n => n.numero_fuego.toUpperCase()));
-      const aInsertar = validas.filter(f => !yaExisten.has(f.numero_fuego.trim().toUpperCase()));
-      if (!aInsertar.length) { setError("Todos los N° de fuego cargados ya existen en el sistema."); setSaving(false); return; }
-      const filasNeu = aInsertar.map(f => ({
-        id_neumatico: uuid(), numero_fuego: f.numero_fuego.trim(), cliente_id: filtro,
-        marca: f.marca.trim() || null, medida: f.medida.trim() || null,
-        milimetros: f.milimetros !== "" ? parseFloat(f.milimetros) : null,
-        estado_actual: "transito", bodega: "transito", fecha_ingreso: fecha, activo: true
-      }));
-      const { error: e1 } = await sb.from("neumaticos").insert(filasNeu);
-      if (e1) throw e1;
-      const movimientos = aInsertar.map(f => ({
-        id: uuid(), cliente_id: filtro, mecanico_id: adminUser ? adminUser.id : null, fecha,
-        categoria: "neumatico", tipo: "entrada", origen: "saldo_inicial", numero_fuego: f.numero_fuego.trim(),
-        cantidad: 1, precio_unitario: f.precio !== "" ? parseFloat(f.precio) : null,
-        precio_total: f.precio !== "" ? parseFloat(f.precio) : null, moneda
-      }));
-      const { error: e2 } = await sb.from("movimientos_bodega").insert(movimientos);
-      if (e2) console.error("No se pudieron registrar los movimientos de saldo inicial", e2);
-      const omitidos = validas.length - aInsertar.length;
-      pushToast(`✓ ${aInsertar.length} neumático${aInsertar.length !== 1 ? "s" : ""} cargado${aInsertar.length !== 1 ? "s" : ""} a Tránsito` + (omitidos ? ` — ${omitidos} omitido${omitidos !== 1 ? "s" : ""} por N° de fuego ya existente` : ""));
-      onSaved();
-    } catch (e) { console.error("No se pudo guardar el saldo inicial de tránsito", e); setError("No se pudo guardar. Verificá los datos e intentá de nuevo."); }
-    setSaving(false);
-  }
-
-  return (
-    <Modal title="Saldo inicial de Tránsito" onClose={onClose} wide>
-      <div className="space-y-4">
-        <p className="text-[12.5px] text-muted">Cargá cada neumático físico que ya está en tránsito, con su N° de fuego y milímetros reales. Pensado para usarse una sola vez al migrar el inventario existente.</p>
-        <Field label="Fecha de ingreso"><TextInput type="date" value={fecha} onChange={e => setFecha(e.target.value)} className="max-w-[200px]" /></Field>
-        <div className="bg-white rounded-2xl border border-bd overflow-x-auto">
-          <table className="w-full text-[13px] min-w-[640px]">
-            <thead><tr className="text-left text-muted border-b border-bd">
-              <th className="font-semibold py-2 px-3">N° de fuego</th><th className="font-semibold py-2 px-3">Marca</th>
-              <th className="font-semibold py-2 px-3">Medida</th><th className="font-semibold py-2 px-3">MM</th>
-              <th className="font-semibold py-2 px-3">Precio ({moneda})</th><th></th>
-            </tr></thead>
-            <tbody>
-              {filas.map(f => (
-                <tr key={f.id} className="border-b border-bd last:border-0">
-                  <td className="p-1.5"><TextInput value={f.numero_fuego} onChange={e => actualizarFila(f.id, "numero_fuego", e.target.value)} className="h-10 px-2" /></td>
-                  <td className="p-1.5"><TextInput value={f.marca} onChange={e => actualizarFila(f.id, "marca", e.target.value)} className="h-10 px-2" /></td>
-                  <td className="p-1.5"><TextInput value={f.medida} onChange={e => actualizarFila(f.id, "medida", e.target.value)} className="h-10 px-2" /></td>
-                  <td className="p-1.5"><TextInput type="number" value={f.milimetros} onChange={e => actualizarFila(f.id, "milimetros", e.target.value)} className="h-10 px-2 w-20" /></td>
-                  <td className="p-1.5"><TextInput type="number" value={f.precio} onChange={e => actualizarFila(f.id, "precio", e.target.value)} className="h-10 px-2 w-28" /></td>
-                  <td className="p-1.5">
-                    <button type="button" onClick={() => quitarFila(f.id)} className="w-8 h-8 rounded-full bg-[#FEE2E2] text-[#B91C1C] flex items-center justify-center"><Icon.trash width="13" height="13" /></button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <Button variant="subtle" className="h-10 px-4 text-[13px]" onClick={agregarFila}>+ Agregar neumático</Button>
-        {error && <p className="text-[12.5px] font-bold text-[#B91C1C]">{error}</p>}
-        <Button className="w-full" disabled={saving} onClick={guardar}>{saving ? <span className="spinner" /> : "Guardar saldo inicial"}</Button>
-      </div>
-    </Modal>
-  );
-}
 // Trae, para una lista de numero_fuego, el ultimo valor relevante de una
 // tabla relacionada (cambio_detalle.milimetros o alertas.descripcion) —
 // se usa para mostrar "MM retiro"/"Motivo" en los checklists de abajo, dato
@@ -3938,7 +3837,6 @@ function InventarioMaestroView({ empresaCtl, onBack, adminUser }) {
   const [loading, setLoading] = useState(true);
   const [modalEntrada, setModalEntrada] = useState(false);
   const [modalEntradaNeumaticos, setModalEntradaNeumaticos] = useState(false);
-  const [modalSaldoTransito, setModalSaldoTransito] = useState(false);
   const [salidaInsumo, setSalidaInsumo] = useState(null);
   const [pushToast, toastNode] = useToasts();
   // Requerimiento 1: "Para Recauchar" solo se muestra si el cliente activo
@@ -3978,10 +3876,7 @@ function InventarioMaestroView({ empresaCtl, onBack, adminUser }) {
       <button onClick={onBack} className="flex items-center gap-2 text-[13.5px] font-bold text-muted mb-4"><Icon.back width="15" height="15" /> Maestros</button>
       <div className="flex items-center justify-between gap-3 mb-5 flex-wrap">
         <h1 className="text-[26px] font-extrabold">📦 Inventario</h1>
-        <div className="flex gap-2">
-          <Button variant="subtle" className="h-11 px-4 text-[13.5px]" onClick={() => setModalSaldoTransito(true)}>+ Saldo inicial Tránsito</Button>
-          <Button className="h-11 px-4 text-[13.5px]" onClick={() => setModalEntradaNeumaticos(true)}>+ Entrada de neumáticos</Button>
-        </div>
+        <Button className="h-11 px-4 text-[13.5px]" onClick={() => setModalEntradaNeumaticos(true)}>+ Entrada de neumáticos</Button>
       </div>
       <div className="flex gap-2 mb-5 overflow-x-auto">
         {tabs.map(t => (
@@ -4040,10 +3935,6 @@ function InventarioMaestroView({ empresaCtl, onBack, adminUser }) {
       {modalEntradaNeumaticos && (
         <EntradaNeumaticosModal filtro={filtro} proveedores={proveedores} pushToast={pushToast}
           onClose={() => setModalEntradaNeumaticos(false)} onSaved={() => { setModalEntradaNeumaticos(false); cargar(); }} />
-      )}
-      {modalSaldoTransito && (
-        <SaldoInicialTransitoModal filtro={filtro} adminUser={adminUser} pushToast={pushToast}
-          onClose={() => setModalSaldoTransito(false)} onSaved={() => { setModalSaldoTransito(false); cargar(); }} />
       )}
     </div>
   );
