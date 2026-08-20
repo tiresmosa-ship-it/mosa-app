@@ -811,7 +811,12 @@ function AccionEquipo({ equipo, estadoInfo, onClose, onAuditoria, onContinuarCam
         ) : (
           <Button className="w-full" variant={estadoInfo && estadoInfo.vencida ? "danger" : "primary"} onClick={onAuditoria}><Icon.audit width="20" height="20" /> Auditoría</Button>
         )}
-        {estadoInfo && estadoInfo.enProcesoHoy && (
+        {/* Bug reportado: con esValida (48hs) el boton "Ir a Hoja de Cambio"
+            ya cubre exactamente el mismo caso que "Continuar hoja de cambio"
+            (retomar la receta en_proceso) -- mostrar los dos era redundante y
+            confuso, asi que "Continuar hoja de cambio" queda solo como
+            fallback cuando NO aplica el flujo unificado de 48hs. */}
+        {!esValida && estadoInfo && estadoInfo.enProcesoHoy && (
           <Button variant="subtle" className="w-full" onClick={onContinuarCambio}><Icon.swap width="20" height="20" /> Continuar hoja de cambio</Button>
         )}
       </div>
