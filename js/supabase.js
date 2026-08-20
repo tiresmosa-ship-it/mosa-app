@@ -512,6 +512,51 @@ const db = {
     if (error) throw error;
     return (data && data[0]) || null;
   },
+  // Requerimiento: Validez de Auditoria por 2 dias corridos (48hs) --
+  // independiente del periodo de vencimiento configurable por cliente
+  // (meses_vencimiento_auditoria, que gobierna el badge Aud. Vencida/Al dia
+  // de la lista de equipos, ver equipoAuditEstado). Esta es una regla propia:
+  // si la ULTIMA auditoria COMPLETADA de un equipo tiene 48hs o menos desde
+  // que se guardo (creado_en, no la fecha-dia), el mecanico puede saltar
+  // directo a Hoja de Cambio o reabrir esa misma auditoria para editarla, en
+  // vez de tener que tomar lecturas de cero.
+  async verificarValidezAuditoria(equipoId) {
+    const { data, error } = await sb.from("auditorias")
+      .select("id_auditoria,fecha,creado_en")
+      .eq("equipo_id", equipoId).eq("estado", "completada")
+      .order("creado_en", { ascending: false }).limit(1);
+    if (error) throw error;
+    const ult = data && data[0];
+    if (!ult || !ult.creado_en) return { esValida: false, horas: null, auditoriaId: null, fecha: null };
+    const horas = (Date.now() - new Date(ult.creado_en).getTime()) / 3600000;
+    return { esValida: horas <= 48, horas, auditoriaId: ult.id_auditoria, fecha: ult.fecha };
+  },
+  // Reconstruye el posData COMPLETO (con el detalle por borde mm_borde_izq/
+  // centro/der que PosicionModal necesita para poder editarlo) de una
+  // auditoria puntual -- a diferencia de construirPosDataDesdeEquipo (que usa
+  // el estado ACTUAL de `neumaticos`, resumido en un solo minMM promedio),
+  // esta lee directo auditoria_posiciones de ESA auditoria especifica. Usada
+  // por "Ver / Editar Auditoria" (Validez 48hs).
+  async fetchPosDataDeAuditoria(auditoriaId) {
+    if (!auditoriaId) return {};
+    const { data, error } = await sb.from("auditoria_posiciones").select("*").eq("auditoria_id", auditoriaId);
+    if (error) throw error;
+    const map = {};
+    (data || []).forEach(p => {
+      if (p.posicion == null) return;
+      map[p.posicion] = {
+        numero_fuego: p.numero_fuego || "", marca: p.marca || "", modelo: p.modelo || "", medida: "",
+        psi: p.psi != null ? String(p.psi) : "",
+        mm_borde_izq: p.mm_borde_izq != null ? String(p.mm_borde_izq) : "",
+        mm_centro: p.mm_centro != null ? String(p.mm_centro) : "",
+        mm_borde_der: p.mm_borde_der != null ? String(p.mm_borde_der) : "",
+        tipo_desgaste: p.tipo_desgaste || "normal",
+        marca_modelo_no_registrado: false, medida_no_registrada: false,
+        url_foto_desgaste_irregular: p.url_foto_desgaste_irregular || null
+      };
+    });
+    return map;
+  },
   // Requerimiento 3: receta asociada a una auditoria puntual -- usada por los
   // modales "Ver Recomendaciones" y "Ver Hoja de Cambio en Vivo" del Admin
   // (Actividad en Faena), que ya conocen el auditoria_id via sesiones_trabajo.

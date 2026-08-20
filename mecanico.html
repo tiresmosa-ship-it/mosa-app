@@ -781,11 +781,18 @@ function SeleccionEquipo({ clienteId, cfg, onPick }) {
   );
 }
 
-function AccionEquipo({ equipo, estadoInfo, onClose, onAuditoria, onContinuarCambio }) {
+function AccionEquipo({ equipo, estadoInfo, onClose, onAuditoria, onContinuarCambio, onIrDirectoHC, onVerEditarAuditoria }) {
   // Requerimiento 2: las tareas pendientes acumuladas no se cargan directo --
   // solo se avisan aca; el mecanico siempre pasa primero por Auditoria, que
   // es donde se consolidan y terminan apareciendo en la Hoja de Cambio.
   const tareasPendientes = (estadoInfo && estadoInfo.tareasPendientes) || 0;
+  // Requerimiento: Validez de Auditoria por 48hs -- si la ultima auditoria
+  // COMPLETADA tiene 48hs o menos, se ofrecen 2 accesos directos en vez de
+  // forzar pasar por Auditoria de nuevo. Es una regla propia, independiente
+  // de "vencida" (esa es sobre el periodo de vencimiento configurable).
+  const v = estadoInfo && estadoInfo.validez48h;
+  const esValida = !!(v && v.esValida);
+  const horasTexto = v && v.horas != null ? Math.max(0, Math.round(v.horas)) : null;
   return (
     <Modal title={`${equipo.numero_interno || ""} · ${equipo.patente}`} onClose={onClose}>
       <div className="space-y-3">
@@ -795,7 +802,15 @@ function AccionEquipo({ equipo, estadoInfo, onClose, onAuditoria, onContinuarCam
             <p className="text-[12px] text-[#92400E] mt-0.5">Se van a cargar en la Hoja de Cambio después de completar la Auditoría.</p>
           </div>
         )}
-        <Button className="w-full" variant={estadoInfo && estadoInfo.vencida ? "danger" : "primary"} onClick={onAuditoria}><Icon.audit width="20" height="20" /> Auditoría</Button>
+        {esValida ? (
+          <>
+            <p className="text-[12px] text-muted -mb-1">Auditoría realizada hace {horasTexto} hora{horasTexto !== 1 ? "s" : ""} (Válida por 2 días)</p>
+            <Button className="w-full" onClick={onIrDirectoHC}><Icon.swap width="20" height="20" /> Ir a Hoja de Cambio</Button>
+            <Button variant="subtle" className="w-full" onClick={onVerEditarAuditoria}><Icon.audit width="20" height="20" /> Ver / Editar Auditoría</Button>
+          </>
+        ) : (
+          <Button className="w-full" variant={estadoInfo && estadoInfo.vencida ? "danger" : "primary"} onClick={onAuditoria}><Icon.audit width="20" height="20" /> Auditoría</Button>
+        )}
         {estadoInfo && estadoInfo.enProcesoHoy && (
           <Button variant="subtle" className="w-full" onClick={onContinuarCambio}><Icon.swap width="20" height="20" /> Continuar hoja de cambio</Button>
         )}
@@ -1028,7 +1043,7 @@ function ResumenInstructivoModal({ resumen, onEntendido }) {
   );
 }
 
-function AuditoriaForm({ user, clienteId, equipo, cfg, onCancel, onGenerarInstructivo }) {
+function AuditoriaForm({ user, clienteId, equipo, cfg, onCancel, onGenerarInstructivo, posDataInicial }) {
   const [frioConfirmado, setFrioConfirmado] = useState(false);
   // Un semirremolque no tiene motor/odometro propio -- el km real es del
   // tracto que lo arrastra en cada viaje, no algo que el semi pueda
@@ -1040,7 +1055,10 @@ function AuditoriaForm({ user, clienteId, equipo, cfg, onCancel, onGenerarInstru
   const [kmSet, setKmSet] = useState(esSemi);
   const axleCfg = axleConfigFor(equipo);
   const allPositions = axleCfg.rows.flatMap(r => r.positions);
-  const [posData, setPosData] = useState({});
+  // Requerimiento: Validez de Auditoria por 48hs -- "Ver / Editar Auditoria"
+  // llega aca con posDataInicial ya cargado (fetchPosDataDeAuditoria), en vez
+  // de arrancar el mapa vacio como una auditoria nueva.
+  const [posData, setPosData] = useState(() => posDataInicial || {});
   const [editingPos, setEditingPos] = useState(null);
   const [generando, setGenerando] = useState(false);
   const [showReferencias, setShowReferencias] = useState(false);
@@ -3333,7 +3351,7 @@ function MecanicoApp({ user }) {
     body = (
       <>
         <SeleccionEquipo clienteId={clienteId} cfg={cfg} onPick={async (eq) => {
-          let vencida = false, enProcesoHoy = false;
+          let vencida = false, enProcesoHoy = false, validez48h = null;
           try {
             const info = await db.fetchEstadoAuditoriaEquipo(eq.id_equipo);
             const estado = equipoAuditEstado(info, cfg.meses_vencimiento_auditoria);
@@ -3343,7 +3361,8 @@ function MecanicoApp({ user }) {
             const receta = await db.fetchRecetaEnProcesoHoy(eq.id_equipo);
             enProcesoHoy = !!receta;
           } catch (e) { console.error(e); }
-          setFlow({ stage: "accion", equipo: eq, estadoInfo: { vencida, enProcesoHoy } });
+          try { validez48h = await db.verificarValidezAuditoria(eq.id_equipo); } catch (e) { console.error(e); }
+          setFlow({ stage: "accion", equipo: eq, estadoInfo: { vencida, enProcesoHoy, validez48h } });
         }} />
         <AccionEquipo equipo={flow.equipo} estadoInfo={flow.estadoInfo} onClose={() => setFlow(null)}
           onAuditoria={() => { db.registrarEventoSesion(clienteId, flow.equipo.id_equipo, user.id, "AUDITORIA_INICIADA", { equipoLabel: flow.equipo.patente, mecanicoNombre: user.nombre }).catch(e => console.error(e)); setFlow({ stage: "auditoria", equipo: flow.equipo }); }}
@@ -3363,12 +3382,47 @@ function MecanicoApp({ user }) {
             const recsInfoResumen = { recs: recs.map(r => ({ id: r.id, key: r.key, texto: r.texto })) };
             db.registrarEventoSesion(clienteId, flow.equipo.id_equipo, user.id, "HOJA_CAMBIO_EN_PROCESO", { auditoriaId: recetaEnProceso.auditoria_id, equipoLabel: flow.equipo.patente, mecanicoNombre: user.nombre }).catch(e => console.error(e));
             setFlow({ stage: "cambio", equipo: flow.equipo, axleCfg: axleConfigFor(flow.equipo), posData: pd, checklist: cl, recetaIdInicial: recetaEnProceso.id, pendiente: null, discrepanciasNeumaticos: discrepNeus, recsInfo: recsInfoResumen });
+          }}
+          onIrDirectoHC={async () => {
+            const v = flow.estadoInfo && flow.estadoInfo.validez48h;
+            if (!v || !v.auditoriaId) { setFlow(null); return; }
+            try {
+              const axleCfg = axleConfigFor(flow.equipo);
+              const pd = await construirPosDataDesdeEquipo(flow.equipo.id_equipo, cfg, axleCfg, flow.equipo);
+              const receta = await db.fetchRecetaPorAuditoria(v.auditoriaId);
+              const pa = (receta && receta.posiciones_alerta) || {};
+              const recs = Array.isArray(pa.recomendaciones) ? pa.recomendaciones : [];
+              const extras = Array.isArray(pa.tareas_extra) ? pa.tareas_extra : [];
+              const cl = [
+                ...recs.map(r => ({ id: r.id || uuid(), texto: r.texto, done: !!r.done, extra: false })),
+                ...extras.map(t => ({ id: uuid(), texto: t.texto, done: !!t.done, extra: true, origen: t.origen || null }))
+              ];
+              const discrepNeus = Array.isArray(pa.discrepancias_neumaticos) ? pa.discrepancias_neumaticos : [];
+              const recsInfoResumen = { recs: recs.map(r => ({ id: r.id, key: r.key, texto: r.texto })) };
+              db.registrarEventoSesion(clienteId, flow.equipo.id_equipo, user.id, "HOJA_CAMBIO_EN_PROCESO", { auditoriaId: v.auditoriaId, equipoLabel: flow.equipo.patente, mecanicoNombre: user.nombre }).catch(e => console.error(e));
+              setFlow({ stage: "cambio", equipo: flow.equipo, axleCfg, posData: pd, checklist: cl, recetaIdInicial: receta ? receta.id : null, pendiente: null, discrepanciasNeumaticos: discrepNeus, recsInfo: recsInfoResumen });
+            } catch (e) { console.error("No se pudo entrar directo a la Hoja de Cambio", e); setFlow(null); }
+          }}
+          onVerEditarAuditoria={async () => {
+            const v = flow.estadoInfo && flow.estadoInfo.validez48h;
+            try {
+              const axleCfg = axleConfigFor(flow.equipo);
+              const raw = v && v.auditoriaId ? await db.fetchPosDataDeAuditoria(v.auditoriaId) : {};
+              const pd = {};
+              Object.entries(raw).forEach(([pos, data]) => {
+                const p = parseInt(pos, 10);
+                const ev = evaluarPosicion(axleCfg, cfg, p, flow.equipo.tipo, data);
+                pd[p] = { ...data, posicion: p, status: ev.status, minMM: ev.minMM, motivos: ev.motivos };
+              });
+              db.registrarEventoSesion(clienteId, flow.equipo.id_equipo, user.id, "AUDITORIA_INICIADA", { equipoLabel: flow.equipo.patente, mecanicoNombre: user.nombre }).catch(e => console.error(e));
+              setFlow({ stage: "auditoria", equipo: flow.equipo, posDataInicial: pd });
+            } catch (e) { console.error("No se pudo abrir la auditoría para editar", e); setFlow(null); }
           }} />
       </>
     );
   } else if (flow && flow.stage === "auditoria") {
     body = (
-      <AuditoriaForm user={user} clienteId={clienteId} equipo={flow.equipo} cfg={cfg}
+      <AuditoriaForm user={user} clienteId={clienteId} equipo={flow.equipo} cfg={cfg} posDataInicial={flow.posDataInicial}
         onCancel={() => setFlow(null)}
         onGenerarInstructivo={async (posData, axleCfg, km, startedAt, tareasExtra) => {
           const recsInfo = generarRecomendaciones(posData, axleCfg, flow.equipo.tipo, cfg);
@@ -3442,7 +3496,7 @@ function MecanicoApp({ user }) {
     body = <PerfilScreen user={user} />;
   } else {
     body = <SeleccionEquipo clienteId={clienteId} cfg={cfg} onPick={async (eq) => {
-      let vencida = false, enProcesoHoy = false, tareasPendientes = 0;
+      let vencida = false, enProcesoHoy = false, tareasPendientes = 0, validez48h = null;
       try {
         const info = await db.fetchEstadoAuditoriaEquipo(eq.id_equipo);
         const estado = equipoAuditEstado(info, cfg.meses_vencimiento_auditoria);
@@ -3460,7 +3514,9 @@ function MecanicoApp({ user }) {
         const pendientes = await db.fetchTareasPendientesEquipo(eq.id_equipo);
         tareasPendientes = (pendientes || []).length;
       } catch (e) { console.error(e); }
-      setFlow({ stage: "accion", equipo: eq, estadoInfo: { vencida, enProcesoHoy, tareasPendientes } });
+      // Requerimiento: Validez de Auditoria por 48hs (ver AccionEquipo).
+      try { validez48h = await db.verificarValidezAuditoria(eq.id_equipo); } catch (e) { console.error(e); }
+      setFlow({ stage: "accion", equipo: eq, estadoInfo: { vencida, enProcesoHoy, tareasPendientes, validez48h } });
     }} />;
   }
 
