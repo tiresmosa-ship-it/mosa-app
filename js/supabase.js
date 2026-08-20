@@ -2119,13 +2119,47 @@ async function construirPosDataDesdeEquipo(equipoId, cfg, axleCfg, equipo) {
     // ganan sobre cualquier fallback de auditoria/cambio_detalle de mas abajo.
     map[n.posicion_actual] = { posicion: n.posicion_actual, numero_fuego: n.numero_fuego, marca: n.marca, modelo: n.modelo, medida: n.medida, psi: n.psi_actual != null ? n.psi_actual : null, status: "ok", minMM: n.milimetros != null ? n.milimetros : null, tipo_desgaste: null, alargadera: !!n.alargadera, checkpoint: !!n.checkpoint };
   });
+  // Requerimiento: un neumatico con discrepancia de N° de fuego sin aprobar
+  // todavia no tiene posicion_actual asignada (la reasignacion requiere
+  // aprobacion del Admin, ver resolverDiscrepanciaAuditoria) -- antes esa
+  // posicion quedaba directamente en blanco ("Sin neumático"), como si no
+  // hubiera nada montado ahi. Ahora se completa igual con lo que encontro el
+  // mecanico en la ultima auditoria, marcado con el candado 🔒
+  // (pendienteAprobacion), para que se pueda seguir trabajando esa posicion
+  // sin esperar a que el Admin la resuelva.
+  try {
+    const { data: discs } = await sb.from("discrepancias_inventario").select("posicion,valor_fisico")
+      .eq("equipo_id", equipoId).eq("resuelta", false).eq("tipo_discrepancia", "numero_fuego");
+    const pendientesSinMap = (discs || []).filter(d => d.posicion != null && !map[d.posicion]);
+    if (pendientesSinMap.length) {
+      const { data: auds } = await sb.from("auditorias").select("id_auditoria")
+        .eq("equipo_id", equipoId).order("fecha", { ascending: false }).order("creado_en", { ascending: false }).limit(1);
+      let porPosicion = {};
+      if (auds && auds.length) {
+        const { data: aposiciones } = await sb.from("auditoria_posiciones").select("posicion,numero_fuego,marca,modelo,psi,milimetros,tipo_desgaste")
+          .eq("auditoria_id", auds[0].id_auditoria).in("posicion", pendientesSinMap.map(d => d.posicion));
+        (aposiciones || []).forEach(p => { porPosicion[p.posicion] = p; });
+      }
+      pendientesSinMap.forEach(d => {
+        const ap = porPosicion[d.posicion];
+        map[d.posicion] = {
+          posicion: d.posicion, numero_fuego: (ap && ap.numero_fuego) || d.valor_fisico,
+          marca: (ap && ap.marca) || null, modelo: (ap && ap.modelo) || null, medida: null,
+          psi: (ap && ap.psi) != null ? ap.psi : null, status: "ok",
+          minMM: (ap && ap.milimetros) != null ? ap.milimetros : null,
+          tipo_desgaste: (ap && ap.tipo_desgaste) || null, alargadera: false, checkpoint: false,
+          pendienteAprobacion: true
+        };
+      });
+    }
+  } catch (e) { console.error("No se pudieron cargar los neumaticos con discrepancia pendiente", e); }
   // Completar los huecos (psi/mm todavia null) con los ultimos valores
   // conocidos de la auditoria mas reciente.
   try {
     const { data: ultimaAud } = await sb.from("auditorias").select("id_auditoria")
       .eq("equipo_id", equipoId).order("fecha", { ascending: false }).order("creado_en", { ascending: false }).limit(1);
     if (ultimaAud && ultimaAud.length) {
-      const numerosFuego = data.map(n => n.numero_fuego).filter(Boolean);
+      const numerosFuego = Object.values(map).map(n => n.numero_fuego).filter(Boolean);
       const { data: posAud } = await sb.from("auditoria_posiciones").select("numero_fuego,milimetros,psi,tipo_desgaste")
         .eq("auditoria_id", ultimaAud[0].id_auditoria).in("numero_fuego", numerosFuego);
       if (posAud) {
