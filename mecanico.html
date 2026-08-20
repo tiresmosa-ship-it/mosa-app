@@ -1717,15 +1717,12 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
   // Requerimiento 2: cantidad en vivo de cada bodega en los botones de
   // entrada (ej. "Nuevo (10)") — se recarga cada vez que un montaje exitoso
   // descuenta stock, para no quedar desincronizado del numero real.
-  // Requerimiento: el montaje "sin numero de fuego" ya no puede tomar stock
-  // de Transito -- Nelson determino que esa opcion estaba mal (Transito es
-  // destino de salida/retiro, no una fuente valida para dar de alta un
-  // neumatico nuevo en un equipo). Solo quedan Nuevo y, si el cliente usa
-  // recauchados, Recauchado.
-  const [stockBodega, setStockBodega] = useState({ nuevo: null, recauchado: null });
+  // Repuesto a pedido del cliente: Transito vuelve a ser un origen valido de
+  // montaje (junto a Nuevo y, si el cliente usa recauchados, Recauchado).
+  const [stockBodega, setStockBodega] = useState({ nuevo: null, transito: null, recauchado: null });
   function refrescarStockBodega() {
-    Promise.all(["nuevo", "recauchado"].map(b => fetchNeumaticosBodega(clienteId, b).then(l => l.length).catch(() => null)))
-      .then(([nuevo, recauchado]) => setStockBodega({ nuevo, recauchado }));
+    Promise.all(["nuevo", "transito", "recauchado"].map(b => fetchNeumaticosBodega(clienteId, b).then(l => l.length).catch(() => null)))
+      .then(([nuevo, transito, recauchado]) => setStockBodega({ nuevo, transito, recauchado }));
   }
   useEffect(() => {
     refrescarStockBodega();
@@ -2296,9 +2293,11 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
         <Button className="w-full" disabled={saving} onClick={finalizar}>{saving ? <span className="spinner" /> : "Finalizar hoja de cambio"}</Button>
         <div>
           <p className="text-[11.5px] font-bold text-muted tracking-wide uppercase mb-1.5">Entrada · arrastrá al mapa</p>
-          <div className={cx("grid gap-2", cfg && cfg.usa_recauchados === false ? "grid-cols-1" : "grid-cols-2")}>
+          <div className={cx("grid gap-2", cfg && cfg.usa_recauchados === false ? "grid-cols-2" : "grid-cols-3")}>
             <button onPointerDown={(e) => onPointerDownEntrada("nuevo", e)} onPointerMove={onDragMove} onPointerUp={onDragEnd} onPointerCancel={onDragEnd}
               style={{ touchAction: "none" }} className="h-12 rounded-2xl text-[13.5px] font-bold bg-ink text-white">Nuevo{stockBodega.nuevo != null ? ` (${stockBodega.nuevo})` : ""}</button>
+            <button onPointerDown={(e) => onPointerDownEntrada("transito", e)} onPointerMove={onDragMove} onPointerUp={onDragEnd} onPointerCancel={onDragEnd}
+              style={{ touchAction: "none" }} className="h-12 rounded-2xl text-[13.5px] font-bold bg-[#F3F4F6]">Tránsito{stockBodega.transito != null ? ` (${stockBodega.transito})` : ""}</button>
             {cfg && cfg.usa_recauchados === false ? null : (
               <button onPointerDown={(e) => onPointerDownEntrada("recauchado", e)} onPointerMove={onDragMove} onPointerUp={onDragEnd} onPointerCancel={onDragEnd}
                 style={{ touchAction: "none" }} className="h-12 rounded-2xl text-[13.5px] font-bold bg-[#F3F4F6]">Recauchado{stockBodega.recauchado != null ? ` (${stockBodega.recauchado})` : ""}</button>
