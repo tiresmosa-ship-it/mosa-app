@@ -1654,7 +1654,11 @@ async function guardarComentariosDiscrepancias(comentariosPorId) {
   await Promise.all(entries.map(([id, texto]) => sb.from("discrepancias_inventario").update({ observacion_mecanico: texto.trim() }).eq("id", id)));
 }
 async function marcarInicioJornada(clienteId, mecanicoId, fecha, horaInicio) {
-  const { data: existente } = await sb.from("cierre_dia").select("id").eq("mecanico_id", mecanicoId).eq("fecha", fecha).maybeSingle();
+  // Mismo bug que construirResumenJornada: .maybeSingle() rompe si el
+  // mecanico ya tiene 2+ cierre_dia para la fecha (ej. desbloqueo del Admin
+  // crea un turno nuevo) -- toma el mas reciente por creado_en.
+  const { data: existentes } = await sb.from("cierre_dia").select("id").eq("mecanico_id", mecanicoId).eq("fecha", fecha).order("creado_en", { ascending: false }).limit(1);
+  const existente = existentes && existentes[0];
   if (existente) {
     await sb.from("cierre_dia").update({ hora_inicio: horaInicio }).eq("id", existente.id);
   } else {
@@ -2246,12 +2250,23 @@ async function evaluarEstadoMecanico(user) {
    y el cierre de una jornada anterior olvidada)
 ===================================================================== */
 async function construirResumenJornada(mecanicoId, clienteId, fecha) {
-  const [{ data: auditorias }, { data: cambios }, { data: intervenciones }, { data: cierreActual }] = await Promise.all([
+  // Bug real encontrado en vivo: un mecanico puede tener MAS DE UN cierre_dia
+  // para la misma fecha (ej. el Admin lo desbloquea creando un turno nuevo,
+  // sin borrar el anterior -- mismo criterio que evaluarEstadoMecanico usa
+  // para "el turno de hoy"). .maybeSingle() tira error 406 apenas hay 2+
+  // filas, y ese error se ignoraba en silencio -- cierreActual quedaba
+  // undefined, cierreId null, y cerrarJornadaConResumen terminaba INSERTANDO
+  // un cierre_dia nuevo (que si quedaba cerrado) en vez de actualizar el que
+  // realmente estaba pendiente -- ese seguia cerrado=false para siempre, sin
+  // ningun error visible, dejando al mecanico trabado. Se toma el MAS
+  // RECIENTE por creado_en, igual que evaluarEstadoMecanico.
+  const [{ data: auditorias }, { data: cambios }, { data: intervenciones }, { data: cierresDelDia }] = await Promise.all([
     sb.from("auditorias").select("id_auditoria,equipo_id,creado_en,numero_auditoria").eq("bultero_id", mecanicoId).eq("fecha", fecha),
     sb.from("cambios_neumaticos").select("id_cambio,equipo_id,creado_en,numero_cambio").eq("bultero_id", mecanicoId).eq("fecha", fecha),
     sb.from("intervenciones").select("id,tipo,equipo_id,creado_en").eq("mecanico_id", mecanicoId).eq("fecha", fecha),
-    sb.from("cierre_dia").select("id,hora_inicio").eq("mecanico_id", mecanicoId).eq("fecha", fecha).maybeSingle()
+    sb.from("cierre_dia").select("id,hora_inicio").eq("mecanico_id", mecanicoId).eq("fecha", fecha).order("creado_en", { ascending: false }).limit(1)
   ]);
+  const cierreActual = cierresDelDia && cierresDelDia[0];
   const auds = auditorias || [], cams = cambios || [], intervs = intervenciones || [];
 
   const equipoIds = [...new Set([...auds.map(a => a.equipo_id), ...cams.map(c => c.equipo_id)])].filter(Boolean);
