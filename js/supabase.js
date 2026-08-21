@@ -2365,8 +2365,17 @@ async function verificarCambiosAbandonados(clienteId) {
 // cierre (distinto de los comentarios por item de discrepancia), se guarda en
 // cierre_dia.observaciones (columna ya existente en la tabla, sin uso hasta
 // ahora -- ver CierreDelDia en mecanico.html).
-async function cerrarJornadaConResumen({ user, clienteId, fecha, horaCierre, motivoSinCierre, observacionGeneral }) {
-  const { conteos, stock, detalle, cierreId } = await construirResumenJornada(user.id, clienteId, fecha);
+// cierreIdConocido (opcional): cuando quien llama YA sabe exactamente que
+// fila cerrar (ej. index.html/MecanicoGate conoce state.jornada.id de una
+// jornada anterior pendiente), se usa esa en vez de dejar que
+// construirResumenJornada la adivine por fecha. Necesario porque un
+// mecanico puede tener MAS DE UN cierre_dia sin cerrar en la misma fecha
+// (ej. dos turnos abandonados sin cerrar ninguno) -- "el mas reciente" no
+// alcanza para saber cual de los dos hay que cerrar en ese caso.
+async function cerrarJornadaConResumen({ user, clienteId, fecha, horaCierre, motivoSinCierre, observacionGeneral, cierreIdConocido }) {
+  const resumen = await construirResumenJornada(user.id, clienteId, fecha);
+  const { conteos, stock, detalle } = resumen;
+  const cierreId = cierreIdConocido || resumen.cierreId;
   // Objetivo 1: si el mecanico cierra la jornada con una HC todavia abierta
   // (hora_salida null), cerrarla sola en vez de dejarla "en_proceso" para
   // siempre -- el cierre de jornada ES la senal explicita de que se dejo de

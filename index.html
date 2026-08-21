@@ -436,7 +436,7 @@ function MecanicoGate({ user }) {
     try {
       const ultima = await ultimaActividadDelDia(user.id, state.jornada.fecha);
       const horaCierre = ultima ? ultima.toTimeString().slice(0, 8) : "23:59:59";
-      await cerrarJornadaConResumen({ user, clienteId: state.jornada.cliente_id, fecha: state.jornada.fecha, horaCierre, motivoSinCierre: "olvido_cierre" });
+      await cerrarJornadaConResumen({ user, clienteId: state.jornada.cliente_id, fecha: state.jornada.fecha, horaCierre, motivoSinCierre: "olvido_cierre", cierreIdConocido: state.jornada.id });
       await cargar();
     } catch (e) {
       console.error("No se pudo cerrar la jornada anterior", e);
