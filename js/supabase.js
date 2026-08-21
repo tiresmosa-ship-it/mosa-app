@@ -2362,10 +2362,18 @@ async function cerrarJornadaConResumen({ user, clienteId, fecha, horaCierre, mot
     for (const c of (abiertos || [])) await cerrarCambioAbandonado(c, "Cerrada automáticamente: cierre de jornada");
   } catch (e) { console.error("No se pudieron cerrar las hojas de cambio abiertas al cerrar jornada", e); }
   const update = { cerrado: true, hora_cierre: horaCierre, motivo_sin_cierre: motivoSinCierre || null, observaciones: (observacionGeneral && observacionGeneral.trim()) || null, ...conteos, ...stock };
+  // Bug reportado: si este write fallaba (RLS, constraint, lo que sea) sin
+  // tirar excepcion -- el codigo no chequeaba `error` -- la funcion seguia
+  // como si hubiera cerrado bien, pero cierre_dia.cerrado seguia en false.
+  // El mecanico volvia a caer en la MISMA pantalla de "jornada sin cerrar"
+  // en el proximo intento, en un loop sin salida y sin ningun mensaje de
+  // error. Ahora se chequea y se relanza para que quien llama se entere.
   if (cierreId) {
-    await sb.from("cierre_dia").update(update).eq("id", cierreId);
+    const { error: eUpd } = await sb.from("cierre_dia").update(update).eq("id", cierreId);
+    if (eUpd) throw eUpd;
   } else {
-    await sb.from("cierre_dia").insert({ id: uuid(), cliente_id: clienteId, mecanico_id: user.id, fecha, hora_inicio: null, ...update });
+    const { error: eIns } = await sb.from("cierre_dia").insert({ id: uuid(), cliente_id: clienteId, mecanico_id: user.id, fecha, hora_inicio: null, ...update });
+    if (eIns) throw eIns;
   }
   await insertAlerta({
     id: uuid(), cliente_id: clienteId, equipo_id: null, mecanico_id: user.id,

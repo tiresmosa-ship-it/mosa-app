@@ -422,14 +422,26 @@ function MecanicoGate({ user }) {
     }
   }
 
+  // Bug reportado: si algo fallaba aca (sin conexion, error del servidor,
+  // etc.) el mecanico quedaba con el boton trabado en el spinner para
+  // siempre y sin ningun mensaje -- "cerrando" nunca se apagaba porque
+  // ultimaActividadDelDia() estaba AFUERA del try/catch (si tiraba, ni
+  // siquiera se llegaba a intentar cerrar la jornada), y aunque se llegara,
+  // no habia ningun catch que reseteara el estado ni avisara del error. Todo
+  // el cuerpo queda ahora en un try/catch/finally: cualquier falla se
+  // muestra en pantalla (con boton para reintentar) y "cerrando" siempre se
+  // apaga, nunca deja el boton trabado.
   async function cerrarJornadaAnterior() {
-    setState(s => ({ ...s, cerrando: true }));
-    const ultima = await ultimaActividadDelDia(user.id, state.jornada.fecha);
-    const horaCierre = ultima ? ultima.toTimeString().slice(0, 8) : "23:59:59";
+    setState(s => ({ ...s, cerrando: true, errorCierre: null }));
     try {
+      const ultima = await ultimaActividadDelDia(user.id, state.jornada.fecha);
+      const horaCierre = ultima ? ultima.toTimeString().slice(0, 8) : "23:59:59";
       await cerrarJornadaConResumen({ user, clienteId: state.jornada.cliente_id, fecha: state.jornada.fecha, horaCierre, motivoSinCierre: "olvido_cierre" });
-    } catch (e) { console.error("No se pudo cerrar la jornada anterior", e); }
-    await cargar();
+      await cargar();
+    } catch (e) {
+      console.error("No se pudo cerrar la jornada anterior", e);
+      setState(s => ({ ...s, cerrando: false, errorCierre: "No se pudo cerrar la jornada. Revisá tu conexión e intentá de nuevo." }));
+    }
   }
 
   if (state.status === "loading" || state.status === "ready") {
@@ -450,8 +462,9 @@ function MecanicoGate({ user }) {
             </div>
           ))}
         </div>
+        {state.errorCierre && <p className="text-[13px] font-semibold text-[#B91C1C] bg-[#FEE2E2] rounded-xl px-3 py-2 mb-3">{state.errorCierre}</p>}
         <Button className="w-full" disabled={state.cerrando} onClick={cerrarJornadaAnterior}>
-          {state.cerrando ? <span className="spinner" /> : "Cerrar jornada anterior"}
+          {state.cerrando ? <span className="spinner" /> : state.errorCierre ? "Reintentar" : "Cerrar jornada anterior"}
         </Button>
       </div>
     );
