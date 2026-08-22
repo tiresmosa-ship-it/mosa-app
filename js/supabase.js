@@ -2122,7 +2122,15 @@ async function construirPosDataDesdeEquipo(equipoId, cfg, axleCfg, equipo) {
   // por esto evita que una fila vieja con equipo_actual sin limpiar (dato
   // sucio, bodega='transito' pero todavia apuntando a este equipo) le gane a
   // la fila real en el mapa.
-  const { data, error } = await sb.from("neumaticos").select("*").eq("equipo_actual", equipoId).eq("activo", true).eq("bodega", BODEGA_ESTADOS.EN_EQUIPO);
+  // Bug encontrado en vivo: si por dato sucio DOS filas de neumaticos
+  // reclaman la MISMA posicion_actual (ej. una discrepancia vieja que quedo
+  // a medio resolver), la query no tenia ningun order() -- el orden que
+  // devuelve Postgres sin ORDER BY no esta garantizado, asi que el mapa
+  // podia terminar mostrando cualquiera de las dos de forma inconsistente
+  // entre una carga y la siguiente. Se ordena por creado_en ascendente para
+  // que, si hay conflicto, gane siempre la fila MAS RECIENTE (el forEach de
+  // abajo pisa map[posicion] en orden, la ultima en escribir gana).
+  const { data, error } = await sb.from("neumaticos").select("*").eq("equipo_actual", equipoId).eq("activo", true).eq("bodega", BODEGA_ESTADOS.EN_EQUIPO).order("creado_en", { ascending: true });
   if (error || !data) return {};
   const map = {};
   data.forEach(n => {
