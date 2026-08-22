@@ -344,6 +344,25 @@ function uuid() {
     return v.toString(16);
   });
 }
+// Bug reportado: tocar el checkbox de una tarea tildaba/destildaba VARIAS a
+// la vez en la Hoja de Cambio. Causa: generarRecomendaciones armaba antes
+// ids deterministicos por posicion/eje ("cambiar_"+pos, "rot_"+i, etc. --
+// ya corregido para auditorias NUEVAS, ver generarRecomendaciones), pero
+// las auditorias/instructivos ya guardados de ANTES de ese fix siguen
+// teniendo esos ids viejos en su JSON (posiciones_alerta.recomendaciones),
+// que no se regenera solo -- si dos tareas de ese checklist compartian el
+// mismo id viejo, React (por la key) y los handlers (x.id === c.id) las
+// trataban como una sola. Esta funcion se llama al armar CUALQUIER
+// checklist desde datos guardados, y le asigna un id nuevo a cualquier
+// item cuyo id ya aparecio antes en el mismo array.
+function dedupeChecklistIds(checklist) {
+  const vistos = new Set();
+  return checklist.map(c => {
+    if (c.id == null || vistos.has(c.id)) return { ...c, id: uuid() };
+    vistos.add(c.id);
+    return c;
+  });
+}
 async function sha256Hex(text) {
   const enc = new TextEncoder().encode(text);
   const buf = await crypto.subtle.digest("SHA-256", enc);

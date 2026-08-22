@@ -2171,10 +2171,10 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
           const pa = pendienteDlg.posiciones_alerta || {};
           const recs = Array.isArray(pa.recomendaciones) ? pa.recomendaciones : [];
           const extras = Array.isArray(pa.tareas_extra) ? pa.tareas_extra : (Array.isArray(pendienteDlg.tareas_extra) ? pendienteDlg.tareas_extra : []);
-          const cl = [
+          const cl = dedupeChecklistIds([
             ...recs.map(r => ({ id: r.id || uuid(), texto: r.texto, done: !!r.done, extra: false })),
             ...extras.map(t => ({ id: uuid(), texto: t.texto, done: !!t.done, extra: true, origen: t.origen || null }))
-          ];
+          ]);
           setChecklist(cl);
           recetaId.current = pendienteDlg.id;
           try { await sb.from("auditorias_receta").update({ estado: "en_proceso" }).eq("id", pendienteDlg.id); } catch (e) { console.error(e); }
@@ -3274,10 +3274,10 @@ function MecanicoApp({ user }) {
       const pa = receta.posiciones_alerta || {};
       const recs = Array.isArray(pa.recomendaciones) ? pa.recomendaciones : [];
       const extras = Array.isArray(pa.tareas_extra) ? pa.tareas_extra : [];
-      const checklist = [
+      const checklist = dedupeChecklistIds([
         ...recs.map(r => ({ id: r.id || uuid(), texto: r.texto, done: !!r.done, extra: false })),
         ...extras.map(t => ({ id: uuid(), texto: t.texto, done: !!t.done, extra: true, origen: t.origen || null }))
-      ];
+      ]);
       const discrepNeus = Array.isArray(pa.discrepancias_neumaticos) ? pa.discrepancias_neumaticos : [];
       const recsInfoResumen = { recs: recs.map(r => ({ id: r.id, key: r.key, texto: r.texto })) };
       db.registrarEventoSesion(clienteId, eq.id_equipo, user.id, "HOJA_CAMBIO_EN_PROCESO", { auditoriaId: receta.auditoria_id, equipoLabel: eq.patente, mecanicoNombre: user.nombre }).catch(e => console.error(e));
@@ -3316,10 +3316,10 @@ function MecanicoApp({ user }) {
         const pa = receta.posiciones_alerta || {};
         const recs = Array.isArray(pa.recomendaciones) ? pa.recomendaciones : [];
         const extras = Array.isArray(pa.tareas_extra) ? pa.tareas_extra : [];
-        const cl = [
+        const cl = dedupeChecklistIds([
           ...recs.map(r => ({ id: r.id || uuid(), texto: r.texto, done: !!r.done, extra: false })),
           ...extras.map(t => ({ id: uuid(), texto: t.texto, done: !!t.done, extra: true, origen: t.origen || null }))
-        ];
+        ]);
         const discrepNeus = Array.isArray(pa.discrepancias_neumaticos) ? pa.discrepancias_neumaticos : [];
         const recsInfoResumen = { recs: recs.map(r => ({ id: r.id, key: r.key, texto: r.texto })) };
         if (!cancel) setFlow({ stage: "cambio", equipo: eq, axleCfg, posData: pd, checklist: cl, recetaIdInicial: receta.id, pendiente: null, discrepanciasNeumaticos: discrepNeus, recsInfo: recsInfoResumen });
@@ -3383,10 +3383,10 @@ function MecanicoApp({ user }) {
             const pa = recetaEnProceso.posiciones_alerta || {};
             const recs = Array.isArray(pa.recomendaciones) ? pa.recomendaciones : [];
             const extras = Array.isArray(pa.tareas_extra) ? pa.tareas_extra : [];
-            const cl = [
+            const cl = dedupeChecklistIds([
               ...recs.map(r => ({ id: r.id || uuid(), texto: r.texto, done: !!r.done, extra: false })),
               ...extras.map(t => ({ id: uuid(), texto: t.texto, done: !!t.done, extra: true, origen: t.origen || null }))
-            ];
+            ]);
             const discrepNeus = Array.isArray(pa.discrepancias_neumaticos) ? pa.discrepancias_neumaticos : [];
             const recsInfoResumen = { recs: recs.map(r => ({ id: r.id, key: r.key, texto: r.texto })) };
             db.registrarEventoSesion(clienteId, flow.equipo.id_equipo, user.id, "HOJA_CAMBIO_EN_PROCESO", { auditoriaId: recetaEnProceso.auditoria_id, equipoLabel: flow.equipo.patente, mecanicoNombre: user.nombre }).catch(e => console.error(e));
@@ -3402,10 +3402,10 @@ function MecanicoApp({ user }) {
               const pa = (receta && receta.posiciones_alerta) || {};
               const recs = Array.isArray(pa.recomendaciones) ? pa.recomendaciones : [];
               const extras = Array.isArray(pa.tareas_extra) ? pa.tareas_extra : [];
-              const cl = [
+              const cl = dedupeChecklistIds([
                 ...recs.map(r => ({ id: r.id || uuid(), texto: r.texto, done: !!r.done, extra: false })),
                 ...extras.map(t => ({ id: uuid(), texto: t.texto, done: !!t.done, extra: true, origen: t.origen || null }))
-              ];
+              ]);
               const discrepNeus = Array.isArray(pa.discrepancias_neumaticos) ? pa.discrepancias_neumaticos : [];
               const recsInfoResumen = { recs: recs.map(r => ({ id: r.id, key: r.key, texto: r.texto })) };
               db.registrarEventoSesion(clienteId, flow.equipo.id_equipo, user.id, "HOJA_CAMBIO_EN_PROCESO", { auditoriaId: v.auditoriaId, equipoLabel: flow.equipo.patente, mecanicoNombre: user.nombre }).catch(e => console.error(e));
@@ -3452,10 +3452,10 @@ function MecanicoApp({ user }) {
           // "no cumplida" y baja el % de instructivo seguido sin sentido (el
           // bug que pide arreglar Fix 2). r.key existe solo en recomendaciones
           // reales.
-          const checklist = [
+          const checklist = dedupeChecklistIds([
             ...recsInfo.recs.filter(r => r.key).map(r => ({ id: r.id || uuid(), texto: r.texto, done: false, extra: false })),
             ...(tareasExtra || []).map(t => ({ id: uuid(), texto: t.texto, done: false, extra: true, origen: t.origen || null }))
-          ];
+          ]);
           let discrepanciasNeumaticos = [];
           try { discrepanciasNeumaticos = await compararNeumaticosAuditoria(clienteId, flow.equipo.id_equipo, posData); }
           catch (e) { console.error("No se pudo comparar neumáticos contra el sistema", e); }
