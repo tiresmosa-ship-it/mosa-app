@@ -1790,7 +1790,7 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
           const nuevasExtras = extras.filter(t => !idsLocales.has(t.id)).map(t => ({ id: t.id, texto: t.texto, done: !!t.done, extra: true, origen: t.origen || null, tipo_origen: t.tipo_origen, creado_por: t.creado_por, fecha_origen: t.fecha_origen }));
           if (vigentes.length === cs.length && !nuevasRecs.length && !nuevasExtras.length) return cs;
           if (nuevasRecs.length || nuevasExtras.length) pushToast("🔔 Nueva tarea agregada al instructivo");
-          return [...vigentes, ...nuevasRecs, ...nuevasExtras];
+          return dedupeChecklistIds([...vigentes, ...nuevasRecs, ...nuevasExtras]);
         });
       }).subscribe();
     return () => { sb.removeChannel(canal); };
@@ -1850,7 +1850,14 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
       const r = (recsInfo && recsInfo.recs || []).find(x => x.id === c.id) || {};
       return { id: c.id, key: r.key || null, texto: c.texto, done: !!c.done, tipo_origen: c.tipo_origen || "sistema", creado_por: c.creado_por || "Sistema (Automático)", fecha_origen: c.fecha_origen || todayISO(), estado: c.done ? "COMPLETADA" : "HACER_HOY" };
     });
-    const tareas_extra = cs.filter(c => c.extra).map(c => ({ texto: c.texto, done: !!c.done, origen: c.origen || null, tipo_origen: c.tipo_origen || "mecanico", creado_por: c.creado_por || null, fecha_origen: c.fecha_origen || todayISO(), estado: c.done ? "COMPLETADA" : "HACER_HOY" }));
+    // Bug reportado: esto no guardaba `id` -- el efecto de sincronizacion en
+    // vivo (mas abajo, "hc-checklist-") recibe este mismo posiciones_alerta
+    // de vuelta (el propio guardado del mecanico dispara su propio evento
+    // postgres_changes) y usa t.id para decidir que tareas ya estan
+    // vigentes localmente. Sin id, TODAS las tareas_extra volvian con
+    // id=undefined -- compartiendo el mismo id "undefined", tocar el
+    // checkbox de una tildaba/destildaba todas las demas juntas.
+    const tareas_extra = cs.filter(c => c.extra).map(c => ({ id: c.id, texto: c.texto, done: !!c.done, origen: c.origen || null, tipo_origen: c.tipo_origen || "mecanico", creado_por: c.creado_por || null, fecha_origen: c.fecha_origen || todayISO(), estado: c.done ? "COMPLETADA" : "HACER_HOY" }));
     pushQueue({
       id: uuid(), tipo: "cambio_checklist", clienteId, ts: Date.now(), data: {
         receta_id: recetaId.current,
