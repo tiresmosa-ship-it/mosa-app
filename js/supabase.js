@@ -2086,7 +2086,16 @@ async function construirYGuardarAuditoria({ user, clienteId, equipo, cfg, posDat
   pushQueue({ id: uuid(), tipo: "auditoria", clienteId, ts: Date.now(), data: cab });
   alertasGeneradas.forEach(a => pushQueue({ id: uuid(), tipo: "alerta", clienteId, ts: Date.now(), data: a }));
   discrepanciasParaAdmin.forEach(d => pushQueue({ id: uuid(), tipo: "discrepancia_auditoria", clienteId, ts: Date.now(), data: d }));
-  syncQueue();
+  // Bug reportado: syncQueue() se llamaba sin await -- la auditoria quedaba
+  // en la cola local, todavia sin llegar a `auditorias`/`neumaticos` en el
+  // servidor, mientras el resto del flujo ya seguia adelante. Si el mecanico
+  // salia de la Hoja de Cambio y volvia a entrar (o volvia a auditar el
+  // mismo equipo) antes de que la cola terminara de sincronizar, las
+  // consultas fresh a la base (verificarValidezAuditoria, construirPosData-
+  // DesdeEquipo) todavia no veian esta auditoria y traian la ANTERIOR. Se
+  // espera la sincronizacion antes de devolver el control (si esta offline,
+  // syncQueue ya resuelve al toque sin bloquear).
+  await syncQueue();
   return { alertas: alertasGeneradas.length, recetaId, auditoriaId: cab.id_auditoria };
 }
 

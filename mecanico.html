@@ -1048,16 +1048,20 @@ function ResumenInstructivoModal({ resumen, onEntendido }) {
   );
 }
 
-function AuditoriaForm({ user, clienteId, equipo, cfg, onCancel, onGenerarInstructivo, posDataInicial }) {
+function AuditoriaForm({ user, clienteId, equipo, cfg, onCancel, onGenerarInstructivo, posDataInicial, kmInicial }) {
   const [frioConfirmado, setFrioConfirmado] = useState(false);
   // Un semirremolque no tiene motor/odometro propio -- el km real es del
   // tracto que lo arrastra en cada viaje, no algo que el semi pueda
   // reportar. Pedirle "los km" al mecanico antes de poder auditar un SEMI
   // era friccion sin sentido (cliente ELB, mayoria de la flota son semis).
   // Se salta el paso completo: km queda en "0" y no se vuelve a pedir.
+  // Requerimiento: "Ver / Editar Auditoria" (Validez 48hs) tampoco debe
+  // volver a pedir el km -- se mantiene el mismo que ya quedo cargado en
+  // esa auditoria (kmInicial, ver onVerEditarAuditoria).
   const esSemi = equipo.tipo === "SEMI";
-  const [km, setKm] = useState(esSemi ? "0" : "");
-  const [kmSet, setKmSet] = useState(esSemi);
+  const tieneKmInicial = kmInicial != null;
+  const [km, setKm] = useState(esSemi ? "0" : (tieneKmInicial ? String(kmInicial) : ""));
+  const [kmSet, setKmSet] = useState(esSemi || tieneKmInicial);
   const axleCfg = axleConfigFor(equipo);
   const allPositions = axleCfg.rows.flatMap(r => r.positions);
   // Requerimiento: Validez de Auditoria por 48hs -- "Ver / Editar Auditoria"
@@ -3418,15 +3422,25 @@ function MecanicoApp({ user }) {
                 const ev = evaluarPosicion(axleCfg, cfg, p, flow.equipo.tipo, data);
                 pd[p] = { ...data, posicion: p, status: ev.status, minMM: ev.minMM, motivos: ev.motivos };
               });
+              // Requerimiento: dentro de la ventana de 48hs, editar una
+              // auditoria no debe volver a pedir el kilometraje -- se
+              // mantiene el mismo que ya quedo cargado en esa auditoria.
+              let kmInicial = null;
+              if (v && v.auditoriaId) {
+                try {
+                  const { data: audRow } = await sb.from("auditorias").select("kilometraje").eq("id_auditoria", v.auditoriaId).maybeSingle();
+                  kmInicial = audRow ? audRow.kilometraje : null;
+                } catch (e) { console.error("No se pudo leer el kilometraje de la auditoría", e); }
+              }
               db.registrarEventoSesion(clienteId, flow.equipo.id_equipo, user.id, "AUDITORIA_INICIADA", { equipoLabel: flow.equipo.patente, mecanicoNombre: user.nombre }).catch(e => console.error(e));
-              setFlow({ stage: "auditoria", equipo: flow.equipo, posDataInicial: pd });
+              setFlow({ stage: "auditoria", equipo: flow.equipo, posDataInicial: pd, kmInicial });
             } catch (e) { console.error("No se pudo abrir la auditoría para editar", e); setFlow(null); }
           }} />
       </>
     );
   } else if (flow && flow.stage === "auditoria") {
     body = (
-      <AuditoriaForm user={user} clienteId={clienteId} equipo={flow.equipo} cfg={cfg} posDataInicial={flow.posDataInicial}
+      <AuditoriaForm user={user} clienteId={clienteId} equipo={flow.equipo} cfg={cfg} posDataInicial={flow.posDataInicial} kmInicial={flow.kmInicial}
         onCancel={() => setFlow(null)}
         onGenerarInstructivo={async (posData, axleCfg, km, startedAt, tareasExtra) => {
           const recsInfo = generarRecomendaciones(posData, axleCfg, flow.equipo.tipo, cfg);
