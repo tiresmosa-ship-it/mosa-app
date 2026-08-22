@@ -1204,22 +1204,36 @@ async function enviarAuditoria(data) {
   for (const p of posiciones) {
     if (p.numero_fuego) await asegurarNeumatico(cliente_id, p.numero_fuego, cab.equipo_id, p.posicion, p);
   }
-  // Item 9: al generar el instructivo, el neumatico auditado en cada posicion
-  // se actualiza con los datos medidos (psi/mm, y marca/modelo/medida si el
-  // mecanico los cambio) — con o sin discrepancia (caso B tambien actualiza;
-  // la aprobacion del Admin es sobre el CAMBIO de neumatico/posicion, no
-  // sobre estos valores medidos). No toca equipo_actual/posicion_actual: eso
-  // sigue resolviendose via resolverDiscrepanciaAuditoria cuando corresponde.
+  // Requerimiento: al mecanico NUNCA se lo traba en el dia a dia por una
+  // discrepancia -- se trabaja siempre segun la ULTIMA auditoria. Antes,
+  // si el fuego auditado en una posicion no coincidia con lo que el
+  // sistema ya tenia ahi (numero de fuego de otro equipo, por ejemplo), la
+  // posicion NO se reasignaba hasta que el Admin aprobara la discrepancia
+  // (ver el viejo comentario de "Item 9" mas abajo en el historial) -- el
+  // mecanico quedaba con el mapa mostrando el neumatico viejo, sin poder
+  // seguir operando ese equipo con los datos reales. Ahora la auditoria
+  // reasigna equipo_actual/posicion_actual/bodega de inmediato (con o sin
+  // discrepancia), y la discrepancia igual queda registrada aparte
+  // (discrepancias_inventario) para que el Admin la revise por la alerta a
+  // su perfil, ya con el equipo operando normalmente.
   for (const p of posiciones) {
     if (!p.numero_fuego) continue;
-    const upd = {};
+    // Libera cualquier OTRO neumatico que haya quedado apuntando a esta
+    // misma posicion de este equipo con un fuego distinto -- evita que dos
+    // filas reclamen la misma posicion_actual tras un cambio de fuego
+    // detectado en la auditoria.
+    await sb.from("neumaticos").update({ posicion_actual: null })
+      .eq("cliente_id", cliente_id).eq("equipo_actual", cab.equipo_id).eq("posicion_actual", p.posicion)
+      .neq("numero_fuego", p.numero_fuego);
+    const upd = {
+      equipo_actual: cab.equipo_id, posicion_actual: p.posicion,
+      bodega: BODEGA_ESTADOS.EN_EQUIPO, estado_actual: "en_uso"
+    };
     if (p.psi != null) upd.psi_actual = p.psi;
     if (p.milimetros != null) upd.milimetros = p.milimetros;
     if (p.marca) upd.marca = p.marca;
     if (p.modelo) upd.modelo = p.modelo;
-    if (Object.keys(upd).length) {
-      await sb.from("neumaticos").update(upd).eq("cliente_id", cliente_id).eq("numero_fuego", p.numero_fuego);
-    }
+    await sb.from("neumaticos").update(upd).eq("cliente_id", cliente_id).eq("numero_fuego", p.numero_fuego);
   }
   const rows = posiciones.map(p => ({
     id: p.id, posicion: p.posicion, numero_fuego: p.numero_fuego || null,
@@ -3057,30 +3071,23 @@ async function fetchDiscrepanciasAuditoriaHoy(clienteId) {
   return data.map(d => ({ ...d, equipo: eqMap[d.equipo_id] || null, mecanico: mecMap[d.mecanico_id] || null }));
 }
 
+// Requerimiento: al mecanico no se lo traba nunca por una discrepancia --
+// enviarAuditoria ya reasigna equipo_actual/posicion_actual del neumatico
+// FISICO encontrado de inmediato, con o sin discrepancia (ver mas arriba).
+// Esta funcion ya NO decide si se reasigna o no (eso ya paso); solo resuelve
+// que pasa con el neumatico que el SISTEMA tenia antes en esa posicion
+// (queda "huerfano" -- sigue figurando en su equipo, sin posicion, ver el
+// paso que libera posicion_actual en enviarAuditoria) y deja constancia de
+// la revision del Admin.
 async function resolverDiscrepanciaAuditoria(discrepancia, aprobar, justificacion, adminUser) {
   if (aprobar) {
     const campo = discrepancia.tipo_discrepancia || "numero_fuego";
-    if (campo === "numero_fuego") {
-      // El neumatico que el sistema tenia en esa posicion sale sin registro formal -> transito.
-      if (discrepancia.valor_sistema) {
-        await sb.from("neumaticos").update({ equipo_actual: null, posicion_actual: null, bodega: "transito" })
-          .eq("cliente_id", discrepancia.cliente_id).eq("numero_fuego", discrepancia.valor_sistema);
-      }
-      // El neumatico que el mecanico encontro queda montado en esa posicion.
-      const { data: existente } = await sb.from("neumaticos").select("id_neumatico").eq("cliente_id", discrepancia.cliente_id).eq("numero_fuego", discrepancia.valor_fisico).maybeSingle();
-      if (existente) {
-        await sb.from("neumaticos").update({ equipo_actual: discrepancia.equipo_id, posicion_actual: discrepancia.posicion, estado_actual: "en_uso", bodega: BODEGA_ESTADOS.EN_EQUIPO }).eq("id_neumatico", existente.id_neumatico);
-      } else {
-        await sb.from("neumaticos").insert({
-          id_neumatico: uuid(), numero_fuego: discrepancia.valor_fisico, cliente_id: discrepancia.cliente_id,
-          equipo_actual: discrepancia.equipo_id, posicion_actual: discrepancia.posicion, estado_actual: "en_uso", bodega: BODEGA_ESTADOS.EN_EQUIPO,
-          fecha_ingreso: todayISO(), activo: true
-        });
-      }
-    } else {
-      // marca / medida: corrige el dato del neumatico que esta montado en esa posicion.
-      await sb.from("neumaticos").update({ [campo]: discrepancia.valor_fisico })
-        .eq("cliente_id", discrepancia.cliente_id).eq("equipo_actual", discrepancia.equipo_id).eq("posicion_actual", discrepancia.posicion);
+    // El neumatico que el sistema tenia antes en esa posicion sale sin
+    // registro formal -> transito. (marca/medida ya se corrigieron solas en
+    // enviarAuditoria, nada mas que hacer aca para ese caso).
+    if (campo === "numero_fuego" && discrepancia.valor_sistema) {
+      await sb.from("neumaticos").update({ equipo_actual: null, posicion_actual: null, bodega: "transito" })
+        .eq("cliente_id", discrepancia.cliente_id).eq("numero_fuego", discrepancia.valor_sistema);
     }
   }
   const { error } = await sb.from("discrepancias_inventario").update({

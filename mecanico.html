@@ -900,7 +900,7 @@ const REFERENCIAS_MAPA = [
   { key: "sin_neumatico", tipo: "circulo", border: "#D1D5DB", bg: "#F9FAFB", dashed: true, label: "Sin neumático", desc: "Posición del eje sin neumático montado." },
   { key: "checkpoint", tipo: "icon", icon: "checkpointPin", label: "Checkpoint", desc: "Verificación de torque (checkpoint) realizada en esta posición. Solo aplica a ruedas externas/sencillas." },
   { key: "alargadera", tipo: "icon", icon: "alargaderaManguera", label: "Alargadera", desc: "Extensor de válvula colocado. Solo aplica al neumático interno de una rueda doble." },
-  { key: "aprobacion", tipo: "emoji", icon: "🔒", label: "Aprobación", desc: "Discrepancia de neumático detectada en la última auditoría, pendiente de aprobación del supervisor." },
+  { key: "aprobacion", tipo: "emoji", icon: "🔒", label: "Aprobación", desc: "Discrepancia detectada en la última auditoría, en revisión del Admin — no bloquea, el equipo ya opera con este dato." },
   { key: "irregular", tipo: "emoji", icon: "⚠️", label: "Irregular", desc: "Desgaste irregular detectado en la última auditoría para esta posición." }
 ];
 function ReferenciaSimbolo({ item, size = 12 }) {
@@ -2435,12 +2435,13 @@ function TireInfoModal({ pos, data, cfg, equipo, axleCfg, onClose, onRegularPsi,
             <p className="text-[12.5px] font-bold text-[#92400E]">⚠ Desgaste irregular detectado en última auditoría</p>
           </div>
         )}
-        {/* Fix 5: discrepancia de neumatico sin aprobar por el Admin — informativo,
-            el mecanico no puede resolverla desde aca. */}
+        {/* Requerimiento: la discrepancia NUNCA bloquea al mecanico -- el
+            equipo ya opera normalmente con lo ultimo auditado. Esto es
+            solo informativo (le avisa que el Admin la va a revisar). */}
         {pendienteAprobacion && (
-          <div className="mt-2 bg-[#FEE2E2] rounded-xl px-3 py-2">
-            <p className="text-[12.5px] font-bold text-[#B91C1C]">🔒 Pendiente de aprobación del supervisor</p>
-            <p className="text-[11.5px] text-[#B91C1C] mt-0.5">Este neumático tiene una discrepancia detectada en la última auditoría.</p>
+          <div className="mt-2 bg-[#FEF3C7] rounded-xl px-3 py-2">
+            <p className="text-[12.5px] font-bold text-[#92400E]">🔒 Discrepancia en revisión</p>
+            <p className="text-[11.5px] text-[#92400E] mt-0.5">Este neumático no coincidía con lo registrado — ya está operando igual, el Admin la va a revisar.</p>
           </div>
         )}
         <p className="text-[13px] text-muted mt-2">{data.marca || "Sin marca"} · {data.medida || "-"}</p>

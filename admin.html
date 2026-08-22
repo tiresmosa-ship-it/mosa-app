@@ -228,7 +228,7 @@ const REFERENCIAS_MAPA = [
   { key: "sin_neumatico", tipo: "circulo", border: "#D1D5DB", bg: "#F9FAFB", dashed: true, label: "Sin neumático", desc: "Posición del eje sin neumático montado." },
   { key: "checkpoint", tipo: "icon", icon: "checkpointPin", label: "Checkpoint", desc: "Verificación de torque (checkpoint) realizada en esta posición. Solo aplica a ruedas externas/sencillas." },
   { key: "alargadera", tipo: "icon", icon: "alargaderaManguera", label: "Alargadera", desc: "Extensor de válvula colocado. Solo aplica al neumático interno de una rueda doble." },
-  { key: "aprobacion", tipo: "emoji", icon: "🔒", label: "Aprobación", desc: "Discrepancia de neumático detectada en la última auditoría, pendiente de aprobación del supervisor." },
+  { key: "aprobacion", tipo: "emoji", icon: "🔒", label: "Aprobación", desc: "Discrepancia detectada en la última auditoría, en revisión del Admin — no bloquea, el equipo ya opera con este dato." },
   { key: "irregular", tipo: "emoji", icon: "⚠️", label: "Irregular", desc: "Desgaste irregular detectado en la última auditoría para esta posición." }
 ];
 function ReferenciaSimbolo({ item, size = 12 }) {
@@ -1428,14 +1428,15 @@ function PosicionDetalleModal({ n, pos, equipo, discrepanciaPendiente, setView, 
           </div>
         )}
         {fotoDesgasteVer && <FotoMontajeModal url={n.aud.url_foto_desgaste_irregular} titulo="Evidencia de desgaste irregular" onClose={() => setFotoDesgasteVer(false)} />}
-        {/* Fix 5: discrepancia sin aprobar — a diferencia de mecanico.html, acá
-            el Admin SI puede resolverla, con un boton directo a Jornada >
-            Movimientos > Discrepancias. */}
+        {/* Requerimiento: la discrepancia ya NO bloquea al mecanico -- el
+            equipo opera normalmente con lo ultimo auditado desde el momento
+            en que se guardo la auditoria. El Admin la revisa aca, a
+            diferencia de mecanico.html donde es solo informativo. */}
         {discrepanciaPendiente && (
-          <div className="bg-[#FEE2E2] rounded-xl px-3 py-2">
-            <p className="text-[12.5px] font-bold text-[#B91C1C]">🔒 Pendiente de aprobación del supervisor</p>
-            <p className="text-[11.5px] text-[#B91C1C] mt-0.5 mb-2">Este neumático tiene una discrepancia detectada en la última auditoría.</p>
-            <Button variant="subtle" className="h-9 px-3 text-[12.5px]" onClick={() => irAResolucion({ tipo: "neumatico_no_registrado", equipo_id: equipo.id_equipo, posicion: pos, equipo }, setView)}>Resolver →</Button>
+          <div className="bg-[#FEF3C7] rounded-xl px-3 py-2">
+            <p className="text-[12.5px] font-bold text-[#92400E]">🔒 Discrepancia sin revisar</p>
+            <p className="text-[11.5px] text-[#92400E] mt-0.5 mb-2">Este neumático no coincidía con lo registrado — ya está operando igual, no quedó bloqueado.</p>
+            <Button variant="subtle" className="h-9 px-3 text-[12.5px]" onClick={() => irAResolucion({ tipo: "neumatico_no_registrado", equipo_id: equipo.id_equipo, posicion: pos, equipo }, setView)}>Revisar →</Button>
           </div>
         )}
         <div className="flex items-center justify-between"><span className="text-muted">Marca</span><span className="font-bold">{n.marca || "-"}</span></div>
@@ -2249,6 +2250,7 @@ function DiscrepanciaAuditoriaCard({ d, onResolver }) {
         <p><span className="font-semibold">Sistema registra:</span> {d.valor_sistema == null ? "sin registro" : d.valor_sistema}</p>
         <p><span className="font-semibold">Mecánico encontró:</span> {d.valor_fisico}</p>
       </div>
+      <p className="text-[11.5px] text-[#92400E]">ℹ️ El equipo ya está operando con lo que encontró el mecánico (no se lo bloquea). Aprobar solo envía a tránsito el neumático que el sistema tenía registrado antes en esa posición.</p>
       <Field label="Justificación" required hint="Obligatoria para aprobar">
         <TextArea value={justificacion} onChange={e => setJustificacion(e.target.value)} placeholder="Explicá por qué se aprueba o se rechaza..." />
       </Field>
@@ -2274,7 +2276,7 @@ function DiscrepanciasAuditoriaTab({ filtro, adminUser, pushToast, onCambio }) {
   async function resolver(d, aprobar, justificacion) {
     await resolverDiscrepanciaAuditoria(d, aprobar, justificacion, adminUser);
     setLista(ds => ds.filter(x => x.id !== d.id));
-    pushToast(aprobar ? "✓ Discrepancia aprobada — neumaticos actualizado" : "✓ Discrepancia rechazada");
+    pushToast(aprobar ? "✓ Revisado — neumático anterior enviado a tránsito" : "✓ Discrepancia rechazada");
     onCambio && onCambio();
   }
 
@@ -4723,7 +4725,7 @@ function DiscrepanciaNeumaticoDetalleModal({ alerta, adminUser, onClose, onResue
   async function resolver(d, aprobar, justificacion) {
     await resolverDiscrepanciaAuditoria(d, aprobar, justificacion, adminUser);
     await marcarAlertaResuelta(alerta.id, adminUser.id, justificacion);
-    pushToast(aprobar ? "✓ Discrepancia aprobada — neumaticos actualizado" : "✓ Discrepancia rechazada");
+    pushToast(aprobar ? "✓ Revisado — neumático anterior enviado a tránsito" : "✓ Discrepancia rechazada");
     onResuelto();
   }
 
