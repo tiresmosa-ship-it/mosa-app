@@ -39,7 +39,14 @@ const DEFAULT_CFG = {
   medidas_permitidas: ["295/80R22.5", "11R22.5"],
   // Default true: clientes existentes (La Portada, BYS) sin fila propia en
   // config_cliente siguen viendo el flujo de recauchado sin cambios.
-  usa_recauchados: true
+  usa_recauchados: true,
+  // Requerimiento (Motor de Reglas, Prioridad 5): ejes con autoinflado no
+  // reciben recomendacion de "Calibrar presion de aire" -- lista de labels
+  // de axleCfg.rows (ej. "Eje delantero", "Eje 2") configurable por cliente
+  // via config_cliente (clave 'ejes_autoinflado', ver fetchConfig). Vacio
+  // por default: ningun cliente pierde la recomendacion hasta que se
+  // configure explicitamente.
+  ejes_autoinflado: []
 };
 
 const TOOLS_CHECKLIST = [
@@ -451,7 +458,7 @@ const db = {
     if (error) throw error;
     const map = { ...DEFAULT_CFG };
     const CLAVES_TEXTO = ["formula_marca_fuego", "medida_default", "moneda"];
-    const CLAVES_JSON = ["medidas_permitidas"];
+    const CLAVES_JSON = ["medidas_permitidas", "ejes_autoinflado"];
     const CLAVES_BOOL = ["usa_recauchados"];
     (data || []).forEach(r => {
       if (CLAVES_JSON.includes(r.clave)) { try { map[r.clave] = JSON.parse(r.valor); } catch (e) { map[r.clave] = DEFAULT_CFG[r.clave]; } return; }
@@ -1815,6 +1822,17 @@ function statusLabel(s) { return s === "alerta" ? "Con alertas" : s === "atencio
 /* =====================================================================
    GENERADOR DE RECOMENDACIONES (receta)
 ===================================================================== */
+// Requerimiento: Motor de Reglas y Escala de Prioridades de Tareas.
+// Jerarquia ESTRICTA de absorcion (una posicion nunca recibe dos tareas
+// contradictorias): P1 Retiro obligatorio (<=3mm) > P2 Cambio preventivo
+// (alerta pero >3mm) > P3 Desgaste irregular > P4 Rotacion por eje > P5
+// Calibrar PSI. Las prioridades mas altas "absorben" (suprimen) las
+// recomendaciones mas bajas que ya no tienen sentido sobre ese neumatico:
+//  - P1 absorbe PSI y rotacion sobre ESA posicion (no tiene sentido
+//    calibrar o rotar un neumatico que hay que dar de baja ya).
+//  - P4 absorbe PSI en el/los origen(es) del eje que rota -- se traslada
+//    al montaje en la nueva posicion (se aclara en el propio texto de la
+//    tarea, ya que el destino final lo define el mecanico al rotar en la HC).
 function generarRecomendaciones(posData, axleCfg, equipoTipo, cfg) {
   const recs = [];
   const posicionesAlerta = [];
@@ -1822,22 +1840,43 @@ function generarRecomendaciones(posData, axleCfg, equipoTipo, cfg) {
     if (d.status === "alerta" || d.status === "atencion") posicionesAlerta.push({ posicion: d.posicion, status: d.status, motivos: d.motivos });
   });
 
-  const conPsiFuera = Object.values(posData).filter(d => (d.motivos || []).some(m => m.startsWith("psi"))).sort((a, b) => a.posicion - b.posicion);
-  conPsiFuera.forEach(d => recs.push({ id: uuid(), key: "rec_calibrar_psi", texto: `Calibrar presión de aire en P${d.posicion} (actual ${d.psi} psi)` }));
+  // Mapa posicion -> indice de eje (rows/groups van en paralelo) para poder
+  // consultar si ese eje tiene autoinflado (Prioridad 5).
+  const ejeDePos = {};
+  (axleCfg.groups || []).forEach((grupo, i) => grupo.forEach(p => { ejeDePos[p] = i; }));
+  const ejesConAutoinflado = new Set(cfg.ejes_autoinflado || []);
 
-  const criticos = Object.values(posData).filter(d => d.status === "alerta" && (d.motivos || []).some(m => m.startsWith("mm"))).sort((a, b) => a.posicion - b.posicion);
-  criticos.forEach(d => recs.push({ id: uuid(), key: "rec_cambiar_neumaticos", texto: `Cambiar neumático en P${d.posicion} (${d.minMM} mm)` }));
+  // ---- Prioridad 1 (Critica): retiro obligatorio, mm <= 3 ----
+  const posRetiroObligatorio = new Set();
+  Object.values(posData).filter(d => d.minMM != null && d.minMM <= 3).sort((a, b) => a.posicion - b.posicion)
+    .forEach(d => {
+      posRetiroObligatorio.add(d.posicion);
+      recs.push({ id: uuid(), key: "rec_retiro_obligatorio", texto: `RETIRO OBLIGATORIO en P${d.posicion} (${d.minMM} mm) enviar a Bajas` });
+    });
 
-  // Requerimiento 1 (motor de reglas): desgaste irregular detectado en la
-  // auditoria (tipo_desgaste, ver PosicionModal) -> tarea de revision/rotacion.
-  const irregulares = Object.values(posData).filter(d => d.tipo_desgaste === "irregular").sort((a, b) => a.posicion - b.posicion);
-  irregulares.forEach(d => recs.push({ id: uuid(), key: "rec_revisar_irregular", texto: `Revisar / rotar posición P${d.posicion} (desgaste irregular)` }));
+  // ---- Prioridad 2 (Cambio preventivo): zona de alerta por mm, pero > 3mm.
+  // Si ya cayo en Prioridad 1 no se duplica la tarea sobre la misma posicion. ----
+  Object.values(posData)
+    .filter(d => !posRetiroObligatorio.has(d.posicion) && d.status === "alerta" && (d.motivos || []).some(m => m.startsWith("mm")))
+    .sort((a, b) => a.posicion - b.posicion)
+    .forEach(d => recs.push({ id: uuid(), key: "rec_cambiar_neumaticos", texto: `Cambiar neumático en P${d.posicion} (${d.minMM} mm)` }));
 
+  // ---- Prioridad 3 (Desgaste irregular) ----
+  Object.values(posData).filter(d => d.tipo_desgaste === "irregular").sort((a, b) => a.posicion - b.posicion)
+    .forEach(d => recs.push({ id: uuid(), key: "rec_revisar_irregular", texto: `Revisar / rotar posición P${d.posicion} (desgaste irregular)` }));
+
+  // ---- Prioridad 4 (Rotacion por eje): un eje con alguna posicion en
+  // retiro obligatorio no rota -- no tiene sentido rotar un neumatico que
+  // hay que dar de baja, y el resto del eje ya no forma un patron valido
+  // de rotacion sin ese neumatico. ----
+  const posRotacion = new Set();
   axleCfg.groups.forEach((grupo, i) => {
+    if (grupo.some(p => posRetiroObligatorio.has(p))) return;
     const mms = grupo.map(p => posData[p] && posData[p].minMM).filter(v => v != null);
     if (mms.length < 2) return;
     const max = Math.max(...mms), min = Math.min(...mms);
     if (max > 0 && ((max - min) / max) * 100 >= cfg.mm_rotacion_pct) {
+      grupo.forEach(p => { if (posData[p]) posRotacion.add(p); });
       const row = axleCfg.rows[i];
       const label = row ? row.label : `Eje ${i + 1}`;
       // Bug de seleccion/accion masiva en Tareas Pendientes: estos ids eran
@@ -1847,10 +1886,22 @@ function generarRecomendaciones(posData, axleCfg, equipoTipo, cfg) {
       // (ver consolidarTareasPendientes) -- eso hacia que tildar o derivar
       // una tarea a Pendiente afectara a todas las que compartian ese id.
       // Cada tarea ahora nace con un uuid propio, unico e independiente.
-      if (row && row.type === "D") recs.push({ id: uuid(), key: "rec_rotar_delanteros", texto: `Rotar neumáticos delanteros (desgaste desparejo, eje ${label})` });
-      else recs.push({ id: uuid(), key: equipoTipo === "SEMI" ? `rec_rotar_semi_e${i + 1}` : "rec_rotar_traccionales", texto: `Rotar neumáticos del eje ${label} (desgaste desparejo)` });
+      if (row && row.type === "D") recs.push({ id: uuid(), key: "rec_rotar_delanteros", texto: `Rotar neumáticos delanteros (desgaste desparejo, eje ${label}) — recalibrar PSI al remontar` });
+      else recs.push({ id: uuid(), key: equipoTipo === "SEMI" ? `rec_rotar_semi_e${i + 1}` : "rec_rotar_traccionales", texto: `Rotar neumáticos del eje ${label} (desgaste desparejo) — recalibrar PSI al remontar` });
     }
   });
+
+  // ---- Prioridad 5 (Calibrar PSI): solo si esa posicion no se retira ni se
+  // rota, y su eje no tiene autoinflado. ----
+  Object.values(posData)
+    .filter(d => {
+      if (posRetiroObligatorio.has(d.posicion) || posRotacion.has(d.posicion)) return false;
+      const row = axleCfg.rows[ejeDePos[d.posicion]];
+      if (row && ejesConAutoinflado.has(row.label)) return false;
+      return (d.motivos || []).some(m => m.startsWith("psi"));
+    })
+    .sort((a, b) => a.posicion - b.posicion)
+    .forEach(d => recs.push({ id: uuid(), key: "rec_calibrar_psi", texto: `Calibrar presión de aire en P${d.posicion} (actual ${d.psi} psi)` }));
 
   if (!recs.length) recs.push({ id: uuid(), key: null, texto: "Todo en orden, sin tareas pendientes" });
   return { recs, posicionesAlerta };

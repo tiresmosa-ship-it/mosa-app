@@ -1412,13 +1412,18 @@ function Instructivo({ equipo, axleCfg, posData, recsInfo, checklist, setCheckli
           // ofrecer un atajo directo al neumatico de esa posicion.
           const m = /posici[oó]n\s*(\d+)|\bpos\.?\s*(\d+)/i.exec(c.texto);
           const posMatch = m ? parseInt(m[1] || m[2], 10) : null;
+          // Requerimiento (Motor de Reglas, Prioridad 1): resaltar en rojo la
+          // maxima prioridad de la escala (retiro obligatorio <=3mm).
+          const esCritica = c.texto.startsWith("RETIRO OBLIGATORIO");
           return (
-            <div key={c.id} className="w-full text-left bg-white rounded-2xl border border-bd shadow-card px-4 py-3 flex items-center gap-3">
+            <div key={c.id} className={cx("w-full text-left rounded-2xl border shadow-card px-4 py-3 flex items-center gap-3",
+              esCritica ? "bg-[#FEF2F2] border-[#FCA5A5] border-l-4 border-l-[#DC2626]" : "bg-white border-bd")}>
               <button onClick={() => toggle(c.id)} className="flex items-center gap-3 flex-1 min-w-0 text-left">
                 <span className={cx("w-6 h-6 rounded-lg flex items-center justify-center shrink-0", c.done ? "bg-ink" : "bg-white border border-[#D1D5DB]")}>
                   {c.done && <Icon.check width="14" height="14" className="text-white" />}
                 </span>
-                <span className={cx("text-[14px] font-semibold flex-1", c.done && "strike")}>{c.texto}</span>
+                {esCritica && <span className="shrink-0">🛑</span>}
+                <span className={cx("text-[14px] font-semibold flex-1", esCritica && "text-[#B91C1C]", c.done && "strike")}>{c.texto}</span>
               </button>
               {c.origen && <Badge color="amber">De auditoría {formatDateLong(c.origen)}</Badge>}
               {c.extra && <Icon.pencil width="15" height="15" className="text-muted shrink-0" />}
@@ -2307,17 +2312,23 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
           const m = /pos(?:ici[oó]n)?\.?\s*(\d+)|\bP(\d+)\b/i.exec(c.texto);
           const posMatch = m ? parseInt(m[1] || m[2], 10) : null;
           const tieneModal = posMatch != null && posData[posMatch];
+          // Requerimiento (Motor de Reglas, Prioridad 1): retiro obligatorio
+          // por <=3mm se resalta en rojo -- es la maxima prioridad de la
+          // escala, absorbe PSI/rotacion sobre esa posicion.
+          const esCritica = c.texto.startsWith("RETIRO OBLIGATORIO");
           return (
             <div key={c.id} onClick={() => tieneModal && setInfoPos(posMatch)}
-              className={cx("w-full text-left bg-white rounded-2xl border border-bd shadow-card px-4 py-3 flex items-center gap-3",
-                c.origen && "border-l-4 border-l-amber-500", tieneModal && "cursor-pointer")}>
+              className={cx("w-full text-left rounded-2xl border shadow-card px-4 py-3 flex items-center gap-3",
+                esCritica ? "bg-[#FEF2F2] border-[#FCA5A5] border-l-4 border-l-[#DC2626]" : "bg-white border-bd",
+                !esCritica && c.origen && "border-l-4 border-l-amber-500", tieneModal && "cursor-pointer")}>
               <button onClick={(e) => { e.stopPropagation(); setChecklist(cs => { const next = cs.map(x => x.id === c.id ? { ...x, done: !x.done } : x); persistChecklist(next); return next; }); }} className="shrink-0">
                 <span className={cx("w-6 h-6 rounded-lg flex items-center justify-center", c.done ? "bg-ink" : "bg-white border border-[#D1D5DB]")}>
                   {c.done && <Icon.check width="14" height="14" className="text-white" />}
                 </span>
               </button>
               <div className="flex items-center gap-2 flex-1 min-w-0">
-                <span className={cx("text-[14px] font-semibold flex-1", c.done && "strike")}>{c.texto}</span>
+                {esCritica && <span className="shrink-0">🛑</span>}
+                <span className={cx("text-[14px] font-semibold flex-1", esCritica && "text-[#B91C1C]", c.done && "strike")}>{c.texto}</span>
                 {c.origen && <span className="text-[10px] font-bold text-[#B45309] bg-[#FEF3C7] px-2 py-0.5 rounded-full shrink-0 whitespace-nowrap">TAREAS PENDIENTES</span>}
               </div>
               {c.extra && <Icon.pencil width="15" height="15" className="text-muted shrink-0" />}
