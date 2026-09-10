@@ -1066,18 +1066,29 @@ function dentroDePeriodoAuditoria(fechaISO, meses) {
   return new Date(fechaISO + "T00:00:00") >= limite;
 }
 // `info` = { fecha, estadoAuditoria, abierta, recetaCerrada } (ver
-// fetchEstadoAuditorias/fetchEstadoAuditoriaEquipo). El orden de los checks
-// ES la prioridad: dentro de 48hs siempre "abierta" sin importar nada mas;
-// recien pasada esa ventana se mira si la HC se llego a cerrar o no
-// (no_trabajada) y, si se cerro, el periodo de vencimiento configurable.
+// fetchEstadoAuditorias/fetchEstadoAuditoriaEquipo).
+// Bug reportado: "abierta" (dentro de 48hs) tenia prioridad absoluta sobre
+// todo lo demas -- un equipo con la HC YA cerrada (Finalizar hoja de cambio)
+// seguia mostrando el badge azul "Aud. Abierta" durante toda la ventana de
+// 48hs, en vez de pasar de inmediato a Al dia/Tareas Pendientes. "Abierta"
+// ahora significa lo que dice: todavia esta ABIERTA, o sea sin cerrar (HC
+// sin pasar/cerrar) Y dentro de las 48hs. Apenas se cierra la HC
+// (recetaCerrada=true), el estado pasa directo al que corresponda sin
+// esperar a que venzan las 48hs.
 function equipoAuditEstado(info, mesesVencimiento, tienePendientes) {
-  if (!info) return "sin_auditoria";                                          // 6
-  if (info.abierta) return "abierta";                                        // 1
-  if (info.estadoAuditoria !== "completada" || !info.recetaCerrada) return "no_trabajada"; // 2
-  if (dentroDePeriodoAuditoria(info.fecha, mesesVencimiento)) {
-    return tienePendientes ? "pendientes" : "al_dia";                        // 4 / 3
+  if (!info) return "sin_auditoria";                                         // 6
+  // La HC ya se cerro (Finalizar hoja de cambio) -- el estado se resuelve
+  // por el periodo de vencimiento, sin importar si siguen dentro de las
+  // 48hs desde la creacion de la auditoria o no.
+  if (info.recetaCerrada) {
+    if (dentroDePeriodoAuditoria(info.fecha, mesesVencimiento)) {
+      return tienePendientes ? "pendientes" : "al_dia";                      // 4 / 3
+    }
+    return "vencida";                                                       // 5
   }
-  return "vencida";                                                          // 5
+  // HC todavia sin cerrar: "abierta" mientras dure la ventana de 48hs desde
+  // creado_en, "no_trabajada" recien pasada esa ventana.
+  return info.abierta ? "abierta" : "no_trabajada";                          // 1 / 2
 }
 function equipoAuditColor(estado) {
   if (estado === "al_dia") return "green";
