@@ -193,7 +193,7 @@ function Badge({ children, color = "gray" }) {
   const colors = {
     gray: "bg-[#F3F4F6] text-[#374151]", green: "bg-[#DCFCE7] text-[#15803D]",
     red: "bg-[#FEE2E2] text-[#B91C1C]", amber: "bg-[#FEF3C7] text-[#92400E]", black: "bg-ink text-white",
-    blue: "bg-[#DBEAFE] text-[#1D4ED8]"
+    blue: "bg-[#DBEAFE] text-[#1D4ED8]", orange: "bg-[#FFEDD5] text-[#C2410C]"
   };
   return <span className={cx("px-3 py-1 rounded-full text-[12px] font-bold", colors[color])}>{children}</span>;
 }
@@ -756,7 +756,8 @@ function SeleccionEquipo({ clienteId, cfg, onPick }) {
       </div>
       <TextInput placeholder="Buscar por patente o número interno" value={search} onChange={e => setSearch(e.target.value)} className="mb-4" />
       <div className="flex gap-2 mb-5 overflow-x-auto">
-        {[["todos", "Todos"], ["al_dia", "Al día"], ["pendientes", "Tareas Pendientes"], ["abierta", "Aud. Abierta"], ["vencida", "Aud. Vencida"], ["sin_auditoria", "Sin Auditoría"]].map(([k, l]) => (
+        {/* Requerimiento: 6 Estados Estrictos de Auditoria */}
+        {[["todos", "Todos"], ["abierta", "Aud. Abierta"], ["no_trabajada", "Aud. NO Trabajada"], ["al_dia", "Al día"], ["pendientes", "Tareas Pendientes"], ["vencida", "Aud. Vencida"], ["sin_auditoria", "Sin Auditoría"]].map(([k, l]) => (
           <button key={k} onClick={() => setFilter(k)} className={cx("px-4 py-2 rounded-full text-[13px] font-bold whitespace-nowrap", filter === k ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{l}</button>
         ))}
       </div>
@@ -771,7 +772,7 @@ function SeleccionEquipo({ clienteId, cfg, onPick }) {
                 <p className="font-bold text-[15.5px] truncate">{eq.numero_interno ? `${eq.numero_interno} · ` : ""}{eq.patente}</p>
                 <p className="text-[12.5px] text-muted truncate">{eq.tipo === "SEMI" ? "Semirremolque" : `Tracto ${eq.configuracion_ejes || ""}`} · {eq.modelo || ""}</p>
               </div>
-              <Badge color={equipoAuditColor(estado)}>{equipoAuditLabel(estado)}</Badge>
+              <Badge color={equipoAuditColor(estado)}>{equipoAuditIcono(estado)} {equipoAuditLabel(estado)}</Badge>
             </button>
           );
         })}
@@ -3457,7 +3458,7 @@ function MecanicoApp({ user }) {
           try {
             const info = await db.fetchEstadoAuditoriaEquipo(eq.id_equipo);
             const estado = equipoAuditEstado(info, cfg.meses_vencimiento_auditoria);
-            vencida = estado === "vencida" || estado === "sin_auditoria";
+            vencida = estado === "vencida" || estado === "sin_auditoria" || estado === "no_trabajada";
           } catch (e) { console.error(e); }
           try {
             const receta = await db.fetchRecetaEnProcesoHoy(eq.id_equipo);
@@ -3612,7 +3613,7 @@ function MecanicoApp({ user }) {
       try {
         const info = await db.fetchEstadoAuditoriaEquipo(eq.id_equipo);
         const estado = equipoAuditEstado(info, cfg.meses_vencimiento_auditoria);
-        vencida = estado === "vencida" || estado === "sin_auditoria";
+        vencida = estado === "vencida" || estado === "sin_auditoria" || estado === "no_trabajada";
       } catch (e) { console.error(e); }
       try {
         const receta = await db.fetchRecetaEnProcesoHoy(eq.id_equipo);

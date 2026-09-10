@@ -521,17 +521,20 @@ const db = {
     if (error) throw error;
     return data || [];
   },
-  // Estado de auditoria por equipo (para los badges de la lista de equipos).
-  // Requerimiento: definicion UNIFICADA de "Aud. Abierta" -- ventana de 48hs
-  // (2 dias corridos) desde que se creo la ULTIMA auditoria (creado_en), que
-  // cubre 2 condiciones:
-  //   A) Lecturas incompletas (auditorias.estado !== 'completada').
-  //   B) Lecturas completas, pero la Hoja de Cambio/instructivo asociado
-  //      (auditorias_receta.estado) sigue 'en_proceso'.
-  // Fuera de esa ventana de 48hs ya NO aplica "abierta" (ver equipoAuditEstado
-  // mas abajo): si nunca se completaron las lecturas, pasa a Aud. Vencida
-  // (hace falta una auditoria nueva de cero); si se completaron, sigue el
-  // criterio de siempre (al dia/pendientes segun el periodo configurable).
+  // Estado de auditoria por equipo (para los 6 estados/badges de la lista de
+  // equipos, ver equipoAuditEstado mas abajo). Requerimiento: 6 Estados
+  // Estrictos de Auditoria --
+  //   "abierta" = la ULTIMA auditoria (creado_en) tiene 48hs o menos, punto
+  //     (no importa si las lecturas o la HC estan completas o no -- eso es
+  //     lo que la distingue de "no_trabajada").
+  //   "recetaCerrada" = la Hoja de Cambio de esa ultima auditoria SI se
+  //     paso/cerro (auditorias_receta.estado en 'completado'/'parcial' --
+  //     ambos solo se graban al tocar "Finalizar hoja de cambio" en
+  //     mecanico.html). 'en_proceso' (a medias), 'pendiente' ("Cerrar sin
+  //     cambios", nunca entro a la HC) y 'sin_cambio' cuentan como NO
+  //     cerrada.
+  // Con esos 2 datos, equipoAuditEstado resuelve el resto (no_trabajada/
+  // al_dia/pendientes/vencida/sin_auditoria) sin mas queries.
   async fetchEstadoAuditorias(clienteId) {
     const { data: eqs, error: eErr } = await sb.from("equipos").select("id_equipo").eq("cliente_id", clienteId).eq("activo", true);
     if (eErr) throw eErr;
@@ -544,34 +547,45 @@ const db = {
       const cur = porEquipo[a.equipo_id];
       if (!cur || (a.creado_en || "") > (cur.creado_en || "")) porEquipo[a.equipo_id] = a;
     });
-    // Condicion B necesita el estado de la receta de las auditorias
-    // "candidatas" (completadas, dentro de 48hs) -- se resuelve en UNA sola
-    // query IN para toda la flota, no una por equipo (evita N+1).
-    const ahora = Date.now();
-    const candidatasIds = Object.values(porEquipo)
-      .filter(a => a.estado === "completada" && a.creado_en && (ahora - new Date(a.creado_en).getTime()) / 3600000 <= 48)
-      .map(a => a.id_auditoria);
-    const recetaEnCurso = {};
-    if (candidatasIds.length) {
-      const { data: recetas } = await sb.from("auditorias_receta").select("auditoria_id,estado").in("auditoria_id", candidatasIds);
-      (recetas || []).forEach(r => { if (r.estado === "en_proceso") recetaEnCurso[r.auditoria_id] = true; });
+    // Se pide el estado de receta de TODAS las ultimas auditorias (no solo
+    // las de dentro de 48hs como antes) -- ahora hace falta tambien fuera de
+    // esa ventana, para distinguir "no_trabajada" (HC nunca cerrada) de
+    // "al_dia"/"pendientes"/"vencida" (HC si cerrada). Una sola query IN
+    // para toda la flota, no una por equipo.
+    const auditoriaIds = Object.values(porEquipo).map(a => a.id_auditoria);
+    const recetaEstadoPorAuditoria = {};
+    if (auditoriaIds.length) {
+      const { data: recetas } = await sb.from("auditorias_receta").select("auditoria_id,estado").in("auditoria_id", auditoriaIds);
+      (recetas || []).forEach(r => { recetaEstadoPorAuditoria[r.auditoria_id] = r.estado; });
     }
+    const ahora = Date.now();
     const resultado = {};
     Object.entries(porEquipo).forEach(([equipoId, a]) => {
       const horas = a.creado_en ? (ahora - new Date(a.creado_en).getTime()) / 3600000 : null;
-      const dentro48h = horas != null && horas <= 48;
-      const abierta = dentro48h && (a.estado !== "completada" || !!recetaEnCurso[a.id_auditoria]);
-      resultado[equipoId] = { fecha: a.fecha, estadoAuditoria: a.estado, abierta };
+      const abierta = horas != null && horas <= 48;
+      const recetaEstado = recetaEstadoPorAuditoria[a.id_auditoria];
+      const recetaCerrada = recetaEstado === "completado" || recetaEstado === "parcial";
+      resultado[equipoId] = { fecha: a.fecha, estadoAuditoria: a.estado, abierta, recetaCerrada };
     });
     return resultado;
   },
   // Estado de auditoria de UN equipo (usado al elegirlo, para pintar el boton
-  // Auditoria en rojo si esta vencida/sin auditoria).
+  // Auditoria en rojo si esta vencida/no trabajada/sin auditoria). Mismo
+  // shape que cada entrada de fetchEstadoAuditorias, para que equipoAuditEstado
+  // funcione igual en ambos casos.
   async fetchEstadoAuditoriaEquipo(equipoId) {
-    const { data: auds, error } = await sb.from("auditorias").select("id_auditoria,fecha,estado").eq("equipo_id", equipoId).order("fecha", { ascending: false }).limit(1);
+    const { data: auds, error } = await sb.from("auditorias").select("id_auditoria,fecha,creado_en,estado").eq("equipo_id", equipoId).order("creado_en", { ascending: false }).limit(1);
     if (error) throw error;
-    if (!auds || !auds.length) return null;
-    return { fecha: auds[0].fecha, estadoAuditoria: auds[0].estado };
+    const a = auds && auds[0];
+    if (!a) return null;
+    const horas = a.creado_en ? (Date.now() - new Date(a.creado_en).getTime()) / 3600000 : null;
+    const abierta = horas != null && horas <= 48;
+    let recetaCerrada = false;
+    try {
+      const receta = await db.fetchRecetaPorAuditoria(a.id_auditoria);
+      recetaCerrada = !!receta && (receta.estado === "completado" || receta.estado === "parcial");
+    } catch (e) { /* sin receta todavia -- queda no cerrada */ }
+    return { fecha: a.fecha, estadoAuditoria: a.estado, abierta, recetaCerrada };
   },
   // Instructivo en curso (auditorias_receta.estado='en_proceso') de la auditoria
   // de HOY de este equipo, para retomar la hoja de cambio sin pasar de nuevo
@@ -586,16 +600,13 @@ const db = {
   },
   // Requerimiento: Validez de Auditoria por 2 dias corridos (48hs) --
   // independiente del periodo de vencimiento configurable por cliente
-  // (meses_vencimiento_auditoria, que gobierna el badge Aud. Vencida/Al dia
-  // de la lista de equipos, ver equipoAuditEstado). Mira la ULTIMA auditoria
-  // del equipo sea cual sea su estado (antes filtraba solo 'completada' --
-  // eso dejaba afuera la Condicion A de "Aud. Abierta" unificada: lecturas
-  // incompletas dentro de las 48hs tambien deben poder saltar directo a
-  // Ver/Editar Auditoria en vez de arrancar el mapa vacio de nuevo).
-  // `esValida` (dentro de 48hs) habilita el acceso directo en AccionEquipo
-  // sin importar si se completaron o no las lecturas; `abierta` es la
-  // clasificacion mas estricta (Condicion A o B) que usa equipoAuditEstado
-  // para el badge de la lista de equipos.
+  // (meses_vencimiento_auditoria, que gobierna Aud. Vencida/Al dia en la
+  // lista de equipos, ver equipoAuditEstado). Mira la ULTIMA auditoria del
+  // equipo sea cual sea su estado, para poder saltar directo a Ver/Editar
+  // Auditoria en vez de arrancar el mapa vacio de nuevo. `esValida`/`abierta`
+  // son ahora el mismo dato (dentro de 48hs, ver los 6 Estados Estrictos de
+  // Auditoria) -- se mantienen ambos campos en el resultado por compatibilidad
+  // con los call-sites existentes.
   async verificarValidezAuditoria(equipoId) {
     const { data, error } = await sb.from("auditorias")
       .select("id_auditoria,fecha,creado_en,estado")
@@ -607,13 +618,7 @@ const db = {
     const horas = (Date.now() - new Date(ult.creado_en).getTime()) / 3600000;
     const dentro48h = horas <= 48;
     const lecturasCompletas = ult.estado === "completada";
-    let recetaEnCurso = false;
-    if (dentro48h && lecturasCompletas) {
-      const receta = await db.fetchRecetaPorAuditoria(ult.id_auditoria).catch(() => null);
-      recetaEnCurso = !!(receta && receta.estado === "en_proceso");
-    }
-    const abierta = dentro48h && (!lecturasCompletas || recetaEnCurso);
-    return { esValida: dentro48h, abierta, horas, auditoriaId: ult.id_auditoria, fecha: ult.fecha, lecturasCompletas };
+    return { esValida: dentro48h, abierta: dentro48h, horas, auditoriaId: ult.id_auditoria, fecha: ult.fecha, lecturasCompletas };
   },
   // Reconstruye el posData COMPLETO (con el detalle por borde mm_borde_izq/
   // centro/der que PosicionModal necesita para poder editarlo) de una
@@ -1039,7 +1044,20 @@ const db = {
 };
 
 /* =====================================================================
-   ESTADO DE AUDITORIA POR EQUIPO (4 badges de la lista de equipos)
+   6 ESTADOS ESTRICTOS DE AUDITORIA (badges/filtros de la lista de equipos,
+   mecanico.html y admin.html)
+   1. Aud. Abierta       -- ultima auditoria con 48hs o menos desde su creacion.
+   2. Aud. NO Trabajada  -- paso la ventana de 48hs sin haber pasado NI
+                             cerrado su Hoja de Cambio (lecturas incompletas,
+                             o receta en_proceso/pendiente/sin_cambio/inexistente).
+   3. Al día             -- auditoria CERRADA (lecturas completas + HC
+                             completada/parcial), dentro del periodo de
+                             vencimiento configurado, SIN tareas pendientes.
+   4. Tareas Pendientes  -- igual que "Al día" pero CON tareas pendientes
+                             derivadas a la historia clinica del equipo.
+   5. Aud. Vencida       -- auditoria CERRADA pero fuera del periodo de
+                             vencimiento configurado (meses_vencimiento_auditoria).
+   6. Sin Auditoria      -- el equipo nunca tuvo ninguna auditoria.
 ===================================================================== */
 function dentroDePeriodoAuditoria(fechaISO, meses) {
   if (!fechaISO) return false;
@@ -1047,36 +1065,41 @@ function dentroDePeriodoAuditoria(fechaISO, meses) {
   limite.setMonth(limite.getMonth() - (parseFloat(meses) || 0));
   return new Date(fechaISO + "T00:00:00") >= limite;
 }
-// Requerimiento: "Tareas Pendientes" (amarillo) se distingue de "Al dia"
-// (verde) segun si el equipo tiene tareas PENDIENTE acumuladas (ver
-// fetchTareasPendientesPorEquipo) -- ambos casos requieren la auditoria del
-// periodo vigente ya completada Y fuera de la ventana de 48hs de "Aud.
-// Abierta" (azul, ver info.abierta en fetchEstadoAuditorias). Dentro de esa
-// ventana, "abierta" gana siempre -- ya sea por lecturas sin terminar
-// (Condicion A) o por la Hoja de Cambio asociada todavia en curso
-// (Condicion B). Pasadas las 48hs sin haberse completado las lecturas, el
-// equipo pasa directo a Aud. Vencida (hace falta una auditoria nueva de
-// cero, ya no queda "abierta" indefinidamente).
+// `info` = { fecha, estadoAuditoria, abierta, recetaCerrada } (ver
+// fetchEstadoAuditorias/fetchEstadoAuditoriaEquipo). El orden de los checks
+// ES la prioridad: dentro de 48hs siempre "abierta" sin importar nada mas;
+// recien pasada esa ventana se mira si la HC se llego a cerrar o no
+// (no_trabajada) y, si se cerro, el periodo de vencimiento configurable.
 function equipoAuditEstado(info, mesesVencimiento, tienePendientes) {
-  if (!info) return "sin_auditoria";
-  if (info.abierta) return "abierta";
-  if (info.estadoAuditoria !== "completada") return "vencida";
+  if (!info) return "sin_auditoria";                                          // 6
+  if (info.abierta) return "abierta";                                        // 1
+  if (info.estadoAuditoria !== "completada" || !info.recetaCerrada) return "no_trabajada"; // 2
   if (dentroDePeriodoAuditoria(info.fecha, mesesVencimiento)) {
-    return tienePendientes ? "pendientes" : "al_dia";
+    return tienePendientes ? "pendientes" : "al_dia";                        // 4 / 3
   }
-  return "vencida";
+  return "vencida";                                                          // 5
 }
 function equipoAuditColor(estado) {
   if (estado === "al_dia") return "green";
   if (estado === "pendientes") return "amber";
   if (estado === "abierta") return "blue";
+  if (estado === "no_trabajada") return "orange";
   if (estado === "vencida") return "red";
   return "gray";
+}
+function equipoAuditIcono(estado) {
+  if (estado === "al_dia") return "🟢";
+  if (estado === "pendientes") return "🟡";
+  if (estado === "abierta") return "🔵";
+  if (estado === "no_trabajada") return "🟠";
+  if (estado === "vencida") return "🔴";
+  return "⚪";
 }
 function equipoAuditLabel(estado) {
   if (estado === "al_dia") return "Al día";
   if (estado === "pendientes") return "Tareas Pendientes";
   if (estado === "abierta") return "Aud. Abierta";
+  if (estado === "no_trabajada") return "Aud. NO Trabajada";
   if (estado === "vencida") return "Aud. Vencida";
   return "Sin Auditoría";
 }

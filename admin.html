@@ -201,7 +201,7 @@ function Badge({ children, color = "gray" }) {
   const colors = {
     gray: "bg-[#F3F4F6] text-[#374151]", green: "bg-[#DCFCE7] text-[#15803D]",
     red: "bg-[#FEE2E2] text-[#B91C1C]", amber: "bg-[#FEF3C7] text-[#92400E]", black: "bg-ink text-white",
-    purple: "bg-[#F3E8FF] text-[#7E22CE]"
+    purple: "bg-[#F3E8FF] text-[#7E22CE]", blue: "bg-[#DBEAFE] text-[#1D4ED8]", orange: "bg-[#FFEDD5] text-[#C2410C]"
   };
   return <span className={cx("px-3 py-1 rounded-full text-[12px] font-bold", colors[color])}>{children}</span>;
 }
@@ -1060,12 +1060,23 @@ function MecanicoBloqueadoModal({ mecanico, empresas, onClose, onDone, initialMo
 /* =====================================================================
    EQUIPOS
 ===================================================================== */
+// Requerimiento: 6 Estados Estrictos de Auditoria -- mismo motor de
+// clasificacion que mecanico.html (equipoAuditEstado/Color/Icono/Label en
+// js/supabase.js), en vez del badge ad-hoc de 4 estados que tenia antes esta
+// pantalla. El conteo de alertas rojas sin leer queda como indicador
+// SECUNDARIO (badge chico aparte, ver render mas abajo) -- es una senal
+// distinta (seguridad puntual) que no debe pisar el estado de auditoria.
 const EQUIPO_BADGE_INFO = {
-  al_dia: { icon: "✅", label: "Al día", color: "green" },
-  atencion: { icon: "⚠", label: "Atención", color: "amber" },
-  alertas: { icon: "🔴", label: "Con alertas", color: "red" },
-  sin_auditar: { icon: "⚪", label: "Sin auditar", color: "gray" }
+  abierta: { label: "Aud. Abierta", color: "blue" },
+  no_trabajada: { label: "Aud. NO Trabajada", color: "orange" },
+  al_dia: { label: "Al día", color: "green" },
+  pendientes: { label: "Tareas Pendientes", color: "amber" },
+  vencida: { label: "Aud. Vencida", color: "red" },
+  sin_auditoria: { label: "Sin Auditoría", color: "gray" }
 };
+// clienteId puede ser "todas" (multi-empresa): se agrupa por cliente_id real
+// de cada equipo porque el periodo de vencimiento (meses_vencimiento_auditoria)
+// y las tareas pendientes se calculan POR EMPRESA.
 async function fetchEquiposConEstado(clienteId) {
   let q = sb.from("equipos").select("*").order("numero_interno");
   if (clienteId && clienteId !== "todas") q = q.eq("cliente_id", clienteId);
@@ -1074,39 +1085,28 @@ async function fetchEquiposConEstado(clienteId) {
   if (!equipos || !equipos.length) return [];
   const ids = equipos.map(e => e.id_equipo);
 
-  const [{ data: alertas }, { data: auditorias }] = await Promise.all([
+  const clientesPresentes = [...new Set(equipos.map(e => e.cliente_id))];
+  const [{ data: alertas }, porCliente] = await Promise.all([
     sb.from("alertas").select("equipo_id").eq("severidad", "rojo").eq("leida_admin", false).in("equipo_id", ids),
-    sb.from("auditorias").select("id_auditoria,equipo_id,fecha,creado_en").in("equipo_id", ids).order("fecha", { ascending: false }).order("creado_en", { ascending: false })
+    Promise.all(clientesPresentes.map(async cid => {
+      const [estados, pendientes, cfg] = await Promise.all([
+        db.fetchEstadoAuditorias(cid).catch(e => { console.error(e); return {}; }),
+        db.fetchTareasPendientesPorEquipo(cid).catch(e => { console.error(e); return {}; }),
+        db.fetchConfig(cid).catch(e => { console.error(e); return DEFAULT_CFG; })
+      ]);
+      return { cid, estados, pendientes, cfg };
+    }))
   ]);
+  const porClienteMap = {};
+  porCliente.forEach(p => { porClienteMap[p.cid] = p; });
 
   const alertasPorEquipo = {};
   (alertas || []).forEach(a => { alertasPorEquipo[a.equipo_id] = (alertasPorEquipo[a.equipo_id] || 0) + 1; });
 
-  const auditoriasPorEquipo = {};
-  const ultimaAuditoriaPorEquipo = {};
-  (auditorias || []).forEach(a => {
-    auditoriasPorEquipo[a.equipo_id] = (auditoriasPorEquipo[a.equipo_id] || 0) + 1;
-    if (!ultimaAuditoriaPorEquipo[a.equipo_id]) ultimaAuditoriaPorEquipo[a.equipo_id] = a; // primero = mas reciente (orden desc)
-  });
-
-  const auditoriaIdsUltimas = Object.values(ultimaAuditoriaPorEquipo).map(a => a.id_auditoria);
-  const recetaPorAuditoria = {};
-  if (auditoriaIdsUltimas.length) {
-    const { data: recetas } = await sb.from("auditorias_receta").select("auditoria_id,estado").in("auditoria_id", auditoriaIdsUltimas);
-    (recetas || []).forEach(r => { recetaPorAuditoria[r.auditoria_id] = r.estado; });
-  }
-
   return equipos.map(eq => {
-    const alertasCount = alertasPorEquipo[eq.id_equipo] || 0;
-    const auditoriasCount = auditoriasPorEquipo[eq.id_equipo] || 0;
-    const ultima = ultimaAuditoriaPorEquipo[eq.id_equipo];
-    const estadoInstructivo = ultima ? recetaPorAuditoria[ultima.id_auditoria] : null;
-    let badge;
-    if (alertasCount > 0) badge = "alertas";
-    else if (estadoInstructivo === "pendiente" || estadoInstructivo === "parcial") badge = "atencion";
-    else if (auditoriasCount === 0) badge = "sin_auditar";
-    else badge = "al_dia";
-    return { ...eq, badge };
+    const p = porClienteMap[eq.cliente_id] || { estados: {}, pendientes: {}, cfg: DEFAULT_CFG };
+    const badge = equipoAuditEstado(p.estados[eq.id_equipo], p.cfg.meses_vencimiento_auditoria, !!p.pendientes[eq.id_equipo]);
+    return { ...eq, badge, alertasCount: alertasPorEquipo[eq.id_equipo] || 0 };
   });
 }
 
@@ -1114,18 +1114,18 @@ const EQUIPOS_FILTROS = [
   { id: "todos", label: "Todos" },
   { id: "tractos", label: "Tractos" },
   { id: "semis", label: "Semis" },
-  { id: "alertas", label: "Con alertas" },
-  { id: "instructivo_pendiente", label: "Instructivo pendiente" },
-  { id: "sin_auditar", label: "Sin auditar" }
+  { id: "abierta", label: "Aud. Abierta" },
+  { id: "no_trabajada", label: "Aud. NO Trabajada" },
+  { id: "al_dia", label: "Al día" },
+  { id: "pendientes", label: "Tareas Pendientes" },
+  { id: "vencida", label: "Aud. Vencida" },
+  { id: "sin_auditoria", label: "Sin Auditoría" }
 ];
 function aplicaFiltroEquipo(eq, filtroTab) {
   if (filtroTab === "todos") return true;
   if (filtroTab === "tractos") return eq.tipo !== "SEMI";
   if (filtroTab === "semis") return eq.tipo === "SEMI";
-  if (filtroTab === "alertas") return eq.badge === "alertas";
-  if (filtroTab === "instructivo_pendiente") return eq.badge === "atencion";
-  if (filtroTab === "sin_auditar") return eq.badge === "sin_auditar";
-  return true;
+  return eq.badge === filtroTab;
 }
 
 // Fallback de compatibilidad: si el cliente todavia no tiene ninguna
@@ -1339,10 +1339,17 @@ function EquiposView({ empresaCtl, adminUser, setView }) {
       {loading ? <div className="flex justify-center py-10"><span className="spinner" /></div> : (
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {filtrados.map(eq => {
-            const b = !eq.activo ? { icon: "⚪", label: "Inactivo", color: "gray" } : (EQUIPO_BADGE_INFO[eq.badge] || EQUIPO_BADGE_INFO.sin_auditar);
+            const b = !eq.activo ? { icon: "⚪", label: "Inactivo", color: "gray" } : { icon: equipoAuditIcono(eq.badge), ...(EQUIPO_BADGE_INFO[eq.badge] || EQUIPO_BADGE_INFO.sin_auditoria) };
             return (
               <Card key={eq.id_equipo} className={cx("relative h-full", !eq.activo && "opacity-60")}>
-                <div className="absolute top-4 right-4"><Badge color={b.color}>{b.icon} {b.label}</Badge></div>
+                <div className="absolute top-4 right-4 flex items-center gap-1.5">
+                  {/* Requerimiento: el conteo de alertas rojas sin leer es un
+                      indicador SECUNDARIO, no reemplaza el estado de auditoria. */}
+                  {eq.activo && eq.alertasCount > 0 && (
+                    <span title={`${eq.alertasCount} alerta${eq.alertasCount !== 1 ? "s" : ""} sin leer`} className="w-6 h-6 rounded-full bg-[#FEE2E2] text-[#B91C1C] text-[11px] font-extrabold flex items-center justify-center">{eq.alertasCount > 9 ? "9+" : eq.alertasCount}</span>
+                  )}
+                  <Badge color={b.color}>{b.icon} {b.label}</Badge>
+                </div>
                 <button onClick={() => setDetalle(eq)} className="text-left block w-full">
                   <p className="font-bold text-[15px] pr-28">{eq.numero_interno ? `${eq.numero_interno} · ` : ""}{eq.patente}</p>
                   <p className="text-[12.5px] text-muted mt-1">{eq.tipo === "SEMI" ? "Semirremolque" : `Tracto ${eq.configuracion_ejes || ""}`} · {eq.modelo || "-"}</p>
