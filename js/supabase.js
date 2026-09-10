@@ -1884,9 +1884,14 @@ function statusLabel(s) { return s === "alerta" ? "Con alertas" : s === "atencio
 // recomendaciones mas bajas que ya no tienen sentido sobre ese neumatico:
 //  - P1 absorbe PSI y rotacion sobre ESA posicion (no tiene sentido
 //    calibrar o rotar un neumatico que hay que dar de baja ya).
-//  - P4 absorbe PSI en el/los origen(es) del eje que rota -- se traslada
-//    al montaje en la nueva posicion (se aclara en el propio texto de la
-//    tarea, ya que el destino final lo define el mecanico al rotar en la HC).
+// Bug reportado en vivo (JSK994, eje T): P4 NO absorbe PSI -- la rotacion
+// marca TODO el eje (posRotacion incluye cada posicion del grupo, no solo
+// la que causo el desgaste desparejo), asi que si tambien suprimiera PSI
+// ahi se tapaban alertas reales de presion en posiciones del eje que ni
+// siquiera van a moverse (ej. P3 con 64psi quedaba sin tarea solo porque
+// P4, en el mismo eje, disparo la rotacion). El PSI de cada posicion es un
+// problema independiente del desgaste/la rotacion, asi que Prioridad 5
+// SIEMPRE evalua sin importar posRotacion (solo se salta por P1 o autoinflado).
 function generarRecomendaciones(posData, axleCfg, equipoTipo, cfg) {
   const recs = [];
   const posicionesAlerta = [];
@@ -1944,12 +1949,17 @@ function generarRecomendaciones(posData, axleCfg, equipoTipo, cfg) {
     }
   });
 
-  // ---- Prioridad 5 (Calibrar PSI): solo si esa posicion no se retira ni se
-  // rota, y su eje no tiene autoinflado (evaluarPosicion ya no genera motivo
-  // "psi..." para esas posiciones, pero se revalida aca tambien por claridad). ----
+  // ---- Prioridad 5 (Calibrar PSI): solo se omite si esa posicion se retira
+  // (P1) o si su eje tiene autoinflado. Bug reportado: antes tambien se
+  // omitia si la posicion estaba en posRotacion, pero esa marca cubre TODO
+  // el eje que rota (ver arriba), no solo la posicion que efectivamente se
+  // mueve -- eso tapaba alertas reales de PSI en posiciones del eje que ni
+  // siquiera van a cambiar de lugar (ej. P3 con 64psi en un eje T que rota
+  // por el desgaste de P4). El PSI de una posicion es un problema real
+  // independiente de si su eje rota o no, asi que ya no se absorbe. ----
   Object.values(posData)
     .filter(d => {
-      if (posRetiroObligatorio.has(d.posicion) || posRotacion.has(d.posicion)) return false;
+      if (posRetiroObligatorio.has(d.posicion)) return false;
       if (tieneAutoinflado(axleCfg, d.posicion)) return false;
       return (d.motivos || []).some(m => m.startsWith("psi"));
     })
