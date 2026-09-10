@@ -1899,7 +1899,7 @@ function generarRecomendaciones(posData, axleCfg, equipoTipo, cfg) {
   Object.values(posData).filter(d => d.minMM != null && d.minMM <= 3).sort((a, b) => a.posicion - b.posicion)
     .forEach(d => {
       posRetiroObligatorio.add(d.posicion);
-      recs.push({ id: uuid(), key: "rec_retiro_obligatorio", texto: `RETIRO OBLIGATORIO en P${d.posicion} (${d.minMM} mm) enviar a Bajas` });
+      recs.push({ id: uuid(), key: "rec_retiro_obligatorio", texto: `RETIRO OBLIGATORIO en P${d.posicion} (${d.minMM} mm) — Enviar a Bodega/Bajas` });
     });
 
   // ---- Prioridad 2 (Cambio preventivo): zona de alerta por mm, pero > 3mm.
@@ -1927,9 +1927,6 @@ function generarRecomendaciones(posData, axleCfg, equipoTipo, cfg) {
       grupo.forEach(p => { if (posData[p]) posRotacion.add(p); });
       const row = axleCfg.rows[i];
       const label = row ? row.label : `Eje ${i + 1}`;
-      // Requerimiento (Tiene Autoinflado por eje): si el eje que rota tiene
-      // autoinflado no hay PSI que recalibrar -- se omite la aclaracion.
-      const sufijoPsi = row && row.autoinflado ? "" : " — recalibrar PSI al remontar";
       // Bug de seleccion/accion masiva en Tareas Pendientes: estos ids eran
       // deterministicos ("psi_"+pos, "cambiar_"+pos, "rot_"+i, etc.), asi que
       // dos tareas generadas en distintas auditorias para la misma posicion/
@@ -1937,8 +1934,13 @@ function generarRecomendaciones(posData, axleCfg, equipoTipo, cfg) {
       // (ver consolidarTareasPendientes) -- eso hacia que tildar o derivar
       // una tarea a Pendiente afectara a todas las que compartian ese id.
       // Cada tarea ahora nace con un uuid propio, unico e independiente.
-      if (row && row.type === "D") recs.push({ id: uuid(), key: "rec_rotar_delanteros", texto: `Rotar neumáticos delanteros (desgaste desparejo, eje ${label})${sufijoPsi}` });
-      else recs.push({ id: uuid(), key: equipoTipo === "SEMI" ? `rec_rotar_semi_e${i + 1}` : "rec_rotar_traccionales", texto: `Rotar neumáticos del eje ${label} (desgaste desparejo)${sufijoPsi}` });
+      // Requerimiento (Textos Oficiales): el texto de la tarea de rotacion es
+      // EXACTAMENTE esta plantilla, sin sufijos -- la absorcion de PSI (P4
+      // absorbe la calibracion en el origen del eje que rota) es una regla
+      // de generacion (no se crea la tarea rec_calibrar_psi para esa
+      // posicion, ver Prioridad 5 mas abajo), no un agregado de texto.
+      if (row && row.type === "D") recs.push({ id: uuid(), key: "rec_rotar_delanteros", texto: `Rotar neumáticos delanteros (desgaste desparejo, eje ${label})` });
+      else recs.push({ id: uuid(), key: equipoTipo === "SEMI" ? `rec_rotar_semi_e${i + 1}` : "rec_rotar_traccionales", texto: `Rotar neumáticos del eje ${label} (desgaste desparejo)` });
     }
   });
 
