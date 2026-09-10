@@ -1361,7 +1361,7 @@ function PosicionModal({ pos, equipo, cfg, clienteId, axleCfg, existing, onClose
 /* =====================================================================
    PANTALLA 5 - INSTRUCTIVO
 ===================================================================== */
-function Instructivo({ equipo, axleCfg, posData, recsInfo, checklist, setChecklist, discrepancias, onContinuar, onCerrar }) {
+function Instructivo({ equipo, axleCfg, posData, recsInfo, checklist, setChecklist, discrepancias, onContinuar }) {
   const [nuevaTarea, setNuevaTarea] = useState("");
   // Fix 6: tarea -> modal del neumatico de esa posicion (solo consulta, sin
   // acciones de HC). infoPos != null abre el mismo TireInfoModal que la HC;
@@ -1456,9 +1456,12 @@ function Instructivo({ equipo, axleCfg, posData, recsInfo, checklist, setCheckli
         </div>
       )}
 
+      {/* Requerimiento: Flujo Obligatorio a la Hoja de Cambio -- la auditoria
+          SIEMPRE continua a la HC, haya o no recomendaciones/tareas. Antes
+          existia un boton "Cerrar sin cambios" que terminaba aca sin pasar
+          por la HC; se elimina para que ese paso nunca se pueda saltear. */}
       <div className="space-y-3">
         <Button className="w-full" onClick={() => onContinuar({ pct, cumplidas, sistemaTotal, extra })}>Continuar a hoja de cambio</Button>
-        <Button variant="ghost" className="w-full" onClick={() => onCerrar({ pct, cumplidas, sistemaTotal, extra })}>Cerrar sin cambios</Button>
       </div>
     </div>
   );
@@ -2210,6 +2213,16 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
     }} />;
   }
 
+  // Requerimiento: Cierre Condicional -- "Finalizar hoja de cambio" arranca
+  // habilitado solo si no hay tareas NUEVAS de la jornada (las que ya venian
+  // de Tareas Pendientes, marcadas con c.origen, no cuentan para esto). Si
+  // hay tareas nuevas, se bloquea hasta que cada una este gestionada:
+  // tildada como cumplida, o derivada a Pendiente con "➔ A Pendiente" (al
+  // derivarse sale de `checklist`, asi que deja de contar aca sola).
+  const tareasNuevas = checklist.filter(c => !c.origen);
+  const tareasNuevasSinGestionar = tareasNuevas.filter(c => !c.done);
+  const puedeFinalizar = tareasNuevasSinGestionar.length === 0;
+
   return (
     <div className="min-h-screen pb-[260px] safe-top">
       {toastNode}
@@ -2301,7 +2314,14 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
       </div>
 
       <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-bd p-4 safe-bottom space-y-3 z-30">
-        <Button className="w-full" disabled={saving} onClick={finalizar}>{saving ? <span className="spinner" /> : "Finalizar hoja de cambio"}</Button>
+        <div>
+          <Button className="w-full" disabled={saving || !puedeFinalizar} onClick={finalizar}>{saving ? <span className="spinner" /> : "Finalizar hoja de cambio"}</Button>
+          {!puedeFinalizar && (
+            <p className="text-[11.5px] text-[#92400E] font-semibold text-center mt-1.5">
+              Te faltan {tareasNuevasSinGestionar.length} tarea{tareasNuevasSinGestionar.length !== 1 ? "s" : ""} por gestionar (tildarla o enviarla a Pendiente)
+            </p>
+          )}
+        </div>
         <div>
           <p className="text-[11.5px] font-bold text-muted tracking-wide uppercase mb-1.5">Entrada · arrastrá al mapa</p>
           <div className={cx("grid gap-2", cfg && cfg.usa_recauchados === false ? "grid-cols-2" : "grid-cols-3")}>
@@ -3492,14 +3512,6 @@ function MecanicoApp({ user }) {
           db.registrarEventoSesion(clienteId, flow.equipo.id_equipo, user.id, "EN_RECOMENDACIONES", { auditoriaId: res.auditoriaId, equipoLabel: flow.equipo.patente, mecanicoNombre: user.nombre }).catch(e => console.error(e));
           db.registrarEventoSesion(clienteId, flow.equipo.id_equipo, user.id, "HOJA_CAMBIO_EN_PROCESO", { auditoriaId: res.auditoriaId, equipoLabel: flow.equipo.patente, mecanicoNombre: user.nombre }).catch(e => console.error(e));
           setFlow({ stage: "cambio", equipo: flow.equipo, axleCfg: flow.axleCfg, posData: flow.posData, checklist: flow.checklist, kmInicial: flow.km, recetaIdInicial: res.recetaId, discrepanciasNeumaticos: flow.discrepanciasNeumaticos, recsInfo: flow.recsInfo });
-        }}
-        onCerrar={async () => {
-          const res = await construirYGuardarAuditoria({ user, clienteId, equipo: flow.equipo, cfg, posData: flow.posData, axleCfg: flow.axleCfg, km: flow.km, checklist: flow.checklist, recsInfo: flow.recsInfo, discrepanciasNeumaticos: flow.discrepanciasNeumaticos, recetaEstado: "pendiente" });
-          const n = res.alertas;
-          if (navigator.onLine) pushToast(n > 0 ? `✓ Auditoría guardada · ${n} alerta${n !== 1 ? "s" : ""} generada${n !== 1 ? "s" : ""}` : "✓ Auditoría guardada");
-          else pushToast("📋 Guardado localmente — se sincronizará al reconectar", "amber");
-          db.registrarEventoSesion(clienteId, flow.equipo.id_equipo, user.id, "EN_RECOMENDACIONES", { auditoriaId: res.auditoriaId, equipoLabel: flow.equipo.patente, mecanicoNombre: user.nombre }).catch(e => console.error(e));
-          setFlow(null);
         }} />
       {flow.resumenInstructivo && (
         <ResumenInstructivoModal resumen={flow.resumenInstructivo} onEntendido={() => setFlow(f => ({ ...f, resumenInstructivo: null }))} />
