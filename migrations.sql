@@ -851,3 +851,29 @@ UPDATE auditorias SET estado = 'completada' WHERE estado = 'en_proceso';
 -- valor de bodega de filas que ya existen y ya estan activas/montadas.
 UPDATE neumaticos SET bodega = 'en_equipo'
   WHERE activo = true AND equipo_actual IS NOT NULL AND bodega IS NULL;
+
+
+-- 51) Gestion Centralizada de Circuitos/Rutas -- catalogo de rutas por
+-- cliente (Admin > Configuracion > "Rutas / Circuitos", ej. "Jujuy - Jama",
+-- "San Juan - Faena"), vinculado a cada equipo (select obligatorio en el
+-- Maestro de Equipos). Mismo patron que configuraciones_equipos: RLS
+-- anon_all, baja logica via 'activo' (Regla Cero Borrados), UNIQUE por
+-- nombre dentro del cliente.
+CREATE TABLE IF NOT EXISTS rutas (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  cliente_id TEXT NOT NULL REFERENCES clientes(id_cliente),
+  nombre TEXT NOT NULL,
+  activo BOOLEAN NOT NULL DEFAULT true,
+  creado_en TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (cliente_id, nombre)
+);
+GRANT SELECT, INSERT, UPDATE ON rutas TO anon;
+ALTER TABLE rutas ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS anon_all ON rutas;
+CREATE POLICY anon_all ON rutas FOR ALL TO anon USING (true) WITH CHECK (true);
+
+-- equipos.ruta_id -- nullable a nivel de base (los equipos ya existentes no
+-- tienen ruta asignada todavia y no hay forma de inferirla retroactivamente),
+-- pero el formulario de alta/edicion de equipos (admin.html) lo exige como
+-- obligatorio para cualquier guardado nuevo de ahora en adelante.
+ALTER TABLE equipos ADD COLUMN IF NOT EXISTS ruta_id UUID REFERENCES rutas(id);

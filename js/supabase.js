@@ -455,6 +455,26 @@ const db = {
     if (error) throw error;
     await precargarConfiguracionesCliente(clienteId);
   },
+  // Requerimiento: Gestion Centralizada de Circuitos/Rutas -- catalogo de
+  // rutas por cliente (Admin > Configuracion > "Rutas / Circuitos"),
+  // vinculado a cada equipo via equipos.ruta_id. soloActivas=false se usa en
+  // la gestion (ABM) para poder ver y reactivar las deshabilitadas; el
+  // selector obligatorio del Maestro de Equipos siempre pide solo las activas.
+  async fetchRutas(clienteId, soloActivas = true) {
+    let q = sb.from("rutas").select("*").eq("cliente_id", clienteId);
+    if (soloActivas) q = q.eq("activo", true);
+    const { data, error } = await q.order("nombre");
+    if (error) throw error;
+    return data || [];
+  },
+  async guardarRuta(payload) {
+    const { error } = await sb.from("rutas").insert({ id: uuid(), activo: true, creado_en: new Date().toISOString(), ...payload });
+    if (error) throw error;
+  },
+  async actualizarRuta(id, patch) {
+    const { error } = await sb.from("rutas").update(patch).eq("id", id);
+    if (error) throw error;
+  },
   async fetchEquipos(clienteId) {
     const { data, error } = await sb.from("equipos").select("*").eq("cliente_id", clienteId).eq("activo", true).order("numero_interno");
     if (error) throw error;
