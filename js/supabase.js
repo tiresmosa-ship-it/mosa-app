@@ -39,14 +39,7 @@ const DEFAULT_CFG = {
   medidas_permitidas: ["295/80R22.5", "11R22.5"],
   // Default true: clientes existentes (La Portada, BYS) sin fila propia en
   // config_cliente siguen viendo el flujo de recauchado sin cambios.
-  usa_recauchados: true,
-  // Requerimiento (Motor de Reglas, Prioridad 5): ejes con autoinflado no
-  // reciben recomendacion de "Calibrar presion de aire" -- lista de labels
-  // de axleCfg.rows (ej. "Eje delantero", "Eje 2") configurable por cliente
-  // via config_cliente (clave 'ejes_autoinflado', ver fetchConfig). Vacio
-  // por default: ningun cliente pierde la recomendacion hasta que se
-  // configure explicitamente.
-  ejes_autoinflado: []
+  usa_recauchados: true
 };
 
 const TOOLS_CHECKLIST = [
@@ -183,13 +176,19 @@ function construirAxleConfigDesdeDB(row) {
     // un trailer/chasis rueda libre sin sentido fijo ("T", igual que semi/ELB);
     // en un tractor es motriz con sentido de giro fijo ("M", igual que 4x2/6x2/6x4).
     const ejeTipo = esDireccional ? "D" : (row.categoria === "trailer" ? "T" : "M");
-    rows.push({ label: esDireccional ? "D" : `Eje ${e.eje != null ? e.eje : i + 1}`, type: esDireccional ? "D" : "M", ejeTipo, positions });
+    // Requerimiento: "Tiene Autoinflado" por eje (Admin > Configuraciones de
+    // Flota) -- se propaga tal cual desde configuraciones_equipos.ejes[i].autoinflado
+    // (default false para configuraciones viejas que todavia no tienen el campo).
+    rows.push({ label: esDireccional ? "D" : `Eje ${e.eje != null ? e.eje : i + 1}`, type: esDireccional ? "D" : "M", ejeTipo, positions, autoinflado: !!e.autoinflado });
     groups.push(positions);
   });
   const auxiliares = row.auxiliares || 0;
   for (let a = 0; a < auxiliares; a++) {
     const positions = [pos]; pos += 1;
-    rows.push({ label: auxiliares > 1 ? `Auxilio ${a + 1}` : "Auxilio", type: "auxilio", ejeTipo: "auxilio", positions });
+    // Los auxiliares/repuestos no tienen configuracion de autoinflado propia
+    // en esta iteracion (solo se pide "por Eje" -- ver ConfiguracionEquipoModal
+    // en admin.html), quedan siempre en false.
+    rows.push({ label: auxiliares > 1 ? `Auxilio ${a + 1}` : "Auxilio", type: "auxilio", ejeTipo: "auxilio", positions, autoinflado: false });
     groups.push(positions);
   }
   return { total: pos - 1, rows, groups };
@@ -218,6 +217,15 @@ function axleConfigFor(equipo) {
 function posType(cfg, pos) {
   const row = cfg.rows.find(r => r.positions.includes(pos));
   return row ? row.type : "M";
+}
+// Requerimiento: "Tiene Autoinflado" por eje -- true si el eje al que
+// pertenece esa posicion tiene la presion regulada automaticamente (no
+// requiere ni admite calibracion manual). Usado para ocultar/omitir PSI en
+// Auditoria/Instructivo/HC (mecanico.html) y en el motor de reglas
+// (evaluarPosicion, generarRecomendaciones, mas abajo).
+function tieneAutoinflado(cfg, pos) {
+  const row = cfg.rows.find(r => r.positions.includes(pos));
+  return !!(row && row.autoinflado);
 }
 function ejeTipoDePosicion(cfg, pos) {
   const row = cfg.rows.find(r => r.positions.includes(pos));
@@ -458,7 +466,7 @@ const db = {
     if (error) throw error;
     const map = { ...DEFAULT_CFG };
     const CLAVES_TEXTO = ["formula_marca_fuego", "medida_default", "moneda"];
-    const CLAVES_JSON = ["medidas_permitidas", "ejes_autoinflado"];
+    const CLAVES_JSON = ["medidas_permitidas"];
     const CLAVES_BOOL = ["usa_recauchados"];
     (data || []).forEach(r => {
       if (CLAVES_JSON.includes(r.clave)) { try { map[r.clave] = JSON.parse(r.valor); } catch (e) { map[r.clave] = DEFAULT_CFG[r.clave]; } return; }
@@ -1074,6 +1082,9 @@ function evaluarPosicion(axleCfg, cfg, pos, tipoEquipo, data) {
   const psiObjetivo = tipo === "D" ? cfg.psi_delantero : tipo === "auxilio" ? (esSemi ? cfg.psi_auxilio_semi : cfg.psi_auxilio_tracto) : cfg.psi_traccion;
   const tol = psiObjetivo * (cfg.psi_tolerancia_pct / 100);
   const psi = parseFloat(data.psi);
+  // Requerimiento: "Tiene Autoinflado" por eje -- ese eje no tiene PSI
+  // manual, asi que no participa de ninguna validacion/alerta de presion.
+  const autoinflado = tieneAutoinflado(axleCfg, pos);
 
   let status = "ok";
   let motivos = [];
@@ -1081,11 +1092,11 @@ function evaluarPosicion(axleCfg, cfg, pos, tipoEquipo, data) {
     if (minMM < mmMin) { status = "alerta"; motivos.push(`mm ${minMM} bajo mínimo ${mmMin}`); }
     else if (minMM < mmAmarillo && status !== "alerta") { status = "atencion"; motivos.push(`mm ${minMM} cerca del mínimo`); }
   }
-  if (!isNaN(psi)) {
+  if (!autoinflado && !isNaN(psi)) {
     if (Math.abs(psi - psiObjetivo) > tol * 2) { status = "alerta"; motivos.push(`psi ${psi} muy fuera de rango`); }
     else if (Math.abs(psi - psiObjetivo) > tol && status !== "alerta") { status = "atencion"; motivos.push(`psi ${psi} fuera de tolerancia`); }
   }
-  return { status, motivos, minMM, psiObjetivo, mmMin, mmAmarillo };
+  return { status, motivos, minMM, psiObjetivo, mmMin, mmAmarillo, autoinflado };
 }
 
 /* =====================================================================
@@ -1840,12 +1851,6 @@ function generarRecomendaciones(posData, axleCfg, equipoTipo, cfg) {
     if (d.status === "alerta" || d.status === "atencion") posicionesAlerta.push({ posicion: d.posicion, status: d.status, motivos: d.motivos });
   });
 
-  // Mapa posicion -> indice de eje (rows/groups van en paralelo) para poder
-  // consultar si ese eje tiene autoinflado (Prioridad 5).
-  const ejeDePos = {};
-  (axleCfg.groups || []).forEach((grupo, i) => grupo.forEach(p => { ejeDePos[p] = i; }));
-  const ejesConAutoinflado = new Set(cfg.ejes_autoinflado || []);
-
   // ---- Prioridad 1 (Critica): retiro obligatorio, mm <= 3 ----
   const posRetiroObligatorio = new Set();
   Object.values(posData).filter(d => d.minMM != null && d.minMM <= 3).sort((a, b) => a.posicion - b.posicion)
@@ -1879,6 +1884,9 @@ function generarRecomendaciones(posData, axleCfg, equipoTipo, cfg) {
       grupo.forEach(p => { if (posData[p]) posRotacion.add(p); });
       const row = axleCfg.rows[i];
       const label = row ? row.label : `Eje ${i + 1}`;
+      // Requerimiento (Tiene Autoinflado por eje): si el eje que rota tiene
+      // autoinflado no hay PSI que recalibrar -- se omite la aclaracion.
+      const sufijoPsi = row && row.autoinflado ? "" : " — recalibrar PSI al remontar";
       // Bug de seleccion/accion masiva en Tareas Pendientes: estos ids eran
       // deterministicos ("psi_"+pos, "cambiar_"+pos, "rot_"+i, etc.), asi que
       // dos tareas generadas en distintas auditorias para la misma posicion/
@@ -1886,18 +1894,18 @@ function generarRecomendaciones(posData, axleCfg, equipoTipo, cfg) {
       // (ver consolidarTareasPendientes) -- eso hacia que tildar o derivar
       // una tarea a Pendiente afectara a todas las que compartian ese id.
       // Cada tarea ahora nace con un uuid propio, unico e independiente.
-      if (row && row.type === "D") recs.push({ id: uuid(), key: "rec_rotar_delanteros", texto: `Rotar neumáticos delanteros (desgaste desparejo, eje ${label}) — recalibrar PSI al remontar` });
-      else recs.push({ id: uuid(), key: equipoTipo === "SEMI" ? `rec_rotar_semi_e${i + 1}` : "rec_rotar_traccionales", texto: `Rotar neumáticos del eje ${label} (desgaste desparejo) — recalibrar PSI al remontar` });
+      if (row && row.type === "D") recs.push({ id: uuid(), key: "rec_rotar_delanteros", texto: `Rotar neumáticos delanteros (desgaste desparejo, eje ${label})${sufijoPsi}` });
+      else recs.push({ id: uuid(), key: equipoTipo === "SEMI" ? `rec_rotar_semi_e${i + 1}` : "rec_rotar_traccionales", texto: `Rotar neumáticos del eje ${label} (desgaste desparejo)${sufijoPsi}` });
     }
   });
 
   // ---- Prioridad 5 (Calibrar PSI): solo si esa posicion no se retira ni se
-  // rota, y su eje no tiene autoinflado. ----
+  // rota, y su eje no tiene autoinflado (evaluarPosicion ya no genera motivo
+  // "psi..." para esas posiciones, pero se revalida aca tambien por claridad). ----
   Object.values(posData)
     .filter(d => {
       if (posRetiroObligatorio.has(d.posicion) || posRotacion.has(d.posicion)) return false;
-      const row = axleCfg.rows[ejeDePos[d.posicion]];
-      if (row && ejesConAutoinflado.has(row.label)) return false;
+      if (tieneAutoinflado(axleCfg, d.posicion)) return false;
       return (d.motivos || []).some(m => m.startsWith("psi"));
     })
     .sort((a, b) => a.posicion - b.posicion)

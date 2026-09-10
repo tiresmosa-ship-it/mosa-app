@@ -5268,12 +5268,30 @@ function slugify(nombre) {
     .normalize("NFD").replace(/[̀-ͯ]/g, "")
     .replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || uuid().slice(0, 8);
 }
-function ConfiguracionEquipoModal({ filtro, onClose, onSaved, pushToast }) {
-  const [nombre, setNombre] = useState("");
-  const [categoria, setCategoria] = useState("tractor");
-  const [numeroEjes, setNumeroEjes] = useState(2);
-  const [tiposPorEje, setTiposPorEje] = useState({ 1: "direccional", 2: "traccion" });
-  const [auxiliares, setAuxiliares] = useState(0);
+// Requerimiento: "Tiene Autoinflado" por eje -- booleano individual por cada
+// eje registrado (diferenciando Tractores/Semirremolques via categoria),
+// guardado en configuraciones_equipos.ejes[i].autoinflado (JSONB, sin
+// migracion: el array de ejes ya existia, solo se le suma esta clave). El eje
+// con autoinflado no pide ni valida PSI en Auditoria/Instructivo/HC (ver
+// tieneAutoinflado/evaluarPosicion/generarRecomendaciones en js/supabase.js).
+function ConfiguracionEquipoModal({ filtro, item, onClose, onSaved, pushToast }) {
+  const editando = !!item;
+  const [nombre, setNombre] = useState(item ? item.nombre : "");
+  const [categoria, setCategoria] = useState(item ? item.categoria : "tractor");
+  const [numeroEjes, setNumeroEjes] = useState(item ? item.numero_ejes : 2);
+  const [tiposPorEje, setTiposPorEje] = useState(() => {
+    if (item && Array.isArray(item.ejes)) {
+      const m = {}; item.ejes.forEach((e, i) => { m[e.eje != null ? e.eje : i + 1] = e.tipo; }); return m;
+    }
+    return { 1: "direccional", 2: "traccion" };
+  });
+  const [autoinfladoPorEje, setAutoinfladoPorEje] = useState(() => {
+    if (item && Array.isArray(item.ejes)) {
+      const m = {}; item.ejes.forEach((e, i) => { m[e.eje != null ? e.eje : i + 1] = !!e.autoinflado; }); return m;
+    }
+    return {};
+  });
+  const [auxiliares, setAuxiliares] = useState(item ? (item.auxiliares || 0) : 0);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -5282,6 +5300,11 @@ function ConfiguracionEquipoModal({ filtro, onClose, onSaved, pushToast }) {
     setTiposPorEje(prev => {
       const next = {};
       for (let i = 1; i <= n; i++) next[i] = prev[i] || (i === 1 ? "direccional" : "traccion");
+      return next;
+    });
+    setAutoinfladoPorEje(prev => {
+      const next = {};
+      for (let i = 1; i <= n; i++) next[i] = !!prev[i];
       return next;
     });
   }
@@ -5296,12 +5319,19 @@ function ConfiguracionEquipoModal({ filtro, onClose, onSaved, pushToast }) {
     if (!nombre.trim()) { setError("El nombre es obligatorio."); return; }
     setSaving(true);
     try {
-      const ejes = Array.from({ length: numeroEjes }, (_, i) => ({ eje: i + 1, tipo: tiposPorEje[i + 1] }));
-      await db.guardarConfiguracionEquipo({
-        cliente_id: filtro, nombre: nombre.trim(), categoria, slug: slugify(nombre),
-        numero_ejes: numeroEjes, ejes, auxiliares
-      });
-      pushToast("✓ Configuración creada");
+      const ejes = Array.from({ length: numeroEjes }, (_, i) => ({ eje: i + 1, tipo: tiposPorEje[i + 1], autoinflado: !!autoinfladoPorEje[i + 1] }));
+      if (editando) {
+        await db.actualizarConfiguracionEquipo(item.id, filtro, {
+          nombre: nombre.trim(), categoria, numero_ejes: numeroEjes, ejes, auxiliares
+        });
+        pushToast("✓ Configuración actualizada");
+      } else {
+        await db.guardarConfiguracionEquipo({
+          cliente_id: filtro, nombre: nombre.trim(), categoria, slug: slugify(nombre),
+          numero_ejes: numeroEjes, ejes, auxiliares
+        });
+        pushToast("✓ Configuración creada");
+      }
       onSaved();
     } catch (e) {
       console.error("No se pudo guardar la configuración de flota", e);
@@ -5311,7 +5341,7 @@ function ConfiguracionEquipoModal({ filtro, onClose, onSaved, pushToast }) {
   }
 
   return (
-    <Modal title="Nueva configuración de flota" onClose={onClose}>
+    <Modal title={editando ? "Editar configuración de flota" : "Nueva configuración de flota"} onClose={onClose}>
       <div className="space-y-4">
         <Field label="Nombre de la configuración" required>
           <TextInput value={nombre} onChange={e => setNombre(e.target.value)} placeholder='Ej: "Chasis 8x4 ELB"' />
@@ -5337,11 +5367,22 @@ function ConfiguracionEquipoModal({ filtro, onClose, onSaved, pushToast }) {
         <div className="space-y-3">
           {Array.from({ length: numeroEjes }, (_, i) => i + 1).map(n => (
             <Field key={n} label={`Eje ${n}`} required>
-              <div className="flex gap-2">
+              <div className="flex gap-2 mb-2">
                 {[["direccional", "Direccional / Sencillo (2 ruedas)"], ["traccion", "Tracción / Dual (4 ruedas)"]].map(([v, l]) => (
                   <button key={v} type="button" onClick={() => setTiposPorEje(p => ({ ...p, [n]: v }))}
                     className={cx("flex-1 h-11 rounded-2xl text-[12.5px] font-bold px-2", tiposPorEje[n] === v ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{l}</button>
                 ))}
+              </div>
+              {/* Requerimiento: Tiene Autoinflado por eje -- oculta/omite PSI
+                  para todas las ruedas de este eje en Auditoria/Instructivo/HC. */}
+              <div className="flex items-center justify-between bg-[#F9FAFB] rounded-xl px-3 py-2">
+                <p className="text-[12.5px] font-bold text-[#374151]">💨 Tiene autoinflado</p>
+                <div className="flex gap-1.5">
+                  <button type="button" onClick={() => setAutoinfladoPorEje(p => ({ ...p, [n]: true }))}
+                    className={cx("h-8 px-3 rounded-full text-[12px] font-bold", autoinfladoPorEje[n] ? "bg-ink text-white" : "bg-white border border-bd")}>Sí</button>
+                  <button type="button" onClick={() => setAutoinfladoPorEje(p => ({ ...p, [n]: false }))}
+                    className={cx("h-8 px-3 rounded-full text-[12px] font-bold", !autoinfladoPorEje[n] ? "bg-ink text-white" : "bg-white border border-bd")}>No</button>
+                </div>
               </div>
             </Field>
           ))}
@@ -5356,7 +5397,7 @@ function ConfiguracionEquipoModal({ filtro, onClose, onSaved, pushToast }) {
         </Field>
         <p className="text-[12px] text-muted">Total de posiciones en el mapa: <b>{totalPreview}</b></p>
         {error && <p className="text-[12.5px] font-bold text-[#B91C1C]">{error}</p>}
-        <Button className="w-full" disabled={saving} onClick={guardar}>{saving ? <span className="spinner" /> : "Crear configuración"}</Button>
+        <Button className="w-full" disabled={saving} onClick={guardar}>{saving ? <span className="spinner" /> : (editando ? "Guardar cambios" : "Crear configuración")}</Button>
       </div>
     </Modal>
   );
@@ -5403,7 +5444,8 @@ function ConfiguracionesFlotaSection({ filtro, pushToast }) {
                   <td className="py-2.5 px-4">{item.numero_ejes}</td>
                   <td className="py-2.5 px-4">{item.auxiliares}</td>
                   <td className="py-2.5 px-4"><Badge color={item.activo ? "green" : "gray"}>{item.activo ? "Activa" : "Inactiva"}</Badge></td>
-                  <td className="py-2.5 px-4">
+                  <td className="py-2.5 px-4 whitespace-nowrap">
+                    <button onClick={() => setModal(item)} className="text-[11.5px] font-bold text-ink px-2.5 py-1.5 rounded-full bg-[#F3F4F6] mr-1.5">Editar</button>
                     <button onClick={() => toggleActivo(item)} className="text-[11.5px] font-bold text-ink px-2.5 py-1.5 rounded-full bg-[#F3F4F6] whitespace-nowrap">{item.activo ? "Desactivar" : "Activar"}</button>
                   </td>
                 </tr>
@@ -5414,7 +5456,7 @@ function ConfiguracionesFlotaSection({ filtro, pushToast }) {
         </div>
       )}
       {modal && (
-        <ConfiguracionEquipoModal filtro={filtro} pushToast={pushToast}
+        <ConfiguracionEquipoModal filtro={filtro} item={typeof modal === "object" ? modal : null} pushToast={pushToast}
           onClose={() => setModal(false)} onSaved={() => { setModal(false); cargar(); }} />
       )}
     </div>

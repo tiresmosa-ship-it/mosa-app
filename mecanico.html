@@ -1278,11 +1278,14 @@ function PosicionModal({ pos, equipo, cfg, clienteId, axleCfg, existing, onClose
   const medidasOpciones = (cfg.medidas_permitidas && cfg.medidas_permitidas.length) ? cfg.medidas_permitidas : DEFAULT_CFG.medidas_permitidas;
   const medidaEsManual = form.medida_no_registrada || (!!form.medida && !medidasOpciones.includes(form.medida));
   const ev = evaluarPosicion(axleCfg, cfg, pos, equipo.tipo, form);
+  // Requerimiento: "Tiene Autoinflado" por eje -- oculta y deshabilita la
+  // solicitud/validacion de PSI para todas las ruedas de ese eje.
+  const autoinflado = ev.autoinflado;
   const mmAlert = ["mm_borde_izq", "mm_centro", "mm_borde_der"].some(k => form[k] !== "" && parseFloat(form[k]) < ev.mmMin);
   const mmWarn = ["mm_borde_izq", "mm_centro", "mm_borde_der"].some(k => form[k] !== "" && parseFloat(form[k]) < ev.mmAmarillo);
   const psiVal = parseFloat(form.psi);
-  const psiAlert = form.psi !== "" && Math.abs(psiVal - ev.psiObjetivo) > (ev.psiObjetivo * cfg.psi_tolerancia_pct / 100) * 2;
-  const psiWarn = form.psi !== "" && Math.abs(psiVal - ev.psiObjetivo) > (ev.psiObjetivo * cfg.psi_tolerancia_pct / 100);
+  const psiAlert = !autoinflado && form.psi !== "" && Math.abs(psiVal - ev.psiObjetivo) > (ev.psiObjetivo * cfg.psi_tolerancia_pct / 100) * 2;
+  const psiWarn = !autoinflado && form.psi !== "" && Math.abs(psiVal - ev.psiObjetivo) > (ev.psiObjetivo * cfg.psi_tolerancia_pct / 100);
   // Requerimiento: evidencia fotografica obligatoria cuando se detecta
   // desgaste irregular -- mismo patron que RetiroModal (subirFotoRetiro).
   const [subiendoFoto, setSubiendoFoto] = useState(false);
@@ -1316,10 +1319,12 @@ function PosicionModal({ pos, equipo, cfg, clienteId, axleCfg, existing, onClose
             onChange={(marca, modelo, noRegistrado) => setForm(f => ({ ...f, marca, modelo, marca_modelo_no_registrado: noRegistrado }))} />
         </div>
         <MedidaField cfg={cfg} value={form.medida} isManual={medidaEsManual} onChange={(v, manual) => setForm(f => ({ ...f, medida: v, medida_no_registrada: manual }))} />
-        <Field label="PSI" required>
-          <TextInput type="number" inputMode="numeric" value={form.psi} alert={psiAlert} warn={psiWarn}
-            onChange={e => setForm(f => ({ ...f, psi: e.target.value }))} placeholder={`Objetivo ${ev.psiObjetivo}`} />
-        </Field>
+        {!autoinflado && (
+          <Field label="PSI" required>
+            <TextInput type="number" inputMode="numeric" value={form.psi} alert={psiAlert} warn={psiWarn}
+              onChange={e => setForm(f => ({ ...f, psi: e.target.value }))} placeholder={`Objetivo ${ev.psiObjetivo}`} />
+          </Field>
+        )}
         <div className="grid grid-cols-3 gap-2">
           <Field label="MM izq" required><TextInput type="number" step="0.1" value={form.mm_borde_izq} alert={form.mm_borde_izq !== "" && parseFloat(form.mm_borde_izq) < ev.mmMin} warn={form.mm_borde_izq !== "" && parseFloat(form.mm_borde_izq) < ev.mmAmarillo} onChange={e => setForm(f => ({ ...f, mm_borde_izq: e.target.value }))} /></Field>
           <Field label="MM centro" required><TextInput type="number" step="0.1" value={form.mm_centro} alert={form.mm_centro !== "" && parseFloat(form.mm_centro) < ev.mmMin} warn={form.mm_centro !== "" && parseFloat(form.mm_centro) < ev.mmAmarillo} onChange={e => setForm(f => ({ ...f, mm_centro: e.target.value }))} /></Field>
@@ -1351,8 +1356,8 @@ function PosicionModal({ pos, equipo, cfg, clienteId, axleCfg, existing, onClose
             {fotoError && <p className="text-[12.5px] font-bold text-[#B91C1C] mt-1">{fotoError}</p>}
           </Field>
         )}
-        <Button className="w-full" disabled={form.psi === "" || form.mm_borde_izq === "" || form.mm_centro === "" || form.mm_borde_der === "" || !form.tipo_desgaste || faltaFotoIrregular || subiendoFoto}
-          onClick={() => onSave(form)}>Guardar posición</Button>
+        <Button className="w-full" disabled={(!autoinflado && form.psi === "") || form.mm_borde_izq === "" || form.mm_centro === "" || form.mm_borde_der === "" || !form.tipo_desgaste || faltaFotoIrregular || subiendoFoto}
+          onClick={() => onSave(autoinflado ? { ...form, psi: "" } : form)}>Guardar posición</Button>
       </div>
     </Modal>
   );
@@ -2490,6 +2495,9 @@ function TireInfoModal({ pos, data, cfg, equipo, axleCfg, onClose, onRegularPsi,
   const [psiField, setPsiField] = useState(String(data.psi || ""));
   const [showPsi, setShowPsi] = useState(false);
   const esDireccional = axleCfg && ejeTipoDePosicion(axleCfg, pos) === "D";
+  // Requerimiento: "Tiene Autoinflado" por eje -- oculta la solicitud y
+  // validacion de PSI (boton de regulacion, dato "PSI actual") en la HC.
+  const autoinflado = axleCfg && tieneAutoinflado(axleCfg, pos);
   // Fix 6: en el Instructivo (revision previa a la HC) este modal se usa
   // solo para consulta, sin las acciones de la hoja de cambio — se pasan
   // los handlers en undefined y se ocultan los botones correspondientes.
@@ -2525,7 +2533,11 @@ function TireInfoModal({ pos, data, cfg, equipo, axleCfg, onClose, onRegularPsi,
         )}
         <p className="text-[13px] text-muted mt-2">{data.marca || "Sin marca"} · {data.medida || "-"}</p>
         <div className="flex gap-4 mt-3">
-          <div><p className="text-[11px] text-muted font-semibold">PSI actual</p><p className="font-extrabold text-[16px]">{data.psi || "-"}</p></div>
+          {autoinflado ? (
+            <div><p className="text-[11px] text-muted font-semibold">PSI</p><p className="font-extrabold text-[16px]">💨 Autoinflado</p></div>
+          ) : (
+            <div><p className="text-[11px] text-muted font-semibold">PSI actual</p><p className="font-extrabold text-[16px]">{data.psi || "-"}</p></div>
+          )}
           <div><p className="text-[11px] text-muted font-semibold">MM</p><p className="font-extrabold text-[16px]">{data.minMM != null ? data.minMM : "-"}</p></div>
           <div><p className="text-[11px] text-muted font-semibold">Estado</p><Badge color={statusColor(data.status)}>{statusLabel(data.status)}</Badge></div>
         </div>
@@ -2554,14 +2566,16 @@ function TireInfoModal({ pos, data, cfg, equipo, axleCfg, onClose, onRegularPsi,
           )}
         </div>
       )}
-      {soloConsulta ? null : showPsi ? (
+      {soloConsulta ? null : showPsi && !autoinflado ? (
         <div className="space-y-3 mb-2">
           <Field label="Nuevo valor de PSI" required><TextInput type="number" inputMode="numeric" value={psiField} onChange={e => setPsiField(e.target.value)} /></Field>
           <Button className="w-full" disabled={!psiField} onClick={() => onRegularPsi(parseInt(psiField, 10))}>Guardar regulación</Button>
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-2">
-          <Button variant="subtle" onClick={() => setShowPsi(true)}><Icon.gauge width="18" height="18" /> Regulación PSI</Button>
+          {/* Requerimiento: Tiene Autoinflado por eje -- se oculta el boton
+              de regulacion manual de PSI para las ruedas de ese eje. */}
+          {!autoinflado && <Button variant="subtle" onClick={() => setShowPsi(true)}><Icon.gauge width="18" height="18" /> Regulación PSI</Button>}
           <Button variant="subtle" onClick={onRetorqueo}><Icon.wrench width="18" height="18" /> Retorqueo</Button>
           <Button variant="subtle" onClick={onReparacion}><Icon.bandage width="18" height="18" /> Reparación</Button>
           {esDireccional && (
