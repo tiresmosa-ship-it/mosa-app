@@ -2127,7 +2127,47 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
     } catch (e) { console.error("No se pudo derivar la tarea", e); pushToast("✕ No se pudo derivar la tarea", "red"); }
   }
 
+  // Requerimiento: Bloqueos de Seguridad Critica -- cada regla se revisa en
+  // orden al hacer clic en "Finalizar hoja de cambio"; la primera que falla
+  // corta el cierre con un toast rojo explicito (posicion exacta incluida) y
+  // no se guarda nada. psi/mm se leen del posData EN VIVO (se actualiza al
+  // toque con cada regulacion/retiro), asi que una tarea ya resuelta durante
+  // la HC deja de bloquear sin que el mecanico tenga que hacer nada mas.
+  function psiFueraDeRango(d) {
+    if (d.psi == null || d.psi === "") return false;
+    const tipo = posType(axleCfg, d.posicion);
+    const esSemi = equipo.tipo === "SEMI";
+    const psiObjetivo = tipo === "D" ? cfg.psi_delantero : tipo === "auxilio" ? (esSemi ? cfg.psi_auxilio_semi : cfg.psi_auxilio_tracto) : cfg.psi_traccion;
+    const tol = psiObjetivo * (cfg.psi_tolerancia_pct / 100);
+    return Math.abs(parseFloat(d.psi) - psiObjetivo) > tol * 2;
+  }
+  function validarBloqueosCierre() {
+    if (!puedeFinalizar) {
+      return "No puedes cerrar la auditoria: Tienes tareas activas de la ultima auditoria sin procesar (debes completarlas o enviarlas a pendientes)";
+    }
+    const montadas = Object.values(posData).filter(d => d.numero_fuego).sort((a, b) => a.posicion - b.posicion);
+    const conMmCritico = montadas.find(d => d.minMM != null && d.minMM <= 3);
+    if (conMmCritico) {
+      return `No puedes cerrar la auditoria: Existe un neumático con menor o igual a 3 mm en la posición P${conMmCritico.posicion} que requiere ser retirado obligatoriamente`;
+    }
+    const psiSinRegular = montadas.find(psiFueraDeRango);
+    if (psiSinRegular) {
+      return `No puedes cerrar la auditoria: La presión de aire de la posición P${psiSinRegular.posicion} está fuera de rango y no ha sido regulada`;
+    }
+    const checkpointFaltante = montadas.find(d => !esPosicionInterna(axleCfg, d.posicion) && !d.checkpoint);
+    if (checkpointFaltante) {
+      return `No puedes cerrar la auditoria: Faltan registrar/confirmar los checkpoints obligatorios en la posición P${checkpointFaltante.posicion}`;
+    }
+    return null;
+  }
+
   async function finalizar() {
+    const bloqueo = validarBloqueosCierre();
+    if (bloqueo) {
+      if (navigator.vibrate) navigator.vibrate(200);
+      pushToast(`🛑 ${bloqueo}`, "red");
+      return;
+    }
     setSaving(true);
     // Bug 1: el header (cambios_neumaticos) y cada movimiento ya se
     // persistieron de forma incremental al confirmarse (ensureCambioHeader +
