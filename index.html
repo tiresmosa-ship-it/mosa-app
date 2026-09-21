@@ -463,9 +463,24 @@ function MecanicoGate({ user }) {
           ))}
         </div>
         {state.errorCierre && <p className="text-[13px] font-semibold text-[#B91C1C] bg-[#FEE2E2] rounded-xl px-3 py-2 mb-3">{state.errorCierre}</p>}
-        <Button className="w-full" disabled={state.cerrando} onClick={cerrarJornadaAnterior}>
+        {/* Bug reportado: recargar/actualizar la app (ej. sin querer, o el
+            navegador la refresca solo) trae de vuelta a esta pantalla cada
+            vez que queda una jornada sin cerrar, y el unico boton disponible
+            era "Cerrar jornada anterior" -- si el mecanico lo tocaba sin
+            leer bien (pensando que era "continuar"), la jornada se cerraba
+            en el acto, sin vuelta atras desde ahi. Ahora el boton solo abre
+            una confirmacion explicita; el cierre real (cerrarJornadaAnterior)
+            recien se dispara al tocar "Sí, cerrar" en el modal -- nunca
+            como efecto secundario de entrar/recargar esta pantalla. */}
+        <Button className="w-full" disabled={state.cerrando} onClick={() => setState(s => ({ ...s, confirmando: true }))}>
           {state.cerrando ? <span className="spinner" /> : state.errorCierre ? "Reintentar" : "Cerrar jornada anterior"}
         </Button>
+        {state.confirmando && (
+          <Confirm title="Cerrar jornada anterior"
+            desc={`Vas a cerrar definitivamente la jornada del ${formatDateLong(state.jornada.fecha)}. Esta acción no se puede deshacer. ¿Confirmás?`}
+            onCancel={() => setState(s => ({ ...s, confirmando: false }))}
+            onConfirm={() => { setState(s => ({ ...s, confirmando: false })); cerrarJornadaAnterior(); }} />
+        )}
       </div>
     );
   }
