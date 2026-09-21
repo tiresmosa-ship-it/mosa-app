@@ -3082,7 +3082,15 @@ function CierreDelDia({ user, clienteId, onCerrado, cfg }) {
     }
     try {
       await cerrarJornadaConResumen({ user, clienteId, fecha: todayISO(), horaCierre: nowHM(), motivoSinCierre: null, observacionGeneral });
-      localStorage.setItem("jornada_cerrada_hoy", "true");
+      // Bug reportado: se guardaba un booleano "true" sin fecha, que nunca se
+      // borraba -- una vez cerrada CUALQUIER jornada quedaba pegado para
+      // siempre, y como t.fecha (abajo) siempre es HOY, un simple refresh en
+      // un dia SIGUIENTE (o incluso el mismo dia antes de cerrar nada, si el
+      // flag ya estaba en true de una jornada anterior) mostraba la app como
+      // "cerrada" sin que el mecanico haya tocado el boton ese dia. Ahora se
+      // guarda la FECHA del cierre, asi el flag deja de aplicar solo al pasar
+      // a un dia distinto -- no hace falta borrarlo a mano en ningun lado.
+      localStorage.setItem("jornada_cerrada_hoy_fecha", todayISO());
       setCerrado(true);
       if (onCerrado) onCerrado();
     } catch (e) {
@@ -3273,8 +3281,7 @@ function MecanicoApp({ user }) {
   // Bloqueo tras cerrar jornada: solo se levanta con un login nuevo (MecanicoGate
   // reevalua desde la DB). En esta misma sesion, solo queda accesible Alertas.
   const [jornadaCerrada, setJornadaCerrada] = useState(() => {
-    const t = getTurno();
-    return localStorage.getItem("jornada_cerrada_hoy") === "true" && !!t && t.fecha === todayISO();
+    return localStorage.getItem("jornada_cerrada_hoy_fecha") === todayISO();
   });
   const [horasExtrasInfo, setHorasExtrasInfo] = useState(null);
 
