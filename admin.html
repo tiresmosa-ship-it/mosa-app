@@ -127,6 +127,9 @@ const Icon = {
   // referencias del mapa que mecanico.html.
   checkpointPin: (p) => <svg viewBox="0 0 24 24" {...p}><path fill="#F59E0B" stroke="#92400E" strokeWidth="1.3" d="M12 2C8.1 2 5 5.1 5 9c0 5.2 7 13 7 13s7-7.8 7-13c0-3.9-3.1-7-7-7z"/><circle cx="12" cy="9" r="2.6" fill="#FFFBEB"/></svg>,
   alargaderaManguera: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="#111827" strokeWidth="2" strokeLinecap="round" {...p}><circle cx="3" cy="12" r="1.6" fill="#111827"/><path d="M4.5 12c1.5-3.5 3-3.5 4.5 0s3 3.5 4.5 0 3-3.5 4.5 0"/><circle cx="21" cy="12" r="1.6" fill="#111827"/></svg>,
+  // SVG oficial de Sistema de Autoinflado (SVG 1) -- mismo icono que
+  // mecanico.html (Maestro de Equipos / Configuraciones de Flota / Referencias).
+  autoinflado: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/><path d="M7 7l2 2M15 15l2 2M7 17l2-2M15 9l2-2"/></svg>,
   building: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><rect x="4" y="3" width="16" height="18" rx="1"/><path d="M9 8h1M14 8h1M9 12h1M14 12h1M9 16h1M14 16h1"/></svg>,
   menu: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M3 6h18M3 12h18M3 18h18"/></svg>,
   chevronDown: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M6 9l6 6 6-6"/></svg>,
@@ -136,6 +139,11 @@ const Icon = {
   settings: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09a1.65 1.65 0 00-1-1.51 1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09a1.65 1.65 0 001.51-1 1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>,
   trend: (p) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/></svg>,
 };
+// Requerimiento: componente reutilizable para el SVG 1 de Autoinflado -- ver
+// mismo componente en mecanico.html.
+function IconoAutoinflado(props) {
+  return <Icon.autoinflado className="w-4 h-4 text-blue-600 inline-block" {...props} />;
+}
 
 /* =====================================================================
    UI BASICOS
@@ -229,7 +237,8 @@ const REFERENCIAS_MAPA = [
   { key: "checkpoint", tipo: "icon", icon: "checkpointPin", label: "Checkpoint", desc: "Verificación de torque (checkpoint) realizada en esta posición. Solo aplica a ruedas externas/sencillas." },
   { key: "alargadera", tipo: "icon", icon: "alargaderaManguera", label: "Alargadera", desc: "Extensor de válvula colocado. Solo aplica al neumático interno de una rueda doble." },
   { key: "aprobacion", tipo: "emoji", icon: "🔒", label: "Aprobación", desc: "Discrepancia detectada en la última auditoría, en revisión del Admin — no bloquea, el equipo ya opera con este dato." },
-  { key: "irregular", tipo: "emoji", icon: "⚠️", label: "Irregular", desc: "Desgaste irregular detectado en la última auditoría para esta posición." }
+  { key: "irregular", tipo: "emoji", icon: "⚠️", label: "Irregular", desc: "Desgaste irregular detectado en la última auditoría para esta posición." },
+  { key: "autoinflado", tipo: "icon", icon: "autoinflado", label: "Autoinflado", desc: "Eje con sistema autoinflado." }
 ];
 function ReferenciaSimbolo({ item, size = 12 }) {
   if (item.tipo === "circulo") {
@@ -237,7 +246,7 @@ function ReferenciaSimbolo({ item, size = 12 }) {
   }
   if (item.tipo === "icon") {
     const IconCmp = Icon[item.icon];
-    return <IconCmp width={size + 2} height={size + 2} />;
+    return <IconCmp width={size + 2} height={size + 2} className={item.icon === "autoinflado" ? "text-blue-600" : undefined} />;
   }
   return <span className="leading-none" style={{ fontSize: size }}>{item.icon}</span>;
 }
@@ -1340,6 +1349,9 @@ function EquiposView({ empresaCtl, adminUser, setView }) {
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {filtrados.map(eq => {
             const b = !eq.activo ? { icon: "⚪", label: "Inactivo", color: "gray" } : { icon: equipoAuditIcono(eq.badge), ...(EQUIPO_BADGE_INFO[eq.badge] || EQUIPO_BADGE_INFO.sin_auditoria) };
+            // Requerimiento: indicador de Sistema de Autoinflado junto al
+            // esquema de ejes del equipo, tambien en el Maestro de Equipos.
+            const tieneEjeAutoinflado = axleConfigFor(eq).rows.some(r => r.autoinflado);
             return (
               <Card key={eq.id_equipo} className={cx("relative h-full", !eq.activo && "opacity-60")}>
                 <div className="absolute top-4 right-4 flex items-center gap-1.5">
@@ -1352,7 +1364,10 @@ function EquiposView({ empresaCtl, adminUser, setView }) {
                 </div>
                 <button onClick={() => setDetalle(eq)} className="text-left block w-full">
                   <p className="font-bold text-[15px] pr-28">{eq.numero_interno ? `${eq.numero_interno} · ` : ""}{eq.patente}</p>
-                  <p className="text-[12.5px] text-muted mt-1">{eq.tipo === "SEMI" ? "Semirremolque" : `Tracto ${eq.configuracion_ejes || ""}`} · {eq.modelo || "-"}</p>
+                  <p className="text-[12.5px] text-muted mt-1 flex items-center gap-1.5">
+                    {eq.tipo === "SEMI" ? "Semirremolque" : `Tracto ${eq.configuracion_ejes || ""}`} · {eq.modelo || "-"}
+                    {tieneEjeAutoinflado && <IconoAutoinflado title="Tiene eje(s) con sistema autoinflado" />}
+                  </p>
                   <p className="text-[12px] text-muted mt-1">{eq.kilometros ? `${eq.kilometros.toLocaleString()} km` : "Sin km registrados"}</p>
                 </button>
                 {puedeGestionar && (
@@ -1473,7 +1488,7 @@ function PosicionDetalleModal({ n, pos, equipo, discrepanciaPendiente, setView, 
     </Modal>
   );
 }
-function TireCircleReadOnly({ pos, filled, status, mm, psi, selected, onTap, alargadera, checkpoint }) {
+function TireCircleReadOnly({ pos, filled, status, mm, psi, selected, onTap, alargadera, checkpoint, autoinflado }) {
   const styles = {
     empty: "border-2 border-dashed border-[#D1D5DB] bg-[#F9FAFB] text-muted",
     ok: "border-2 border-[#D1D5DB] bg-white text-ink",
@@ -1491,6 +1506,7 @@ function TireCircleReadOnly({ pos, filled, status, mm, psi, selected, onTap, ala
           {checkpoint && <Icon.checkpointPin width="11" height="11" title="Checkpoint colocado" />}
         </span>
       )}
+      {filled && autoinflado && <span className="absolute -top-1.5 -left-1 leading-none" title="Eje con sistema autoinflado"><IconoAutoinflado className="w-3 h-3 text-blue-600" /></span>}
       <span className="text-[9.5px] font-bold opacity-70 leading-none">P{pos}</span>
       {filled ? (
         <>
@@ -1519,7 +1535,7 @@ function AxleMapReadOnly({ cfg, porPosicion, colorDePosicion, selectedPos, onTap
                   <div key={pos} className="relative z-10">
                     <TireCircleReadOnly pos={pos} filled={!!n} status={color} mm={mm} psi={psi}
                       selected={selectedPos === pos} onTap={() => onTap(pos)}
-                      alargadera={!!(n && n.alargadera)} checkpoint={!!(n && n.checkpoint)} />
+                      alargadera={!!(n && n.alargadera)} checkpoint={!!(n && n.checkpoint)} autoinflado={!!row.autoinflado} />
                   </div>
                 );
               })}
@@ -5405,7 +5421,7 @@ function ConfiguracionEquipoModal({ filtro, item, onClose, onSaved, pushToast })
         </Field>
         <div className="space-y-3">
           {Array.from({ length: numeroEjes }, (_, i) => i + 1).map(n => (
-            <Field key={n} label={`E${n} · ${(posicionesPorEje[n] || []).map(p => `P${p}`).join(", ")}`} required>
+            <Field key={n} label={<span className="flex items-center gap-1.5">{`E${n} · ${(posicionesPorEje[n] || []).map(p => `P${p}`).join(", ")}`}{autoinfladoPorEje[n] && <IconoAutoinflado title="Eje con sistema autoinflado" />}</span>} required>
               <div className="flex gap-2 mb-2">
                 {[["direccional", "Direccional / Sencillo (2 ruedas)"], ["traccion", "Tracción / Dual (4 ruedas)"]].map(([v, l]) => (
                   <button key={v} type="button" onClick={() => setTiposPorEje(p => ({ ...p, [n]: v }))}
@@ -5415,7 +5431,7 @@ function ConfiguracionEquipoModal({ filtro, item, onClose, onSaved, pushToast })
               {/* Requerimiento: Tiene Autoinflado por eje -- oculta/omite PSI
                   para todas las ruedas de este eje en Auditoria/Instructivo/HC. */}
               <div className="flex items-center justify-between bg-[#F9FAFB] rounded-xl px-3 py-2">
-                <p className="text-[12.5px] font-bold text-[#374151]">💨 Tiene autoinflado</p>
+                <p className="text-[12.5px] font-bold text-[#374151] flex items-center gap-1.5"><IconoAutoinflado /> Tiene autoinflado</p>
                 <div className="flex gap-1.5">
                   <button type="button" onClick={() => setAutoinfladoPorEje(p => ({ ...p, [n]: true }))}
                     className={cx("h-8 px-3 rounded-full text-[12px] font-bold", autoinfladoPorEje[n] ? "bg-ink text-white" : "bg-white border border-bd")}>Sí</button>
@@ -5480,7 +5496,12 @@ function ConfiguracionesFlotaSection({ filtro, pushToast }) {
                 <tr key={item.id} className="border-b border-bd last:border-0">
                   <td className="py-2.5 px-4 font-bold">{item.nombre}<span className="block text-[11px] text-muted font-normal">slug: {item.slug}</span></td>
                   <td className="py-2.5 px-4">{CATEGORIA_LABELS[item.categoria] || item.categoria}</td>
-                  <td className="py-2.5 px-4">{item.numero_ejes}</td>
+                  <td className="py-2.5 px-4 flex items-center gap-1.5">
+                    {item.numero_ejes}
+                    {Array.isArray(item.ejes) && item.ejes.some(e => e.autoinflado) && (
+                      <IconoAutoinflado title={`Ejes con autoinflado: ${item.ejes.filter(e => e.autoinflado).map(e => `E${e.eje}`).join(", ")}`} />
+                    )}
+                  </td>
                   <td className="py-2.5 px-4">{item.auxiliares}</td>
                   <td className="py-2.5 px-4"><Badge color={item.activo ? "green" : "gray"}>{item.activo ? "Activa" : "Inactiva"}</Badge></td>
                   <td className="py-2.5 px-4 whitespace-nowrap">
