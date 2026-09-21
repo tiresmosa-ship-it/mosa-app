@@ -1320,7 +1320,14 @@ function PosicionModal({ pos, equipo, cfg, clienteId, axleCfg, existing, onClose
             onChange={(marca, modelo, noRegistrado) => setForm(f => ({ ...f, marca, modelo, marca_modelo_no_registrado: noRegistrado }))} />
         </div>
         <MedidaField cfg={cfg} value={form.medida} isManual={medidaEsManual} onChange={(v, manual) => setForm(f => ({ ...f, medida: v, medida_no_registrada: manual }))} />
-        {!autoinflado && (
+        {autoinflado ? (
+          <Field label="PSI">
+            <div className="h-14 rounded-2xl bg-[#F3F4F6] flex items-center px-4">
+              <span className="text-[11.5px] font-bold text-muted tracking-wide">[ AutoInfl ]</span>
+              <span className="text-[13px] text-muted ml-2">Eje con autoinflado — no requiere calibración manual</span>
+            </div>
+          </Field>
+        ) : (
           <Field label="PSI" required>
             <TextInput type="number" inputMode="numeric" value={form.psi} alert={psiAlert} warn={psiWarn}
               onChange={e => setForm(f => ({ ...f, psi: e.target.value }))} placeholder={`Objetivo ${ev.psiObjetivo}`} />
@@ -1357,8 +1364,12 @@ function PosicionModal({ pos, equipo, cfg, clienteId, axleCfg, existing, onClose
             {fotoError && <p className="text-[12.5px] font-bold text-[#B91C1C] mt-1">{fotoError}</p>}
           </Field>
         )}
+        {/* Requerimiento: en un eje con autoinflado no se pide el PSI -- se
+            graba directamente el objetivo de la faena (ya autoregulado), en
+            vez de dejarlo vacio (se veria como "sin dato" en el resto de la
+            app: PSI actual "-", mapa, etc.). */}
         <Button className="w-full" disabled={(!autoinflado && form.psi === "") || form.mm_borde_izq === "" || form.mm_centro === "" || form.mm_borde_der === "" || !form.tipo_desgaste || faltaFotoIrregular || subiendoFoto}
-          onClick={() => onSave(autoinflado ? { ...form, psi: "" } : form)}>Guardar posición</Button>
+          onClick={() => onSave(autoinflado ? { ...form, psi: ev.psiObjetivo } : form)}>Guardar posición</Button>
       </div>
     </Modal>
   );
@@ -2661,6 +2672,14 @@ function SinStockModal({ tipo, equipo, clienteId, user, onClose, onMontarFueraDe
   );
 }
 function MontajeModal({ tipo, pos, equipo, clienteId, cfg, axleCfg, user, onClose, onConfirm }) {
+  // Requerimiento: "Tiene Autoinflado" por eje -- tambien aplica al montar un
+  // neumatico nuevo/transito/recauchado en la HC, no solo a la Auditoria.
+  const autoinflado = tieneAutoinflado(axleCfg, pos);
+  const psiObjetivoMontaje = (() => {
+    const t = posType(axleCfg, pos);
+    const esSemi = equipo.tipo === "SEMI";
+    return t === "D" ? cfg.psi_delantero : t === "auxilio" ? (esSemi ? cfg.psi_auxilio_semi : cfg.psi_auxilio_tracto) : cfg.psi_traccion;
+  })();
   const [fuego, setFuego] = useState("");
   const [tipoNeumatico, setTipoNeumatico] = useState("");
   const [marca, setMarca] = useState("");
@@ -2801,7 +2820,10 @@ function MontajeModal({ tipo, pos, equipo, clienteId, cfg, axleCfg, user, onClos
     // js/supabase.js, que ahora prioriza idNeumaticoOrigen sobre el matcheo
     // por numero_fuego.
     const idNeumaticoOrigen = (seleccionado && seleccionado.numero_fuego !== fuego) ? seleccionado.id_neumatico : null;
-    onConfirm({ numero_fuego: fuego, marca, modelo, marcaModeloNoRegistrado, medida, psi, mm, fotoUrl, deBodega: !manual, idNeumaticoOrigen });
+    // Requerimiento (Tiene Autoinflado): no se pide PSI en un eje con
+    // autoinflado -- se graba directamente el objetivo de la faena, ya
+    // autoregulado, en vez de dejarlo vacio.
+    onConfirm({ numero_fuego: fuego, marca, modelo, marcaModeloNoRegistrado, medida, psi: autoinflado ? psiObjetivoMontaje : psi, mm, fotoUrl, deBodega: !manual, idNeumaticoOrigen });
   }
 
   async function onFotoChange(e) {
@@ -2879,7 +2901,7 @@ function MontajeModal({ tipo, pos, equipo, clienteId, cfg, axleCfg, user, onClos
 
   const titulo = tipo === "nuevo" ? "Montar neumático nuevo" : tipo === "transito" ? "Confirmar montaje" : "Montar recauchado";
   const tipoOk = tipo !== "nuevo" || (tipoNeumatico && (tipoNeumaticoEsperado(equipo, axleCfg, pos) == null || tipoNeumatico === tipoNeumaticoEsperado(equipo, axleCfg, pos)));
-  const disabled = !fuego || psi === "" || mm === "" || !tipoOk
+  const disabled = !fuego || (!autoinflado && psi === "") || mm === "" || !tipoOk
     || (tipo !== "nuevo" && (!marca.trim() || !modelo.trim()))
     || (tipo === "nuevo" && (!torqueado || !fotoUrl || subiendoFoto || !fisicoConfirmado));
 
@@ -2904,7 +2926,15 @@ function MontajeModal({ tipo, pos, equipo, clienteId, cfg, axleCfg, user, onClos
         {/* Fix 1/4: medida siempre visible, precargada con medida_default */}
         <MedidaField cfg={cfg} value={medida} isManual={medidaManual} onChange={(v, manual) => { setMedida(v); setMedidaManual(manual); }} />
         <div className="grid grid-cols-2 gap-3">
-          <Field label="PSI actual" required><TextInput type="number" inputMode="numeric" value={psi} onChange={e => setPsi(e.target.value)} /></Field>
+          {autoinflado ? (
+            <Field label="PSI">
+              <div className="h-14 rounded-2xl bg-[#F3F4F6] flex items-center px-3">
+                <span className="text-[11.5px] font-bold text-muted tracking-wide">[ AutoInfl ]</span>
+              </div>
+            </Field>
+          ) : (
+            <Field label="PSI actual" required><TextInput type="number" inputMode="numeric" value={psi} onChange={e => setPsi(e.target.value)} /></Field>
+          )}
           <Field label="MM actual" required><TextInput type="number" step="0.1" value={mm} onChange={e => setMm(e.target.value)} /></Field>
         </div>
         {errorValidacion && <p className="text-[12.5px] font-bold text-[#B91C1C] bg-[#FEE2E2] rounded-xl px-3 py-2.5">{errorValidacion}</p>}

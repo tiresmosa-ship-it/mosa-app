@@ -5338,6 +5338,20 @@ function ConfiguracionEquipoModal({ filtro, item, onClose, onSaved, pushToast })
   // construirAxleConfigDesdeDB (2 ruedas direccional, 4 traccion, +1 por auxiliar).
   const totalPreview = Array.from({ length: numeroEjes }, (_, i) => tiposPorEje[i + 1])
     .reduce((n, t) => n + (t === "direccional" ? 2 : 4), 0) + auxiliares;
+  // Requerimiento: mostrar por cada eje sus "posiciones asociadas" (P1, P2...)
+  // en el mismo orden en que construirAxleConfigDesdeDB las va a numerar --
+  // solo vista previa, no se guarda (las posiciones reales las recalcula
+  // siempre esa funcion a partir de "ejes" al resolver el mapa del equipo).
+  const posicionesPorEje = (() => {
+    let pos = 1;
+    const porEje = {};
+    for (let i = 1; i <= numeroEjes; i++) {
+      const n = tiposPorEje[i] === "direccional" ? 2 : 4;
+      porEje[i] = Array.from({ length: n }, (_, k) => pos + k);
+      pos += n;
+    }
+    return porEje;
+  })();
 
   async function guardar() {
     setError("");
@@ -5391,7 +5405,7 @@ function ConfiguracionEquipoModal({ filtro, item, onClose, onSaved, pushToast })
         </Field>
         <div className="space-y-3">
           {Array.from({ length: numeroEjes }, (_, i) => i + 1).map(n => (
-            <Field key={n} label={`Eje ${n}`} required>
+            <Field key={n} label={`E${n} · ${(posicionesPorEje[n] || []).map(p => `P${p}`).join(", ")}`} required>
               <div className="flex gap-2 mb-2">
                 {[["direccional", "Direccional / Sencillo (2 ruedas)"], ["traccion", "Tracción / Dual (4 ruedas)"]].map(([v, l]) => (
                   <button key={v} type="button" onClick={() => setTiposPorEje(p => ({ ...p, [n]: v }))}
