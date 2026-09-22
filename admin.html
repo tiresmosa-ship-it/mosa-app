@@ -173,6 +173,31 @@ function TextInput({ className = "", alert, warn, ...props }) {
 function Select({ className = "", children, ...props }) {
   return <select className={cx("w-full h-[52px] px-4 rounded-2xl border bg-[#F3F4F6] border-[#E5E7EB] focus:outline-none focus:ring-2 focus:ring-ink/20", className)} {...props}>{children}</select>;
 }
+// Requerimiento: selector numerico [ - ][ n ][ + ] con edicion tactil (tocar
+// el numero lo vuelve un input editable) -- mismo patron que el Stepper de
+// mecanico.html (Paso 1 del Check Diario), llevado a admin.html para
+// "Cantidad de Ruedas de Auxilio/Repuesto" del Maestro de Equipos.
+function StepperNum({ value, onChange, min = 0, max = 99 }) {
+  const [editing, setEditing] = useState(false);
+  const [tmp, setTmp] = useState(String(value));
+  function clamp(n) { return Math.max(min, Math.min(max, n)); }
+  if (editing) {
+    return (
+      <input autoFocus inputMode="numeric" pattern="[0-9]*" value={tmp}
+        onChange={e => setTmp(e.target.value.replace(/[^0-9]/g, ""))}
+        onBlur={() => { setEditing(false); onChange(clamp(parseInt(tmp || "0", 10))); }}
+        onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
+        className="w-14 h-9 text-center rounded-lg border border-bdstrong font-bold" />
+    );
+  }
+  return (
+    <div className="flex items-center gap-2">
+      <button type="button" disabled={value <= min} onClick={() => onChange(clamp(value - 1))} className="w-9 h-9 rounded-lg bg-[#F3F4F6] font-bold text-lg disabled:opacity-40">−</button>
+      <button type="button" onClick={() => { setTmp(String(value)); setEditing(true); }} className="w-10 text-center font-bold">{value}</button>
+      <button type="button" disabled={value >= max} onClick={() => onChange(clamp(value + 1))} className="w-9 h-9 rounded-lg bg-[#F3F4F6] font-bold text-lg disabled:opacity-40">+</button>
+    </div>
+  );
+}
 /* Formatea un monto según moneda (CLP/ARS/USD, snapshot por carga — ver
    config_cliente.moneda). CLP/ARS sin decimales (uso local), USD con 2
    decimales (estándar internacional). No se suman monedas distintas entre sí. */
@@ -1152,6 +1177,12 @@ function EquipoModal({ equipo, filtro, empresas, onClose, onSaved, pushToast }) 
   const [km, setKm] = useState(equipo ? (equipo.kilometros != null ? String(equipo.kilometros) : "") : "");
   const [clienteId, setClienteId] = useState(equipo ? equipo.cliente_id : (filtro !== "todas" ? filtro : ""));
   const [rutaId, setRutaId] = useState(equipo ? (equipo.ruta_id || "") : "");
+  // Requerimiento: Cantidad de Ruedas de Auxilio/Repuesto -- solo aplica a
+  // Semirremolques, editable por equipo (no es un valor compartido de la
+  // Configuracion de Flota). Default 1 tanto para altas nuevas como para
+  // equipos ya cargados que todavia no tengan el campo (columna con
+  // DEFAULT 1 en la base, ver migrations.sql).
+  const [cantAuxilios, setCantAuxilios] = useState(equipo && equipo.cant_auxilios != null ? equipo.cant_auxilios : 1);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   // Requerimiento 2: el selector de "Configuración" carga UNICAMENTE los
@@ -1203,7 +1234,11 @@ function EquipoModal({ equipo, filtro, empresas, onClose, onSaved, pushToast }) 
       const payload = {
         numero_interno: numeroInterno.trim(), patente: patente.trim().toUpperCase(), tipo,
         configuracion_ejes: configEjes || null, ruta_id: rutaId,
-        modelo: modelo.trim() || null, kilometros: km ? parseInt(km, 10) : 0
+        modelo: modelo.trim() || null, kilometros: km ? parseInt(km, 10) : 0,
+        // Requerimiento: solo tiene sentido para Semis -- en un Tracto queda
+        // guardado igual (la columna no distingue), pero axleConfigFor lo
+        // ignora por completo salvo que equipo.tipo === "SEMI".
+        cant_auxilios: cantAuxilios
       };
       if (editando) {
         const { error: e } = await sb.from("equipos").update(payload).eq("id_equipo", equipo.id_equipo);
@@ -1269,6 +1304,16 @@ function EquipoModal({ equipo, filtro, empresas, onClose, onSaved, pushToast }) 
                   className={cx("h-11 px-3.5 rounded-2xl text-[13px] font-bold", configEjes === c.slug ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{c.nombre}</button>
               ))}
             </div>
+          </Field>
+        )}
+        {/* Requerimiento: Cantidad de Ruedas de Auxilio/Repuesto -- exclusivo
+            de Semirremolques, override por equipo (0 a 4, default 1). Pisa la
+            cantidad de auxiliares que traiga la Configuracion de Flota
+            elegida arriba (esa sigue siendo compartida entre varios equipos;
+            esto es la excepcion puntual de ESTE equipo). */}
+        {tipo === "SEMI" && (
+          <Field label="Cantidad de Ruedas de Auxilio / Repuesto" hint="0 a 4 — por defecto 1. Si es 0, el mapa no muestra ninguna posición de auxilio.">
+            <StepperNum value={cantAuxilios} onChange={setCantAuxilios} min={0} max={4} />
           </Field>
         )}
         {/* Requerimiento: Gestion Centralizada de Circuitos/Rutas -- select

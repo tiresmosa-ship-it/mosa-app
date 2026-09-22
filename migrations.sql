@@ -887,3 +887,14 @@ ALTER TABLE equipos ADD COLUMN IF NOT EXISTS ruta_id UUID REFERENCES rutas(id);
 -- no aplica Checkpoint ahi), no confundir con false (marcado explicitamente
 -- "No tiene").
 ALTER TABLE auditoria_posiciones ADD COLUMN IF NOT EXISTS checkpoint BOOLEAN;
+
+
+-- 53) equipos.cant_auxilios -- Cantidad de Ruedas de Auxilio/Repuesto POR
+-- EQUIPO (exclusivo de Semirremolques, 0 a 4). Distinto de
+-- configuraciones_equipos.auxiliares (que es un valor COMPARTIDO por todos
+-- los equipos que usan esa misma Configuracion de Flota) -- este es el
+-- override puntual de UN equipo (Admin > Maestro de Equipos > editar Semi).
+-- DEFAULT 1 (requerimiento: valor predeterminado tanto para altas nuevas
+-- como para Semis ya cargados) -- al agregar la columna con DEFAULT,
+-- Postgres la completa tambien en las filas ya existentes.
+ALTER TABLE equipos ADD COLUMN IF NOT EXISTS cant_auxilios INT NOT NULL DEFAULT 1 CHECK (cant_auxilios BETWEEN 0 AND 4);

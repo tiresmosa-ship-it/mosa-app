@@ -205,14 +205,43 @@ async function precargarConfiguracionesCliente(clienteId) {
   (data || []).forEach(row => { map[row.slug] = construirAxleConfigDesdeDB(row); });
   CONFIGURACIONES_CACHE[clienteId] = map;
 }
+// Requerimiento: Cantidad de Ruedas de Auxilio/Repuesto configurable POR
+// EQUIPO (exclusivo de Semirremolques, 0 a 4, default 1) -- pisa lo que
+// traiga la Configuracion de Flota base (esa sigue siendo un esquema
+// COMPARTIDO entre varios equipos; este override es la excepcion puntual de
+// UN equipo puntual). Reconstruye las filas/posiciones desde cero: las filas
+// que no son de auxilio conservan exactamente la misma cantidad de
+// posiciones y el mismo orden que ya tenian (asi que sus numeros de posicion
+// NO cambian -- no rompe neumaticos.posicion_actual ya guardados), solo se
+// reemplaza el bloque final de auxilios por la cantidad configurada.
+function aplicarAuxiliaresOverride(cfg, cantAuxilios) {
+  if (cantAuxilios == null) return cfg;
+  const rowsSinAux = cfg.rows.filter(r => r.type !== "auxilio");
+  let pos = 1;
+  const rows = rowsSinAux.map(r => {
+    const positions = r.positions.map((_, i) => pos + i);
+    pos += r.positions.length;
+    return { ...r, positions };
+  });
+  const groups = rows.map(r => r.positions);
+  for (let a = 0; a < cantAuxilios; a++) {
+    const positions = [pos]; pos += 1;
+    rows.push({ label: cantAuxilios > 1 ? `Auxilio ${a + 1}` : "Auxilio", type: "auxilio", ejeTipo: "auxilio", positions, autoinflado: false });
+    groups.push(positions);
+  }
+  return { total: pos - 1, rows, groups };
+}
 function axleConfigFor(equipo) {
   if (!equipo) return AXLE_CONFIGS["4x2"];
   const slug = equipo.configuracion_ejes;
-  if (slug && AXLE_CONFIGS[slug]) return AXLE_CONFIGS[slug];
-  const dinamicas = CONFIGURACIONES_CACHE[equipo.cliente_id];
-  if (slug && dinamicas && dinamicas[slug]) return dinamicas[slug];
-  if (equipo.tipo === "SEMI") return AXLE_CONFIGS["semi"];
-  return AXLE_CONFIGS["4x2"];
+  let base;
+  if (slug && AXLE_CONFIGS[slug]) base = AXLE_CONFIGS[slug];
+  else {
+    const dinamicas = CONFIGURACIONES_CACHE[equipo.cliente_id];
+    base = (slug && dinamicas && dinamicas[slug]) ? dinamicas[slug] : (equipo.tipo === "SEMI" ? AXLE_CONFIGS["semi"] : AXLE_CONFIGS["4x2"]);
+  }
+  if (equipo.tipo === "SEMI" && equipo.cant_auxilios != null) return aplicarAuxiliaresOverride(base, equipo.cant_auxilios);
+  return base;
 }
 function posType(cfg, pos) {
   const row = cfg.rows.find(r => r.positions.includes(pos));
