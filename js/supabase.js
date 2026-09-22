@@ -183,12 +183,16 @@ function construirAxleConfigDesdeDB(row) {
     groups.push(positions);
   });
   const auxiliares = row.auxiliares || 0;
-  for (let a = 0; a < auxiliares; a++) {
-    const positions = [pos]; pos += 1;
+  // Requerimiento: todos los auxiliares/repuestos van en UN SOLO eje/fila
+  // (no una fila separada por cada uno) -- mismo criterio visual que un eje
+  // de ruedas normal, solo que con la cantidad exacta configurada.
+  if (auxiliares > 0) {
+    const positions = Array.from({ length: auxiliares }, (_, i) => pos + i);
+    pos += auxiliares;
     // Los auxiliares/repuestos no tienen configuracion de autoinflado propia
     // en esta iteracion (solo se pide "por Eje" -- ver ConfiguracionEquipoModal
     // en admin.html), quedan siempre en false.
-    rows.push({ label: auxiliares > 1 ? `Auxilio ${a + 1}` : "Auxilio", type: "auxilio", ejeTipo: "auxilio", positions, autoinflado: false });
+    rows.push({ label: "Auxilio", type: "auxilio", ejeTipo: "auxilio", positions, autoinflado: false });
     groups.push(positions);
   }
   return { total: pos - 1, rows, groups };
@@ -224,9 +228,13 @@ function aplicarAuxiliaresOverride(cfg, cantAuxilios) {
     return { ...r, positions };
   });
   const groups = rows.map(r => r.positions);
-  for (let a = 0; a < cantAuxilios; a++) {
-    const positions = [pos]; pos += 1;
-    rows.push({ label: cantAuxilios > 1 ? `Auxilio ${a + 1}` : "Auxilio", type: "auxilio", ejeTipo: "auxilio", positions, autoinflado: false });
+  // Requerimiento: todos los auxiliares van en UN SOLO eje/fila (no una fila
+  // separada por cada uno) -- mismo criterio visual que un eje de ruedas
+  // normal, con la cantidad exacta configurada en esa unica fila.
+  if (cantAuxilios > 0) {
+    const positions = Array.from({ length: cantAuxilios }, (_, i) => pos + i);
+    pos += cantAuxilios;
+    rows.push({ label: "Auxilio", type: "auxilio", ejeTipo: "auxilio", positions, autoinflado: false });
     groups.push(positions);
   }
   return { total: pos - 1, rows, groups };
