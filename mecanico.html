@@ -1288,7 +1288,12 @@ function MedidaField({ cfg, value, isManual, onChange }) {
   );
 }
 function PosicionModal({ pos, equipo, cfg, clienteId, axleCfg, existing, onClose, onSave }) {
-  const [form, setForm] = useState(() => existing || { numero_fuego: "", marca: "", modelo: "", medida: cfg.medida_default || "", psi: "", mm_borde_izq: "", mm_centro: "", mm_borde_der: "", tipo_desgaste: "normal", marca_modelo_no_registrado: false, medida_no_registrada: false, url_foto_desgaste_irregular: null });
+  const [form, setForm] = useState(() => existing || { numero_fuego: "", marca: "", modelo: "", medida: cfg.medida_default || "", psi: "", mm_borde_izq: "", mm_centro: "", mm_borde_der: "", tipo_desgaste: "normal", marca_modelo_no_registrado: false, medida_no_registrada: false, url_foto_desgaste_irregular: null, checkpoint: false });
+  // Requerimiento: verificacion de Checkpoint tambien en la Auditoria (misma
+  // logica que ya existia solo en la HC, TireInfoModal) -- unicamente aplica
+  // a ruedas externas/sencillas, no a la interna de una dupla (esa usa
+  // Alargadera en su lugar, no Checkpoint).
+  const mostrarCheckpoint = !esPosicionInterna(axleCfg, pos);
   const medidasOpciones = (cfg.medidas_permitidas && cfg.medidas_permitidas.length) ? cfg.medidas_permitidas : DEFAULT_CFG.medidas_permitidas;
   const medidaEsManual = form.medida_no_registrada || (!!form.medida && !medidasOpciones.includes(form.medida));
   const ev = evaluarPosicion(axleCfg, cfg, pos, equipo.tipo, form);
@@ -1379,12 +1384,29 @@ function PosicionModal({ pos, equipo, cfg, clienteId, axleCfg, existing, onClose
             {fotoError && <p className="text-[12.5px] font-bold text-[#B91C1C] mt-1">{fotoError}</p>}
           </Field>
         )}
+        {/* Requerimiento: "¿Tiene Checkpoint colocado?" -- misma pregunta y
+            mismo criterio (solo externas/sencillas) que ya existia en el
+            modal de la HC (TireInfoModal); si no lo tiene, el motor de
+            reglas genera la tarea obligatoria de colocarlo (Prioridad 6). */}
+        {mostrarCheckpoint && (
+          <div className="flex items-center justify-between bg-[#F9FAFB] rounded-xl px-3 py-2.5">
+            <p className="text-[13.5px] font-bold flex items-center gap-1.5"><Icon.checkpointPin width="16" height="16" /> ¿Tiene Checkpoint colocado?</p>
+            <div className="flex gap-1.5">
+              <button type="button" onClick={() => setForm(f => ({ ...f, checkpoint: true }))} className={cx("h-8 px-3 rounded-full text-[12px] font-bold", form.checkpoint ? "bg-ink text-white" : "bg-white border border-bd")}>Sí</button>
+              <button type="button" onClick={() => setForm(f => ({ ...f, checkpoint: false }))} className={cx("h-8 px-3 rounded-full text-[12px] font-bold", !form.checkpoint ? "bg-ink text-white" : "bg-white border border-bd")}>No</button>
+            </div>
+          </div>
+        )}
         {/* Requerimiento: en un eje con autoinflado no se pide el PSI -- se
             graba directamente el objetivo de la faena (ya autoregulado), en
             vez de dejarlo vacio (se veria como "sin dato" en el resto de la
             app: PSI actual "-", mapa, etc.). */}
         <Button className="w-full" disabled={(!autoinflado && form.psi === "") || form.mm_borde_izq === "" || form.mm_centro === "" || form.mm_borde_der === "" || !form.tipo_desgaste || faltaFotoIrregular || subiendoFoto}
-          onClick={() => onSave(autoinflado ? { ...form, psi: ev.psiObjetivo } : form)}>Guardar posición</Button>
+          onClick={() => {
+            const out = { ...form, checkpoint: mostrarCheckpoint ? !!form.checkpoint : null };
+            if (autoinflado) out.psi = ev.psiObjetivo;
+            onSave(out);
+          }}>Guardar posición</Button>
       </div>
     </Modal>
   );

@@ -877,3 +877,13 @@ CREATE POLICY anon_all ON rutas FOR ALL TO anon USING (true) WITH CHECK (true);
 -- pero el formulario de alta/edicion de equipos (admin.html) lo exige como
 -- obligatorio para cualquier guardado nuevo de ahora en adelante.
 ALTER TABLE equipos ADD COLUMN IF NOT EXISTS ruta_id UUID REFERENCES rutas(id);
+
+
+-- 52) auditoria_posiciones.checkpoint -- verificacion de Checkpoint en la
+-- Auditoria (antes solo se preguntaba en la Hoja de Cambio, TireInfoModal).
+-- Queda tambien como historico por auditoria (igual que tipo_desgaste), en
+-- paralelo a neumaticos.checkpoint (que sigue siendo el estado ACTUAL vigente
+-- que usan el mapa y el motor de reglas). NULL = posicion interna (Alargadera,
+-- no aplica Checkpoint ahi), no confundir con false (marcado explicitamente
+-- "No tiene").
+ALTER TABLE auditoria_posiciones ADD COLUMN IF NOT EXISTS checkpoint BOOLEAN;

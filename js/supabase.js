@@ -1324,13 +1324,18 @@ async function enviarAuditoria(data) {
     if (p.milimetros != null) upd.milimetros = p.milimetros;
     if (p.marca) upd.marca = p.marca;
     if (p.modelo) upd.modelo = p.modelo;
+    // Requerimiento: Checkpoint verificado en la Auditoria -- se persiste en
+    // neumaticos.checkpoint igual que ya hacia actualizarExtras (HC), asi el
+    // icono del mapa y el motor de reglas ven el mismo dato sea cual sea la
+    // pantalla donde se confirmo.
+    if (p.checkpoint != null) upd.checkpoint = p.checkpoint;
     await sb.from("neumaticos").update(upd).eq("cliente_id", cliente_id).eq("numero_fuego", p.numero_fuego);
   }
   const rows = posiciones.map(p => ({
     id: p.id, posicion: p.posicion, numero_fuego: p.numero_fuego || null,
     milimetros: p.milimetros, psi: p.psi, mm_borde_izq: p.mm_borde_izq, mm_centro: p.mm_centro, mm_borde_der: p.mm_borde_der,
     tipo_desgaste: p.tipo_desgaste || null, marca: p.marca || null, modelo: p.modelo || null,
-    url_foto_desgaste_irregular: p.url_foto_desgaste_irregular || null,
+    url_foto_desgaste_irregular: p.url_foto_desgaste_irregular || null, checkpoint: p.checkpoint,
     auditoria_id: cab.id_auditoria
   }));
   if (rows.length) { const { error: e2 } = await sb.from("auditoria_posiciones").upsert(rows, { onConflict: "id" }); if (e2) throw e2; }
@@ -1977,6 +1982,17 @@ function generarRecomendaciones(posData, axleCfg, equipoTipo, cfg) {
     .sort((a, b) => a.posicion - b.posicion)
     .forEach(d => recs.push({ id: uuid(), key: "rec_calibrar_psi", texto: `Calibrar presión de aire en P${d.posicion} (actual ${d.psi} psi)` }));
 
+  // ---- Prioridad 6 (Baja): Checkpoint obligatorio -- se procesa DESPUES de
+  // retiros/cambios/irregular/rotacion/PSI (todas las prioridades mas altas),
+  // sin absorcion (una posicion puede necesitar checkpoint Y estar en
+  // cualquiera de las otras prioridades a la vez, no son excluyentes). Solo
+  // aplica a ruedas externas/sencillas -- la interna de una dupla usa
+  // Alargadera, no Checkpoint (mismo criterio que PosicionModal/TireInfoModal).
+  Object.values(posData)
+    .filter(d => d.numero_fuego && d.checkpoint === false && !esPosicionInterna(axleCfg, d.posicion))
+    .sort((a, b) => a.posicion - b.posicion)
+    .forEach(d => recs.push({ id: uuid(), key: "rec_colocar_checkpoint", texto: `Colocar checkpoint obligatorio en P${d.posicion}` }));
+
   if (!recs.length) recs.push({ id: uuid(), key: null, texto: "Todo en orden, sin tareas pendientes" });
   return { recs, posicionesAlerta };
 }
@@ -2161,6 +2177,11 @@ async function construirYGuardarAuditoria({ user, clienteId, equipo, cfg, posDat
       mm_borde_der: d.mm_borde_der !== "" ? parseFloat(d.mm_borde_der) : null,
       tipo_desgaste: d.tipo_desgaste || null, marca: d.marca || null, modelo: d.modelo || null,
       url_foto_desgaste_irregular: d.url_foto_desgaste_irregular || null,
+      // Requerimiento: Checkpoint verificado en la Auditoria (misma pregunta
+      // que ya existia solo en la HC) -- null cuando la posicion es interna
+      // (Alargadera, no aplica Checkpoint ahi) para no confundirlo con un
+      // "No" real.
+      checkpoint: d.checkpoint != null ? !!d.checkpoint : null,
       // Bug 1: tipo real (direccional/traccional/eje_libre) para que, si este
       // numero de fuego no existia todavia, asegurarNeumatico lo grabe bien
       // en vez de dejarlo null. No va en auditoria_posiciones (esa tabla no
