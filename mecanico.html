@@ -1186,7 +1186,6 @@ function AuditoriaForm({ user, clienteId, equipo, cfg, onCancel, onGenerarInstru
         <PosicionModal
           pos={editingPos} equipo={equipo} cfg={cfg} clienteId={clienteId} axleCfg={axleCfg}
           existing={posData[editingPos]}
-          fuegosEnOtrasPosiciones={Object.values(posData).filter(d => d.posicion !== editingPos && d.numero_fuego).map(d => ({ fuego: d.numero_fuego, posicion: d.posicion }))}
           onClose={() => setEditingPos(null)}
           onSave={(data) => guardarPosicion(editingPos, data)}
         />
@@ -1288,18 +1287,13 @@ function MedidaField({ cfg, value, isManual, onChange }) {
     </Field>
   );
 }
-function PosicionModal({ pos, equipo, cfg, clienteId, axleCfg, existing, fuegosEnOtrasPosiciones = [], onClose, onSave }) {
+function PosicionModal({ pos, equipo, cfg, clienteId, axleCfg, existing, onClose, onSave }) {
   const [form, setForm] = useState(() => existing || { numero_fuego: "", marca: "", modelo: "", medida: cfg.medida_default || "", psi: "", mm_borde_izq: "", mm_centro: "", mm_borde_der: "", tipo_desgaste: "normal", marca_modelo_no_registrado: false, medida_no_registrada: false, url_foto_desgaste_irregular: null, checkpoint: false });
   // Requerimiento: verificacion de Checkpoint tambien en la Auditoria (misma
   // logica que ya existia solo en la HC, TireInfoModal) -- unicamente aplica
   // a ruedas externas/sencillas, no a la interna de una dupla (esa usa
   // Alargadera en su lugar, no Checkpoint).
   const mostrarCheckpoint = !esPosicionInterna(axleCfg, pos);
-  // Un neumatico fisico solo puede estar en UNA posicion: si el mismo N° de
-  // fuego ya se cargo en otra posicion de esta auditoria, el sistema
-  // terminaba con una sola posicion ocupada y las demas vacias (visto en
-  // datos reales: el "7" repetido en P1, P5 y P6).
-  const fuegoRepetido = form.numero_fuego ? fuegosEnOtrasPosiciones.find(x => String(x.fuego) === String(form.numero_fuego)) : null;
   const medidasOpciones = (cfg.medidas_permitidas && cfg.medidas_permitidas.length) ? cfg.medidas_permitidas : DEFAULT_CFG.medidas_permitidas;
   const medidaEsManual = form.medida_no_registrada || (!!form.medida && !medidasOpciones.includes(form.medida));
   const ev = evaluarPosicion(axleCfg, cfg, pos, equipo.tipo, form);
@@ -1337,8 +1331,7 @@ function PosicionModal({ pos, equipo, cfg, clienteId, axleCfg, existing, fuegosE
     <Modal title={`Posición P${pos}`} onClose={onClose}>
       <div className="space-y-4">
         <Field label="N° de fuego">
-          <TextInput inputMode="numeric" value={form.numero_fuego} onChange={e => setForm(f => ({ ...f, numero_fuego: e.target.value.replace(/[^0-9]/g, "") }))} className="font-extrabold" placeholder="N° de fuego" alert={!!fuegoRepetido} />
-          {fuegoRepetido && <p className="text-[12.5px] font-bold text-[#B91C1C] mt-1.5">Este N° de fuego ya está cargado en P{fuegoRepetido.posicion}. Un neumático no puede estar en dos posiciones.</p>}
+          <TextInput inputMode="numeric" value={form.numero_fuego} onChange={e => setForm(f => ({ ...f, numero_fuego: e.target.value.replace(/[^0-9]/g, "") }))} className="font-extrabold" placeholder="N° de fuego" />
         </Field>
         <div className="grid grid-cols-2 gap-3">
           <MarcaModeloAuditoriaField clienteId={clienteId} marca={form.marca} modelo={form.modelo}
@@ -1408,7 +1401,7 @@ function PosicionModal({ pos, equipo, cfg, clienteId, axleCfg, existing, fuegosE
             graba directamente el objetivo de la faena (ya autoregulado), en
             vez de dejarlo vacio (se veria como "sin dato" en el resto de la
             app: PSI actual "-", mapa, etc.). */}
-        <Button className="w-full" disabled={!!fuegoRepetido || (!autoinflado && form.psi === "") || form.mm_borde_izq === "" || form.mm_centro === "" || form.mm_borde_der === "" || !form.tipo_desgaste || faltaFotoIrregular || subiendoFoto}
+        <Button className="w-full" disabled={(!autoinflado && form.psi === "") || form.mm_borde_izq === "" || form.mm_centro === "" || form.mm_borde_der === "" || !form.tipo_desgaste || faltaFotoIrregular || subiendoFoto}
           onClick={() => {
             const out = { ...form, checkpoint: mostrarCheckpoint ? !!form.checkpoint : null };
             if (autoinflado) out.psi = ev.psiObjetivo;
@@ -1506,6 +1499,27 @@ function Instructivo({ equipo, axleCfg, posData, recsInfo, checklist, setCheckli
         <TireInfoModal pos={infoPos} data={posData[infoPos]} equipo={equipo} axleCfg={axleCfg} onClose={() => setInfoPos(null)} />
       )}
 
+      {/* Aviso INFORMATIVO, recien al terminar de cargar la auditoria (nunca
+          mientras el mecanico la carga, para no sesgar lo que anota): si un
+          mismo N° de fuego quedo en mas de una posicion se le avisa, pero no
+          se bloquea ni se corrige nada -- puede ser lo que realmente vio. */}
+      {(() => {
+        const porFuego = {};
+        Object.values(posData).forEach(d => { if (d.numero_fuego) (porFuego[d.numero_fuego] = porFuego[d.numero_fuego] || []).push(d.posicion); });
+        const repetidos = Object.entries(porFuego).filter(([, ps]) => ps.length > 1).map(([f, ps]) => ({ fuego: f, posiciones: ps.sort((a, b) => a - b) }));
+        if (!repetidos.length) return null;
+        return (
+          <div className="bg-[#FEF3C7] rounded-2xl p-4 mb-6">
+            <p className="font-extrabold text-[15px] text-[#92400E] mb-2">⚠ N° de fuego repetido</p>
+            <div className="space-y-1.5">
+              {repetidos.map(r => (
+                <p key={r.fuego} className="text-[13px] font-semibold text-[#78350F]">El N° {r.fuego} quedó cargado en {r.posiciones.map(p => `P${p}`).join(", ")}</p>
+              ))}
+            </div>
+            <p className="text-[12px] text-[#92400E] mt-2">Se guarda tal cual lo cargaste. Si es un error de carga, podés volver y corregirlo; si es lo que viste, seguí normal.</p>
+          </div>
+        );
+      })()}
       {discrepancias && discrepancias.length > 0 && (
         <div className="bg-[#FEE2E2] rounded-2xl p-4 mb-6">
           <p className="font-extrabold text-[15px] text-[#B91C1C] mb-3">⚠ Neumáticos que no coinciden</p>
