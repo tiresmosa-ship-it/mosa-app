@@ -1497,7 +1497,12 @@ function PosicionDetalleModal({ n, pos, equipo, discrepanciaPendiente, setView, 
   return (
     <Modal title={`Posición ${pos}`} onClose={onClose}>
       <div className="space-y-3 text-[14px]">
-        <div className="flex items-center justify-between"><span className="text-muted">N° fuego</span><span className="font-bold flex items-center gap-2">{n.numero_fuego || "-"}<OrigenNeumaticoBadge numeroFuego={n.numero_fuego} /></span></div>
+        <div className="flex items-center justify-between"><span className="text-muted">N° fuego</span><span className="font-bold flex items-center gap-2">{n.numero_fuego || "-"}{n.numero_fuego && <OrigenNeumaticoBadge numeroFuego={n.numero_fuego} />}</span></div>
+        {n.desdeAuditoria && !n.numero_fuego && (
+          <div className="bg-[#F3F4F6] rounded-xl px-3 py-2">
+            <p className="text-[12px] text-muted">El mecánico auditó esta posición sin cargar N° de fuego — se muestran las lecturas de la última auditoría.</p>
+          </div>
+        )}
         {/* Fix 4: desgaste irregular detectado en la ultima auditoria. */}
         {n.aud && n.aud.tipo_desgaste === "irregular" && (
           <div className="bg-[#FEF3C7] rounded-xl px-3 py-2">
@@ -1602,27 +1607,46 @@ function MapaEquipoTab({ equipo, setView }) {
 
   useEffect(() => {
     let cancel = false;
-    (async () => {
-      const { data: neumaticos } = await sb.from("neumaticos").select("*").eq("equipo_actual", equipo.id_equipo).eq("estado_actual", "en_uso");
-      const numerosFuego = (neumaticos || []).map(n => n.numero_fuego).filter(Boolean);
-      const mmPorFuego = {};
-      if (numerosFuego.length) {
-        const { data: ultimaAud } = await sb.from("auditorias").select("id_auditoria").eq("equipo_id", equipo.id_equipo).order("fecha", { ascending: false }).order("creado_en", { ascending: false }).limit(1);
-        if (ultimaAud && ultimaAud[0]) {
-          // Fix 4: tipo_desgaste sumado al select para poder mostrar el badge
-          // de desgaste irregular en el modal de la posicion.
-          const { data: posAud } = await sb.from("auditoria_posiciones").select("numero_fuego,milimetros,psi,mm_borde_izq,mm_centro,mm_borde_der,tipo_desgaste,url_foto_desgaste_irregular").eq("auditoria_id", ultimaAud[0].id_auditoria).in("numero_fuego", numerosFuego);
-          (posAud || []).forEach(p => { mmPorFuego[p.numero_fuego] = p; });
-        }
+    async function cargar() {
+      // creado_en ascendente: si por dato sucio dos filas reclaman la misma
+      // posicion, el forEach de abajo se queda con la MAS RECIENTE de forma
+      // estable (sin orden, Postgres devolvia cualquiera y el mapa cambiaba
+      // entre una carga y la siguiente).
+      const { data: neumaticos } = await sb.from("neumaticos").select("*").eq("equipo_actual", equipo.id_equipo).eq("estado_actual", "en_uso").not("posicion_actual", "is", null).order("creado_en", { ascending: true });
+      const { data: ultimaAud } = await sb.from("auditorias").select("id_auditoria").eq("equipo_id", equipo.id_equipo).order("fecha", { ascending: false }).order("creado_en", { ascending: false }).limit(1);
+      // Se trae la auditoria COMPLETA (todas sus posiciones), no solo las que
+      // tienen un neumatico en `neumaticos`: si el mecanico cargo mm/PSI de
+      // una posicion pero sin N° de fuego (o repitio un fuego en dos
+      // posiciones), no se crea/mueve ningun neumatico y antes esa posicion
+      // salia vacia en el mapa aunque la auditoria existia.
+      let posAud = [];
+      if (ultimaAud && ultimaAud[0]) {
+        // Fix 4: tipo_desgaste sumado al select para poder mostrar el badge
+        // de desgaste irregular en el modal de la posicion.
+        const r = await sb.from("auditoria_posiciones").select("posicion,numero_fuego,milimetros,psi,mm_borde_izq,mm_centro,mm_borde_der,tipo_desgaste,url_foto_desgaste_irregular,checkpoint").eq("auditoria_id", ultimaAud[0].id_auditoria);
+        posAud = r.data || [];
       }
+      const audPorFuego = {}, audPorPos = {};
+      posAud.forEach(p => { if (p.numero_fuego) audPorFuego[p.numero_fuego] = p; audPorPos[p.posicion] = p; });
       const { data: discs } = await sb.from("discrepancias_inventario").select("id,tipo_discrepancia,item_detalle,posicion,valor_sistema,valor_fisico")
         .eq("equipo_id", equipo.id_equipo).eq("resuelta", false);
-      if (!cancel) {
-        setPosiciones((neumaticos || []).map(n => ({ ...n, aud: mmPorFuego[n.numero_fuego] || null })));
-        setDiscrepancias(discs || []);
-      }
-    })();
-    return () => { cancel = true; };
+      if (cancel) return;
+      const lista = (neumaticos || []).map(n => ({ ...n, aud: audPorFuego[n.numero_fuego] || null }));
+      // Posiciones auditadas que no tienen neumatico vigente: se muestran con
+      // lo que cargo el mecanico en la auditoria.
+      const ocupadas = new Set(lista.map(n => n.posicion_actual));
+      posAud.forEach(p => {
+        if (ocupadas.has(p.posicion)) return;
+        lista.push({ posicion_actual: p.posicion, numero_fuego: p.numero_fuego || null, milimetros: null, psi_actual: null, alargadera: false, checkpoint: p.checkpoint === true, aud: p, desdeAuditoria: true });
+      });
+      setPosiciones(lista);
+      setDiscrepancias(discs || []);
+    }
+    cargar();
+    // Refresco automatico: lo que guarda el mecanico se ve en el mapa sin
+    // tener que salir y volver a entrar a la ficha.
+    const t = setInterval(cargar, 10000);
+    return () => { cancel = true; clearInterval(t); };
   }, [equipo.id_equipo]);
 
   if (!equipo.configuracion_ejes && equipo.tipo !== "SEMI") {

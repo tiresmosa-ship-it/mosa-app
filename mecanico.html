@@ -1186,6 +1186,7 @@ function AuditoriaForm({ user, clienteId, equipo, cfg, onCancel, onGenerarInstru
         <PosicionModal
           pos={editingPos} equipo={equipo} cfg={cfg} clienteId={clienteId} axleCfg={axleCfg}
           existing={posData[editingPos]}
+          fuegosEnOtrasPosiciones={Object.values(posData).filter(d => d.posicion !== editingPos && d.numero_fuego).map(d => ({ fuego: d.numero_fuego, posicion: d.posicion }))}
           onClose={() => setEditingPos(null)}
           onSave={(data) => guardarPosicion(editingPos, data)}
         />
@@ -1287,13 +1288,18 @@ function MedidaField({ cfg, value, isManual, onChange }) {
     </Field>
   );
 }
-function PosicionModal({ pos, equipo, cfg, clienteId, axleCfg, existing, onClose, onSave }) {
+function PosicionModal({ pos, equipo, cfg, clienteId, axleCfg, existing, fuegosEnOtrasPosiciones = [], onClose, onSave }) {
   const [form, setForm] = useState(() => existing || { numero_fuego: "", marca: "", modelo: "", medida: cfg.medida_default || "", psi: "", mm_borde_izq: "", mm_centro: "", mm_borde_der: "", tipo_desgaste: "normal", marca_modelo_no_registrado: false, medida_no_registrada: false, url_foto_desgaste_irregular: null, checkpoint: false });
   // Requerimiento: verificacion de Checkpoint tambien en la Auditoria (misma
   // logica que ya existia solo en la HC, TireInfoModal) -- unicamente aplica
   // a ruedas externas/sencillas, no a la interna de una dupla (esa usa
   // Alargadera en su lugar, no Checkpoint).
   const mostrarCheckpoint = !esPosicionInterna(axleCfg, pos);
+  // Un neumatico fisico solo puede estar en UNA posicion: si el mismo N° de
+  // fuego ya se cargo en otra posicion de esta auditoria, el sistema
+  // terminaba con una sola posicion ocupada y las demas vacias (visto en
+  // datos reales: el "7" repetido en P1, P5 y P6).
+  const fuegoRepetido = form.numero_fuego ? fuegosEnOtrasPosiciones.find(x => String(x.fuego) === String(form.numero_fuego)) : null;
   const medidasOpciones = (cfg.medidas_permitidas && cfg.medidas_permitidas.length) ? cfg.medidas_permitidas : DEFAULT_CFG.medidas_permitidas;
   const medidaEsManual = form.medida_no_registrada || (!!form.medida && !medidasOpciones.includes(form.medida));
   const ev = evaluarPosicion(axleCfg, cfg, pos, equipo.tipo, form);
@@ -1331,7 +1337,8 @@ function PosicionModal({ pos, equipo, cfg, clienteId, axleCfg, existing, onClose
     <Modal title={`Posición P${pos}`} onClose={onClose}>
       <div className="space-y-4">
         <Field label="N° de fuego">
-          <TextInput inputMode="numeric" value={form.numero_fuego} onChange={e => setForm(f => ({ ...f, numero_fuego: e.target.value.replace(/[^0-9]/g, "") }))} className="font-extrabold" placeholder="N° de fuego" />
+          <TextInput inputMode="numeric" value={form.numero_fuego} onChange={e => setForm(f => ({ ...f, numero_fuego: e.target.value.replace(/[^0-9]/g, "") }))} className="font-extrabold" placeholder="N° de fuego" alert={!!fuegoRepetido} />
+          {fuegoRepetido && <p className="text-[12.5px] font-bold text-[#B91C1C] mt-1.5">Este N° de fuego ya está cargado en P{fuegoRepetido.posicion}. Un neumático no puede estar en dos posiciones.</p>}
         </Field>
         <div className="grid grid-cols-2 gap-3">
           <MarcaModeloAuditoriaField clienteId={clienteId} marca={form.marca} modelo={form.modelo}
@@ -1401,7 +1408,7 @@ function PosicionModal({ pos, equipo, cfg, clienteId, axleCfg, existing, onClose
             graba directamente el objetivo de la faena (ya autoregulado), en
             vez de dejarlo vacio (se veria como "sin dato" en el resto de la
             app: PSI actual "-", mapa, etc.). */}
-        <Button className="w-full" disabled={(!autoinflado && form.psi === "") || form.mm_borde_izq === "" || form.mm_centro === "" || form.mm_borde_der === "" || !form.tipo_desgaste || faltaFotoIrregular || subiendoFoto}
+        <Button className="w-full" disabled={!!fuegoRepetido || (!autoinflado && form.psi === "") || form.mm_borde_izq === "" || form.mm_centro === "" || form.mm_borde_der === "" || !form.tipo_desgaste || faltaFotoIrregular || subiendoFoto}
           onClick={() => {
             const out = { ...form, checkpoint: mostrarCheckpoint ? !!form.checkpoint : null };
             if (autoinflado) out.psi = ev.psiObjetivo;
