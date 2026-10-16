@@ -1613,7 +1613,7 @@ function MapaEquipoTab({ equipo, setView }) {
       // estable (sin orden, Postgres devolvia cualquiera y el mapa cambiaba
       // entre una carga y la siguiente).
       const { data: neumaticos } = await sb.from("neumaticos").select("*").eq("equipo_actual", equipo.id_equipo).eq("estado_actual", "en_uso").not("posicion_actual", "is", null).order("creado_en", { ascending: true });
-      const { data: ultimaAud } = await sb.from("auditorias").select("id_auditoria").eq("equipo_id", equipo.id_equipo).order("fecha", { ascending: false }).order("creado_en", { ascending: false }).limit(1);
+      const { data: ultimaAud } = await sb.from("auditorias").select("id_auditoria,creado_en").eq("equipo_id", equipo.id_equipo).order("fecha", { ascending: false }).order("creado_en", { ascending: false }).limit(1);
       // Se trae la auditoria COMPLETA (todas sus posiciones), no solo las que
       // tienen un neumatico en `neumaticos`: si el mecanico cargo mm/PSI de
       // una posicion pero sin N° de fuego (o repitio un fuego en dos
@@ -1631,14 +1631,40 @@ function MapaEquipoTab({ equipo, setView }) {
       const { data: discs } = await sb.from("discrepancias_inventario").select("id,tipo_discrepancia,item_detalle,posicion,valor_sistema,valor_fisico")
         .eq("equipo_id", equipo.id_equipo).eq("resuelta", false);
       if (cancel) return;
-      const lista = (neumaticos || []).map(n => ({ ...n, aud: audPorFuego[n.numero_fuego] || null }));
-      // Posiciones auditadas que no tienen neumatico vigente: se muestran con
-      // lo que cargo el mecanico en la auditoria.
-      const ocupadas = new Set(lista.map(n => n.posicion_actual));
+      // El mapa es la FOTO de la ultima auditoria, tal cual la cargo el
+      // mecanico (fuego, mm, PSI, desgaste), incluso si una posicion quedo
+      // sin N° de fuego ("-"). `neumaticos` solo aporta los accesorios
+      // vigentes (alargadera/checkpoint) y, mas abajo, sirve de respaldo para
+      // las posiciones que la auditoria no cubre.
+      const neuPorFuego = {};
+      (neumaticos || []).forEach(n => { if (n.numero_fuego) neuPorFuego[n.numero_fuego] = n; });
+      const porPos = {};
       posAud.forEach(p => {
-        if (ocupadas.has(p.posicion)) return;
-        lista.push({ posicion_actual: p.posicion, numero_fuego: p.numero_fuego || null, milimetros: null, psi_actual: null, alargadera: false, checkpoint: p.checkpoint === true, aud: p, desdeAuditoria: true });
+        const n = p.numero_fuego ? neuPorFuego[p.numero_fuego] : null;
+        porPos[p.posicion] = { ...(n || {}), posicion_actual: p.posicion, numero_fuego: p.numero_fuego || null, milimetros: null, psi_actual: null, alargadera: !!(n && n.alargadera), checkpoint: n ? !!n.checkpoint : p.checkpoint === true, aud: p, desdeAuditoria: true };
       });
+      // Hoja de Cambio hecha DESPUES de esa auditoria: montajes (entra) y
+      // salidas (sale) pisan lo auditado, en orden cronologico.
+      if (ultimaAud && ultimaAud[0]) {
+        const { data: cambios } = await sb.from("cambios_neumaticos").select("id_cambio").eq("equipo_id", equipo.id_equipo);
+        const idsCambio = (cambios || []).map(c => c.id_cambio);
+        if (idsCambio.length) {
+          const { data: dets } = await sb.from("cambio_detalle").select("tipo,numero_fuego,posicion,milimetros,psi,creado_en").in("cambio_id", idsCambio).gt("creado_en", ultimaAud[0].creado_en).order("creado_en", { ascending: true });
+          (dets || []).forEach(d => {
+            if (d.posicion == null) return;
+            if (d.tipo === "sale") { delete porPos[d.posicion]; return; }
+            if (d.tipo === "entra") {
+              const n = neuPorFuego[d.numero_fuego];
+              porPos[d.posicion] = { ...(n || {}), posicion_actual: d.posicion, numero_fuego: d.numero_fuego, milimetros: d.milimetros, psi_actual: d.psi, alargadera: !!(n && n.alargadera), checkpoint: !!(n && n.checkpoint), aud: null };
+            }
+          });
+        }
+      }
+      // Posiciones que la auditoria no cubre: lo que haya en neumaticos.
+      (neumaticos || []).forEach(n => {
+        if (!porPos[n.posicion_actual] && !posAud.length) porPos[n.posicion_actual] = { ...n, aud: audPorFuego[n.numero_fuego] || null };
+      });
+      const lista = Object.values(porPos);
       setPosiciones(lista);
       setDiscrepancias(discs || []);
     }
