@@ -722,7 +722,60 @@ function CheckDiario({ user, clienteId, onDone, cfg }) {
 /* =====================================================================
    PANTALLA 3 - SELECCION DE EQUIPO
 ===================================================================== */
-function SeleccionEquipo({ clienteId, cfg, onPick }) {
+/* =====================================================================
+   BASES (clientes que se dividen en bases, ej. ELB)
+===================================================================== */
+// Pantalla que sigue a "¿En que empresa vas a trabajar hoy?" cuando la empresa
+// se divide en bases: hay que elegir en cual se trabaja. Se puede cambiar
+// despues sin salir de la app con el selector de arriba a la derecha
+// (BaseSwitcher) de la pantalla de Equipos.
+function SeleccionBase({ bases, onConfirm }) {
+  return (
+    <div className="min-h-screen flex flex-col px-6 pt-16 safe-top">
+      <p className="text-[14px] text-muted mb-2">Antes de comenzar</p>
+      <h1 className="text-[28px] font-extrabold leading-tight mb-8">¿En qué base vas a trabajar?</h1>
+      <div className="space-y-3 mb-8">
+        {bases.map(b => (
+          <button key={b.id} type="button" onClick={() => onConfirm(b.id)}
+            className="w-full text-left bg-white rounded-card shadow-card border border-bd p-5 flex items-center gap-3 active:scale-[0.99] transition">
+            <div className="w-12 h-12 rounded-2xl bg-[#F3F4F6] flex items-center justify-center shrink-0 text-[22px]">📍</div>
+            <p className="font-extrabold text-[16px] flex-1">{b.nombre}</p>
+          </button>
+        ))}
+        {!bases.length && <p className="text-center text-muted py-10 text-sm">Esta empresa todavía no tiene bases cargadas. Avisale al administrador.</p>}
+      </div>
+    </div>
+  );
+}
+function BaseSwitcher({ bases, baseId, onChange }) {
+  const [open, setOpen] = useState(false);
+  const actual = bases.find(b => b.id === baseId);
+  return (
+    <div className="relative">
+      <button type="button" onClick={() => setOpen(o => !o)} className="flex items-center gap-1.5 bg-[#F3F4F6] rounded-full pl-3 pr-2.5 h-10 text-[13px] font-bold">
+        <span>📍</span>
+        <span className="max-w-[110px] truncate">{actual ? actual.nombre : "Base"}</span>
+        <Icon.back width="12" height="12" style={{ transform: "rotate(-90deg)" }} />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 top-full mt-2 w-56 bg-white rounded-2xl border border-bd shadow-card z-50 overflow-hidden">
+            {bases.map(b => (
+              <button key={b.id} type="button" onClick={() => { setOpen(false); if (b.id !== baseId) onChange(b.id); }}
+                className={cx("w-full text-left px-4 py-3 text-[14px] font-semibold flex items-center gap-2", b.id === baseId ? "bg-[#F3F4F6]" : "")}>
+                <span className={cx("w-3.5 h-3.5 rounded-full border-2", b.id === baseId ? "border-ink bg-ink" : "border-[#D1D5DB]")} />
+                {b.nombre}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function SeleccionEquipo({ clienteId, cfg, onPick, baseCtl }) {
   const [equipos, setEquipos] = useState(() => getCache(LS.equipos(clienteId), []));
   const [estadosByEquipo, setEstadosByEquipo] = useState({});
   const [pendientesByEquipo, setPendientesByEquipo] = useState({});
@@ -749,7 +802,8 @@ function SeleccionEquipo({ clienteId, cfg, onPick }) {
 
   const estadoDe = (eq) => equipoAuditEstado(estadosByEquipo[eq.id_equipo], cfg.meses_vencimiento_auditoria, !!pendientesByEquipo[eq.id_equipo]);
 
-  const filtered = equipos.filter(eq => {
+  const usaBases = !!(baseCtl && baseCtl.usaBases);
+  const filtered = (usaBases ? equiposDeBase(equipos, baseCtl.baseId) : equipos).filter(eq => {
     const estado = estadoDe(eq);
     if (filter !== "todos" && filter !== estado) return false;
     if (search) {
@@ -763,7 +817,9 @@ function SeleccionEquipo({ clienteId, cfg, onPick }) {
     <div className="min-h-screen pb-24 px-5 pt-14 safe-top">
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-[30px] font-extrabold">Equipos</h1>
-        <div className="w-10 h-10 rounded-full bg-[#F3F4F6] flex items-center justify-center"><Icon.search width="18" height="18" /></div>
+        {usaBases
+          ? <BaseSwitcher bases={baseCtl.bases} baseId={baseCtl.baseId} onChange={baseCtl.onChange} />
+          : <div className="w-10 h-10 rounded-full bg-[#F3F4F6] flex items-center justify-center"><Icon.search width="18" height="18" /></div>}
       </div>
       <TextInput placeholder="Buscar por patente o número interno" value={search} onChange={e => setSearch(e.target.value)} className="mb-4" />
       <div className="flex gap-2 mb-5 overflow-x-auto">
@@ -781,7 +837,7 @@ function SeleccionEquipo({ clienteId, cfg, onPick }) {
               <div className="w-[52px] h-[52px] rounded-2xl bg-[#F3F4F6] flex items-center justify-center shrink-0"><Icon.truck width="26" height="26" /></div>
               <div className="flex-1 min-w-0">
                 <p className="font-bold text-[15.5px] truncate">{eq.numero_interno ? `${eq.numero_interno} · ` : ""}{eq.patente}</p>
-                <p className="text-[12.5px] text-muted truncate">{eq.tipo === "SEMI" ? "Semirremolque" : `Tracto ${eq.configuracion_ejes || ""}`} · {eq.modelo || ""}</p>
+                <p className="text-[12.5px] text-muted truncate">{eq.tipo === "SEMI" ? "Semirremolque" : `Tracto ${eq.configuracion_ejes || ""}`} · {eq.modelo || ""}{usaBases && !eq.base_id ? " · Sin base" : ""}</p>
               </div>
               <Badge color={equipoAuditColor(estado)}>{equipoAuditIcono(estado)} {equipoAuditLabel(estado)}</Badge>
             </button>
@@ -3363,6 +3419,29 @@ function MecanicoApp({ user }) {
   const [empresaConfirmada, setEmpresaConfirmada] = useState(false);
   const [checkDone, setCheckDone] = useState(false);
   const [cfg, setCfg] = useState(DEFAULT_CFG);
+  // Requerimiento: Bases por cliente (ELB). baseInfo = { usaBases, bases } de
+  // la empresa elegida (null = todavia sin saber); baseId = base en la que se
+  // trabaja hoy, guardada por dia/empresa para sobrevivir recargas.
+  const [baseInfo, setBaseInfo] = useState(null);
+  const [baseId, setBaseId] = useState(null);
+  function elegirBase(id) {
+    setBaseId(id);
+    localStorage.setItem("mosa_base_activa", JSON.stringify({ clienteId, fecha: todayISO(), baseId: id }));
+  }
+  useEffect(() => {
+    if (!clienteId) return;
+    let cancel = false;
+    setBaseInfo(getCache(`mosa_bases_${clienteId}`, null));
+    db.fetchBasesCliente(clienteId).then(info => {
+      if (cancel) return;
+      setBaseInfo(info);
+      let guardada = null;
+      try { guardada = JSON.parse(localStorage.getItem("mosa_base_activa") || "null"); } catch (e) {}
+      const vigente = guardada && guardada.clienteId === clienteId && guardada.fecha === todayISO() && info.bases.some(b => b.id === guardada.baseId);
+      setBaseId(info.usaBases && vigente ? guardada.baseId : null);
+    });
+    return () => { cancel = true; };
+  }, [clienteId]);
   const [tab, setTab] = useState("inicio");
   const [flow, setFlow] = useState(null);
   const [pushToast, toastNode] = useToasts();
@@ -3531,8 +3610,16 @@ function MecanicoApp({ user }) {
   }, [clienteId]);
 
   if (!empresaConfirmada) {
-    return <SeleccionEmpresa user={user} onConfirm={(cid) => { setClienteId(cid); setEmpresaConfirmada(true); setTurno({ clienteId: cid, fecha: todayISO(), checkDone: false }); }} />;
+    // Elegir (o volver a elegir) la empresa siempre vuelve a pedir la base.
+    return <SeleccionEmpresa user={user} onConfirm={(cid) => { localStorage.removeItem("mosa_base_activa"); setBaseId(null); setClienteId(cid); setEmpresaConfirmada(true); setTurno({ clienteId: cid, fecha: todayISO(), checkDone: false }); }} />;
   }
+  // Empresa que se divide en bases: hay que elegir en cual se trabaja antes
+  // de seguir (check diario y equipos).
+  const usaBases = !!(baseInfo && baseInfo.usaBases);
+  if (usaBases && !baseId) {
+    return <SeleccionBase bases={baseInfo.bases} onConfirm={elegirBase} />;
+  }
+  const baseCtl = usaBases ? { usaBases: true, bases: baseInfo.bases, baseId, onChange: elegirBase } : null;
   if (!checkDone) {
     return <CheckDiario user={user} clienteId={clienteId} onDone={() => setCheckDone(true)} cfg={cfg} />;
   }
@@ -3549,7 +3636,7 @@ function MecanicoApp({ user }) {
   } else if (flow && flow.stage === "accion") {
     body = (
       <>
-        <SeleccionEquipo clienteId={clienteId} cfg={cfg} onPick={async (eq) => {
+        <SeleccionEquipo clienteId={clienteId} cfg={cfg} baseCtl={baseCtl} onPick={async (eq) => {
           let vencida = false, enProcesoHoy = false, validez48h = null;
           try {
             const info = await db.fetchEstadoAuditoriaEquipo(eq.id_equipo);
@@ -3704,7 +3791,7 @@ function MecanicoApp({ user }) {
   } else if (tab === "perfil") {
     body = <PerfilScreen user={user} />;
   } else {
-    body = <SeleccionEquipo clienteId={clienteId} cfg={cfg} onPick={async (eq) => {
+    body = <SeleccionEquipo clienteId={clienteId} cfg={cfg} baseCtl={baseCtl} onPick={async (eq) => {
       let vencida = false, enProcesoHoy = false, tareasPendientes = 0, validez48h = null;
       try {
         const info = await db.fetchEstadoAuditoriaEquipo(eq.id_equipo);

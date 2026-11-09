@@ -251,6 +251,14 @@ function axleConfigFor(equipo) {
   if (equipo.tipo === "SEMI" && equipo.cant_auxilios != null) return aplicarAuxiliaresOverride(base, equipo.cant_auxilios);
   return base;
 }
+// Requerimiento: Bases por cliente -- equipos de la base elegida. baseId vacio
+// o "todas" = sin filtro. Los equipos que todavia no tienen base asignada
+// (base_id null) se muestran en TODAS las bases en vez de desaparecer, asi
+// nadie queda sin poder trabajar mientras se termina de cargar la asignacion.
+function equiposDeBase(equipos, baseId) {
+  if (!baseId || baseId === "todas") return equipos;
+  return (equipos || []).filter(e => !e.base_id || e.base_id === baseId);
+}
 function posType(cfg, pos) {
   const row = cfg.rows.find(r => r.positions.includes(pos));
   return row ? row.type : "M";
@@ -511,6 +519,41 @@ const db = {
   async actualizarRuta(id, patch) {
     const { error } = await sb.from("rutas").update(patch).eq("id", id);
     if (error) throw error;
+  },
+  // Requerimiento: Bases por cliente (ELB: Copiapo/Iquique/Santiago/
+  // Antofagasta). soloActivas=false lo usa el maestro de clientes para poder
+  // ver y reactivar las deshabilitadas.
+  async fetchBases(clienteId, soloActivas = true) {
+    let q = sb.from("bases").select("*").eq("cliente_id", clienteId);
+    if (soloActivas) q = q.eq("activo", true);
+    const { data, error } = await q.order("nombre");
+    if (error) throw error;
+    return data || [];
+  },
+  async guardarBase(payload) {
+    const { error } = await sb.from("bases").insert({ id: uuid(), activo: true, creado_en: new Date().toISOString(), ...payload });
+    if (error) throw error;
+  },
+  async actualizarBase(id, patch) {
+    const { error } = await sb.from("bases").update(patch).eq("id", id);
+    if (error) throw error;
+  },
+  // { usaBases, bases } del cliente, para la app del mecanico: si no hay red
+  // (o la tabla todavia no existe) cae a la ultima copia guardada, y si
+  // tampoco hay, a "este cliente no usa bases" -- nunca bloquea el flujo normal.
+  async fetchBasesCliente(clienteId) {
+    const key = `mosa_bases_${clienteId}`;
+    try {
+      const { data: c, error: e1 } = await sb.from("clientes").select("usa_bases").eq("id_cliente", clienteId).maybeSingle();
+      if (e1) throw e1;
+      const usaBases = !!(c && c.usa_bases);
+      const bases = usaBases ? await db.fetchBases(clienteId, true) : [];
+      const res = { usaBases, bases };
+      setCache(key, res);
+      return res;
+    } catch (e) {
+      return getCache(key, { usaBases: false, bases: [] });
+    }
   },
   async fetchEquipos(clienteId) {
     const { data, error } = await sb.from("equipos").select("*").eq("cliente_id", clienteId).eq("activo", true).order("numero_interno");

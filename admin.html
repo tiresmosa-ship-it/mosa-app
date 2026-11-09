@@ -416,9 +416,55 @@ function useEmpresaFiltro() {
   const [empresas, setEmpresas] = useState([]);
   const [filtro, setFiltroState] = useState(() => localStorage.getItem(LS_EMPRESA_FILTRO) || "todas");
   useEffect(() => { sb.from("clientes").select("*").eq("activo", true).order("nombre").then(({ data }) => setEmpresas(data || [])); }, []);
-  function setFiltro(v) { localStorage.setItem(LS_EMPRESA_FILTRO, v); setFiltroState(v); }
+  // Requerimiento: Bases por cliente. Si la empresa elegida se divide en
+  // bases (clientes.usa_bases), se elige ademas una base. baseFiltro:
+  // "" = todavia no elegida (el selector se abre solo para pedirla), "todas"
+  // = sin filtro, o el id de una base. Se vuelve a preguntar cada vez que se
+  // elige la empresa de nuevo.
+  const [bases, setBases] = useState([]);
+  const [baseFiltro, setBaseFiltroState] = useState("");
+  const empresaActiva = empresas.find(e => e.id_cliente === filtro) || null;
+  const usaBases = !!(empresaActiva && empresaActiva.usa_bases);
+  useEffect(() => {
+    if (!usaBases) { setBases([]); setBaseFiltroState(""); return; }
+    db.fetchBases(filtro).then(setBases).catch(() => setBases([]));
+    setBaseFiltroState(localStorage.getItem("mosa_admin_base_" + filtro) || "");
+  }, [filtro, usaBases]);
+  function setFiltro(v) { localStorage.removeItem("mosa_admin_base_" + v); localStorage.setItem(LS_EMPRESA_FILTRO, v); setFiltroState(v); setBaseFiltroState(""); }
+  function setBaseFiltro(v) { localStorage.setItem("mosa_admin_base_" + filtro, v); setBaseFiltroState(v); }
   const nombreFiltro = filtro === "todas" ? "Todas" : ((empresas.find(e => e.id_cliente === filtro) || {}).nombre || filtro);
-  return { empresas, filtro, setFiltro, nombreFiltro };
+  const nombreBase = baseFiltro === "todas" ? "Todas las bases" : ((bases.find(b => b.id === baseFiltro) || {}).nombre || "Elegí base");
+  return { empresas, filtro, setFiltro, nombreFiltro, usaBases, bases, baseFiltro, setBaseFiltro, nombreBase };
+}
+// Selector de base (al lado del de empresa): solo aparece si la empresa
+// elegida se divide en bases, y se abre solo mientras no se haya elegido una.
+function BaseSelector({ usaBases, bases, baseFiltro, setBaseFiltro, nombreBase }) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => { if (usaBases && baseFiltro === "") setOpen(true); }, [usaBases, baseFiltro]);
+  if (!usaBases) return null;
+  const opciones = [["todas", "Todas las bases"], ...bases.map(b => [b.id, b.nombre])];
+  return (
+    <div className="relative">
+      <button onClick={() => setOpen(o => !o)} className={cx("flex items-center gap-1.5 rounded-full pl-3 pr-2.5 py-2 text-[13px] font-bold", baseFiltro === "" ? "bg-ink text-white" : "bg-[#F3F4F6]")}>
+        <span>📍</span>
+        <span className="max-w-[110px] truncate">{nombreBase}</span>
+        <Icon.chevronDown width="14" height="14" />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 top-full mt-2 w-56 bg-white rounded-2xl border border-bd shadow-card z-50 overflow-hidden">
+            {opciones.map(([id, nombre]) => (
+              <button key={id} onClick={() => { setBaseFiltro(id); setOpen(false); }} className={cx("w-full text-left px-4 py-3 text-[14px] font-semibold flex items-center gap-2", baseFiltro === id ? "bg-[#F3F4F6]" : "")}>
+                <span className={cx("w-3.5 h-3.5 rounded-full border-2", baseFiltro === id ? "border-ink bg-ink" : "border-[#D1D5DB]")} />
+                {nombre}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
 }
 function EmpresaSelector({ empresas, filtro, setFiltro, nombreFiltro }) {
   const [open, setOpen] = useState(false);
@@ -560,6 +606,7 @@ function AdminShell({ view, setView, empresaCtl, alertasNoLeidas, campanita, adm
             <EmpresaSelector {...empresaCtl} />
           </div>
           <div className="flex items-center gap-2">
+            <BaseSelector {...empresaCtl} />
             <button onClick={() => setPanelAlertas(true)} className="relative w-10 h-10 rounded-full bg-[#F3F4F6] flex items-center justify-center">
               <Icon.bell width="18" height="18" />
               {nivel1 > 0 && <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-[#EF4444] text-white text-[10px] font-bold flex items-center justify-center">{nivel1 > 99 ? "99+" : nivel1}</span>}
@@ -1202,6 +1249,14 @@ function EquipoModal({ equipo, filtro, empresas, onClose, onSaved, pushToast }) 
     if (!clienteId) { setRutas([]); return; }
     db.fetchRutas(clienteId, true).then(setRutas).catch(e => { console.error("No se pudieron cargar las rutas", e); setRutas([]); });
   }, [clienteId]);
+  // Requerimiento: Bases por cliente -- si la empresa del equipo se divide en
+  // bases, la ficha pide a cual pertenece (obligatorio, igual que la ruta).
+  const [baseId, setBaseId] = useState(equipo ? (equipo.base_id || "") : "");
+  const [infoBases, setInfoBases] = useState({ usaBases: false, bases: [] });
+  useEffect(() => {
+    if (!clienteId) { setInfoBases({ usaBases: false, bases: [] }); return; }
+    db.fetchBasesCliente(clienteId).then(setInfoBases);
+  }, [clienteId]);
   const categoriasParaTipo = tipo === "TRACTO" ? ["tractor"] : ["trailer", "chasis"];
   const opcionesDinamicas = configsDinamicas.filter(c => categoriasParaTipo.includes(c.categoria));
   // Cambiar el Tipo resetea la Configuracion elegida a un default sensato
@@ -1218,6 +1273,7 @@ function EquipoModal({ equipo, filtro, empresas, onClose, onSaved, pushToast }) 
     if (!numeroInterno.trim() || !patente.trim()) { setError("Número interno y patente son obligatorios."); return; }
     if (!clienteId) { setError("Elegí una empresa."); return; }
     if (!rutaId) { setError("Elegí una ruta/circuito."); return; }
+    if (infoBases.usaBases && !baseId) { setError("Elegí la base a la que pertenece el equipo."); return; }
     setSaving(true);
     try {
       let q = sb.from("equipos").select("id_equipo").eq("cliente_id", clienteId).eq("numero_interno", numeroInterno.trim());
@@ -1238,7 +1294,10 @@ function EquipoModal({ equipo, filtro, empresas, onClose, onSaved, pushToast }) 
         // Requerimiento: solo tiene sentido para Semis -- en un Tracto queda
         // guardado igual (la columna no distingue), pero axleConfigFor lo
         // ignora por completo salvo que equipo.tipo === "SEMI".
-        cant_auxilios: cantAuxilios
+        cant_auxilios: cantAuxilios,
+        // Solo si el cliente se divide en bases: asi un cliente sin bases (o
+        // antes de correr la migracion) guarda exactamente igual que siempre.
+        ...(infoBases.usaBases ? { base_id: baseId } : {})
       };
       if (editando) {
         const { error: e } = await sb.from("equipos").update(payload).eq("id_equipo", equipo.id_equipo);
@@ -1316,6 +1375,14 @@ function EquipoModal({ equipo, filtro, empresas, onClose, onSaved, pushToast }) 
             <StepperNum value={cantAuxilios} onChange={setCantAuxilios} min={0} max={4} />
           </Field>
         )}
+        {infoBases.usaBases && (
+          <Field label="Base" required hint={!infoBases.bases.length ? "Esta empresa todavía no tiene bases activas — cargalas en el maestro de clientes" : ""}>
+            <Select value={baseId} onChange={e => setBaseId(e.target.value)}>
+              <option value="">Elegí una base…</option>
+              {infoBases.bases.map(b => <option key={b.id} value={b.id}>{b.nombre}</option>)}
+            </Select>
+          </Field>
+        )}
         {/* Requerimiento: Gestion Centralizada de Circuitos/Rutas -- select
             obligatorio, vinculado a equipos.ruta_id. */}
         <Field label="Ruta / Circuito" required hint={!rutas.length ? "Esta empresa todavía no tiene rutas cargadas — creá una en Configuración > Rutas / Circuitos" : ""}>
@@ -1334,7 +1401,7 @@ function EquipoModal({ equipo, filtro, empresas, onClose, onSaved, pushToast }) 
 }
 
 function EquiposView({ empresaCtl, adminUser, setView }) {
-  const { filtro, empresas } = empresaCtl;
+  const { filtro, empresas, usaBases, bases, baseFiltro } = empresaCtl;
   const [equipos, setEquipos] = useState([]);
   const [search, setSearch] = useState("");
   const [filtroTab, setFiltroTab] = useState("todos");
@@ -1359,7 +1426,8 @@ function EquiposView({ empresaCtl, adminUser, setView }) {
     else precargarConfiguracionesCliente(filtro);
   }, [filtro, empresas]);
 
-  const filtrados = equipos.filter(eq => {
+  const nombreBaseDe = (eq) => eq.base_id ? ((bases.find(b => b.id === eq.base_id) || {}).nombre || "") : "Sin base";
+  const filtrados = (usaBases ? equiposDeBase(equipos, baseFiltro) : equipos).filter(eq => {
     if (!aplicaFiltroEquipo(eq, filtroTab)) return false;
     if (!search) return true;
     const s = search.toLowerCase();
@@ -1413,7 +1481,7 @@ function EquiposView({ empresaCtl, adminUser, setView }) {
                     {eq.tipo === "SEMI" ? "Semirremolque" : `Tracto ${eq.configuracion_ejes || ""}`} · {eq.modelo || "-"}
                     {tieneEjeAutoinflado && <IconoAutoinflado title="Tiene eje(s) con sistema autoinflado" />}
                   </p>
-                  <p className="text-[12px] text-muted mt-1">{eq.kilometros ? `${eq.kilometros.toLocaleString()} km` : "Sin km registrados"}</p>
+                  <p className="text-[12px] text-muted mt-1">{eq.kilometros ? `${eq.kilometros.toLocaleString()} km` : "Sin km registrados"}{usaBases && ` · 📍 ${nombreBaseDe(eq)}`}</p>
                 </button>
                 {puedeGestionar && (
                   <div className="flex items-center gap-2 mt-3 pt-3 border-t border-bd">

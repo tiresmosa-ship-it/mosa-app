@@ -898,3 +898,37 @@ ALTER TABLE auditoria_posiciones ADD COLUMN IF NOT EXISTS checkpoint BOOLEAN;
 -- como para Semis ya cargados) -- al agregar la columna con DEFAULT,
 -- Postgres la completa tambien en las filas ya existentes.
 ALTER TABLE equipos ADD COLUMN IF NOT EXISTS cant_auxilios INT NOT NULL DEFAULT 1 CHECK (cant_auxilios BETWEEN 0 AND 4);
+
+
+-- 54) Bases por cliente -- hay clientes (ELB) que operan en varias bases
+-- (Copiapo, Iquique, Santiago, Antofagasta) y necesitan trabajar/ver la flota
+-- por base. Tres piezas:
+--  - clientes.usa_bases: SI/NO en el maestro de clientes (superadmin). Si es
+--    true, el cliente carga sus bases y toda la app le pide elegir una.
+--  - bases: catalogo de bases por cliente (baja logica via 'activo', Regla
+--    Cero Borrados; UNIQUE por nombre dentro del cliente).
+--  - equipos.base_id: base a la que pertenece cada unidad (nullable: los
+--    equipos todavia sin asignar se siguen mostrando en todas las bases, marcados
+--    "Sin base", para no trabar al mecanico mientras se completa la carga).
+ALTER TABLE clientes ADD COLUMN IF NOT EXISTS usa_bases BOOLEAN NOT NULL DEFAULT false;
+
+CREATE TABLE IF NOT EXISTS bases (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  cliente_id TEXT NOT NULL REFERENCES clientes(id_cliente),
+  nombre TEXT NOT NULL,
+  activo BOOLEAN NOT NULL DEFAULT true,
+  creado_en TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (cliente_id, nombre)
+);
+GRANT SELECT, INSERT, UPDATE ON bases TO anon;
+ALTER TABLE bases ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS anon_all ON bases;
+CREATE POLICY anon_all ON bases FOR ALL TO anon USING (true) WITH CHECK (true);
+
+ALTER TABLE equipos ADD COLUMN IF NOT EXISTS base_id UUID REFERENCES bases(id);
+
+-- Carga inicial de ELB.
+UPDATE clientes SET usa_bases = true WHERE id_cliente = 'elb';
+INSERT INTO bases (cliente_id, nombre) VALUES
+  ('elb', 'Copiapó'), ('elb', 'Iquique'), ('elb', 'Santiago'), ('elb', 'Antofagasta')
+ON CONFLICT (cliente_id, nombre) DO NOTHING;

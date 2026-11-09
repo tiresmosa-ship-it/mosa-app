@@ -5133,12 +5133,35 @@ function ClienteModal({ cliente, onClose, onSaved, pushToast, clientesExistentes
   const [nombre, setNombre] = useState(cliente ? cliente.nombre : "");
   const [contacto, setContacto] = useState(cliente ? (cliente.contacto || "") : "");
   const [telefono, setTelefono] = useState(cliente ? (cliente.telefono || "") : "");
+  // Requerimiento: Bases por cliente -- Si/No "se divide en bases"; si es Si,
+  // se cargan las bases (ej. ELB: Copiapo, Iquique, Santiago, Antofagasta) y
+  // toda la app le pide elegir una al trabajar con este cliente.
+  const [usaBases, setUsaBases] = useState(cliente ? !!cliente.usa_bases : false);
+  const [bases, setBases] = useState([]); // [{ id?, nombre, activo, orig? }]
+  const [nuevaBase, setNuevaBase] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!editando) return;
+    db.fetchBases(cliente.id_cliente, false)
+      .then(bs => setBases(bs.map(b => ({ id: b.id, nombre: b.nombre, activo: b.activo, orig: { nombre: b.nombre, activo: b.activo } }))))
+      .catch(e => console.error("No se pudieron cargar las bases", e));
+  }, []);
+
+  function agregarBase() {
+    const n = nuevaBase.trim();
+    if (!n) return;
+    if (bases.some(b => b.nombre.toLowerCase() === n.toLowerCase())) { setError("Ya cargaste una base con ese nombre."); return; }
+    setError("");
+    setBases(bs => [...bs, { nombre: n, activo: true }]);
+    setNuevaBase("");
+  }
 
   async function guardar() {
     setError("");
     if (!nombre.trim()) { setError("El nombre es obligatorio."); return; }
+    if (usaBases && !bases.some(b => b.activo)) { setError("Si el cliente se divide en bases, cargá al menos una base activa."); return; }
     if (!editando) {
       const id = idCliente.trim();
       if (!id) { setError("El ID de cliente es obligatorio."); return; }
@@ -5147,19 +5170,32 @@ function ClienteModal({ cliente, onClose, onSaved, pushToast, clientesExistentes
     }
     setSaving(true);
     try {
+      // Altas y cambios de nombre/estado de las bases (nunca se borran: baja
+      // logica con "activo", igual que el resto de los maestros).
+      async function guardarBases(idCli) {
+        for (const b of bases) {
+          if (!b.id) await db.guardarBase({ cliente_id: idCli, nombre: b.nombre });
+          else if (b.nombre !== b.orig.nombre || b.activo !== b.orig.activo) await db.actualizarBase(b.id, { nombre: b.nombre, activo: b.activo });
+        }
+      }
       if (editando) {
         const { error: e1 } = await sb.from("clientes").update({
-          nombre: nombre.trim(), contacto: contacto.trim() || null, telefono: telefono.trim() || null
+          nombre: nombre.trim(), contacto: contacto.trim() || null, telefono: telefono.trim() || null,
+          // Solo si ya existe la columna (migracion 54) o se esta activando: asi
+          // guardar cualquier otro cliente no depende de que la migracion este corrida.
+          ...((usaBases || "usa_bases" in cliente) ? { usa_bases: usaBases } : {})
         }).eq("id_cliente", cliente.id_cliente);
         if (e1) throw e1;
+        await guardarBases(cliente.id_cliente);
         pushToast("✓ Cliente actualizado");
       } else {
         const id = idCliente.trim();
         const { error: e1 } = await sb.from("clientes").insert({
           id_cliente: id, nombre: nombre.trim(), contacto: contacto.trim() || null,
-          telefono: telefono.trim() || null, activo: true
+          telefono: telefono.trim() || null, activo: true, ...(usaBases ? { usa_bases: true } : {})
         });
         if (e1) throw e1;
+        await guardarBases(id);
         const rows = Object.entries(CONFIG_CLIENTE_DEFAULT).map(([clave, valor]) => ({ cliente_id: id, clave, valor: String(valor) }));
         const { error: e2 } = await sb.from("config_cliente").insert(rows);
         if (e2) console.error("Cliente creado pero falló la configuración por defecto", e2);
@@ -5188,6 +5224,33 @@ function ClienteModal({ cliente, onClose, onSaved, pushToast, clientesExistentes
         <Field label="Teléfono">
           <TextInput value={telefono} onChange={e => setTelefono(e.target.value)} />
         </Field>
+        <Field label="¿Este cliente se divide en bases?" hint="Si es Sí, la app le pide elegir una base al entrar y cada equipo se asigna a una.">
+          <div className="flex gap-2">
+            {[[true, "Sí"], [false, "No"]].map(([v, l]) => (
+              <button key={l} type="button" onClick={() => setUsaBases(v)}
+                className={cx("flex-1 h-11 rounded-2xl text-[13.5px] font-bold", usaBases === v ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{l}</button>
+            ))}
+          </div>
+        </Field>
+        {usaBases && (
+          <div className="bg-[#F9FAFB] rounded-2xl p-3 space-y-2">
+            <p className="text-[13px] font-bold">Bases</p>
+            {bases.map((b, i) => (
+              <div key={b.id || `nueva-${i}`} className="flex items-center gap-2">
+                <TextInput value={b.nombre} className={cx("h-11", !b.activo && "opacity-50")}
+                  onChange={e => setBases(bs => bs.map((x, j) => j === i ? { ...x, nombre: e.target.value } : x))} />
+                <button type="button" onClick={() => setBases(bs => bs.map((x, j) => j === i ? { ...x, activo: !x.activo } : x))}
+                  className="text-[11.5px] font-bold text-ink px-3 h-11 rounded-full bg-white border border-bd whitespace-nowrap">{b.activo ? "Desactivar" : "Activar"}</button>
+              </div>
+            ))}
+            {!bases.length && <p className="text-[12px] text-muted">Todavía no cargaste ninguna base.</p>}
+            <div className="flex items-center gap-2 pt-1">
+              <TextInput value={nuevaBase} placeholder="Nueva base (ej: Copiapó)" className="h-11"
+                onChange={e => setNuevaBase(e.target.value)} onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); agregarBase(); } }} />
+              <button type="button" onClick={agregarBase} className="text-[12.5px] font-bold text-white bg-ink px-4 h-11 rounded-full whitespace-nowrap">+ Agregar</button>
+            </div>
+          </div>
+        )}
         {error && <p className="text-[13px] text-red-600 font-semibold">{error}</p>}
         <Button className="w-full" disabled={saving} onClick={guardar}>{saving ? "Guardando…" : "Guardar"}</Button>
       </div>
