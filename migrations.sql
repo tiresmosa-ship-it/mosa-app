@@ -901,7 +901,7 @@ ALTER TABLE equipos ADD COLUMN IF NOT EXISTS cant_auxilios INT NOT NULL DEFAULT 
 
 
 -- 54) Bases por cliente -- hay clientes (ELB) que operan en varias bases
--- (Copiapo, Iquique, Santiago, Antofagasta) y necesitan trabajar/ver la flota
+-- (Antofagasta, Copiapo, Pozo Almonte, Santiago) y necesitan trabajar/ver la flota
 -- por base. Tres piezas:
 --  - clientes.usa_bases: SI/NO en el maestro de clientes (superadmin). Si es
 --    true, el cliente carga sus bases y toda la app le pide elegir una.
@@ -930,5 +930,5 @@ ALTER TABLE equipos ADD COLUMN IF NOT EXISTS base_id UUID REFERENCES bases(id);
 -- Carga inicial de ELB.
 UPDATE clientes SET usa_bases = true WHERE id_cliente = 'elb';
 INSERT INTO bases (cliente_id, nombre) VALUES
-  ('elb', 'Copiapó'), ('elb', 'Iquique'), ('elb', 'Santiago'), ('elb', 'Antofagasta')
+  ('elb', 'Antofagasta'), ('elb', 'Copiapó'), ('elb', 'Pozo Almonte'), ('elb', 'Santiago')
 ON CONFLICT (cliente_id, nombre) DO NOTHING;
