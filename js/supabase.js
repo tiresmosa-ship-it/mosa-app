@@ -1,5 +1,5 @@
 /* =====================================================================
-   MOSA TIRES — capa compartida: credenciales, config, utilidades,
+   MOSA System — capa compartida: credenciales, config, utilidades,
    almacenamiento local, capa de datos, motor de sincronización offline
    y toda la lógica de negocio sin JSX. Cargado como <script> clásico
    (sin módulos) antes de cualquier script de página, así que todo lo

@@ -1,0 +1,48 @@
+# MOSA System - configuracion Apache para Hostinger (LiteSpeed/Apache)
+
+# 1) Forzar HTTPS (requisito de PWA / Trusted Web Activity)
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteCond %{HTTPS} !=on
+  RewriteCond %{HTTP:X-Forwarded-Proto} !=https
+  RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+</IfModule>
+
+# 2) Tipos MIME
+<IfModule mod_mime.c>
+  AddType application/manifest+json .webmanifest
+  AddType application/json .json
+  AddType application/javascript .js
+</IfModule>
+
+# 3) Digital Asset Links (Android TWA): /.well-known/assetlinks.json
+#    debe servirse como application/json, sin redirecciones.
+<IfModule mod_headers.c>
+  <Files "assetlinks.json">
+    ForceType application/json
+    Header set Cache-Control "no-cache"
+    Header set Access-Control-Allow-Origin "*"
+  </Files>
+
+  # 4) El Service Worker y el manifest nunca deben quedar en cache del
+  #    navegador/CDN: asi las nuevas versiones se aplican al instante.
+  <FilesMatch "^(sw\.js|manifest\.json)$">
+    Header set Cache-Control "no-cache, no-store, must-revalidate"
+    Header set Pragma "no-cache"
+    Header set Expires "0"
+  </FilesMatch>
+  <Files "sw.js">
+    Header set Service-Worker-Allowed "/"
+  </Files>
+</IfModule>
+
+# 5) No bloquear carpetas que empiezan con punto (.well-known),
+#    pero seguir protegiendo el resto de archivos/carpetas ocultos
+#    (.git, .htaccess, .claude, etc.).
+<IfModule mod_rewrite.c>
+  RewriteCond %{REQUEST_URI} !^/\.well-known/ [NC]
+  RewriteRule "(^|/)\.(git|claude|devserver)" - [F,L]
+</IfModule>
+<FilesMatch "^\.(ht|devserver)">
+  Require all denied
+</FilesMatch>
