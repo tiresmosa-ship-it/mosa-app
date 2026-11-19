@@ -1,5 +1,5 @@
 /* =====================================================================
-   MOSA TIRES — kit de UI compartido (JSX). Cargado con Babel en modo
+   MOSA System — kit de UI compartido (JSX). Cargado con Babel en modo
    clásico (sin módulos) antes del script propio de cada página, así que
    todo lo declarado acá (Icon, Button, Card, Modal, BottomNav, hooks...)
    queda disponible como global. Depende de React (CDN) y de

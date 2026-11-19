@@ -2,13 +2,13 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
-<title>MOSA TIRES</title>
-<meta name="description" content="MOSA TIRES - Gestión de neumáticos de flota" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>MOSA System</title>
+<meta name="description" content="MOSA System - Gestión de neumáticos de flota" />
 <meta name="theme-color" content="#FFFFFF" />
 <link rel="manifest" href="manifest.json" />
-<link rel="apple-touch-icon" href="icon-192.png" />
-<link rel="icon" href="icon-192.png" />
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+<link rel="icon" type="image/png" href="icons/icon-192.png" />
 
 <script src="https://cdn.tailwindcss.com"></script>
 <script>
@@ -62,7 +62,7 @@
 <script src="js/supabase.js"></script>
 <script type="text/babel" data-presets="react">
 /* =====================================================================
-   MOSA TIRES — kit de UI compartido (JSX). Cargado con Babel en modo
+   MOSA System — kit de UI compartido (JSX). Cargado con Babel en modo
    clásico (sin módulos) antes del script propio de cada página, así que
    todo lo declarado acá (Icon, Button, Card, Modal, BottomNav, hooks...)
    queda disponible como global. Depende de React (CDN) y de
@@ -332,7 +332,7 @@ function Login({ onLogin }) {
       <div className="w-14 h-14 rounded-2xl bg-ink flex items-center justify-center mb-6">
         <Icon.gauge width="28" height="28" className="text-white" />
       </div>
-      <h1 className="text-[34px] font-extrabold tracking-tight leading-none">MOSA TIRES</h1>
+      <h1 className="text-[34px] font-extrabold tracking-tight leading-none">MOSA System</h1>
       <p className="text-[15px] font-medium text-sub mt-2 mb-10">Gestión de neumáticos de flota</p>
 
       <form onSubmit={submit} className="space-y-4">
@@ -354,7 +354,7 @@ function Login({ onLogin }) {
       </form>
 
       <div className="flex-1" />
-      <p className="text-[12px] text-[#B0B3B8] text-center pb-8">MOSA TIRES v1.0 · Soporte técnico</p>
+      <p className="text-[12px] text-[#B0B3B8] text-center pb-8">MOSA System v1.0 · Soporte técnico</p>
     </div>
   );
 }

@@ -12,7 +12,7 @@ mecánicos en terreno.
 - `index.html` — app completa (login, 4 formularios de campo, panel admin)
 - `sw.js` — service worker (cache del app shell, offline)
 - `manifest.json` — manifest PWA
-- `icon-192.png` / `icon-512.png` — íconos de la app
+- `icons/` — íconos de la app (any, maskable y apple-touch); `screenshots/` — capturas del manifest
 - `migrations.sql` — script para preparar la base de datos en Supabase
 
 ## 1. Preparar la base de datos (una sola vez)
@@ -45,8 +45,8 @@ mecánicos en terreno.
    - `index.html`
    - `sw.js`
    - `manifest.json`
-   - `icon-192.png`
-   - `icon-512.png`
+   - `offline.html`, `icons/`, `screenshots/` y `.well-known/`
+   - `.htaccess` (HTTPS, cache del Service Worker, assetlinks.json)
 3. Asegurate de que el sitio se sirva por **HTTPS** (necesario para que
    funcione el Service Worker / PWA). Hostinger habilita SSL gratis con
    Let's Encrypt desde el panel.
