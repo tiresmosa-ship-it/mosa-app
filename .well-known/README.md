@@ -1,6 +1,6 @@
 # .well-known/
 
-Esta carpeta se publica en `https://DOMINIO_PENDIENTE/.well-known/`.
+Esta carpeta se publica en `https://grupomosa.cl/.well-known/`.
 
 Aca va **`assetlinks.json`** (Digital Asset Links), que Android usa para verificar
 que la app de Google Play (Trusted Web Activity) es dueña del dominio. Sin ese
@@ -28,7 +28,7 @@ Formato esperado:
 
 Requisitos de publicacion:
 
-- Debe quedar accesible en `https://DOMINIO_PENDIENTE/.well-known/assetlinks.json`.
+- Debe quedar accesible en `https://grupomosa.cl/.well-known/assetlinks.json`.
 - Respuesta `200`, `Content-Type: application/json`, sin redirecciones (el `.htaccess`
   de la raiz ya lo configura).
 - Al subir por FTP/Administrador de archivos de Hostinger, verificar que la carpeta
