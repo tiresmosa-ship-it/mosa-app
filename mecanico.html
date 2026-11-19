@@ -1242,6 +1242,7 @@ function AuditoriaForm({ user, clienteId, equipo, cfg, onCancel, onGenerarInstru
         <PosicionModal
           pos={editingPos} equipo={equipo} cfg={cfg} clienteId={clienteId} axleCfg={axleCfg}
           existing={posData[editingPos]}
+          auditoriaGuardada={!!(posDataInicial && Object.keys(posDataInicial).length)}
           onClose={() => setEditingPos(null)}
           onSave={(data) => guardarPosicion(editingPos, data)}
         />
@@ -1343,7 +1344,7 @@ function MedidaField({ cfg, value, isManual, onChange }) {
     </Field>
   );
 }
-function PosicionModal({ pos, equipo, cfg, clienteId, axleCfg, existing, onClose, onSave }) {
+function PosicionModal({ pos, equipo, cfg, clienteId, axleCfg, existing, auditoriaGuardada, onClose, onSave }) {
   const [form, setForm] = useState(() => existing || { numero_fuego: "", marca: "", modelo: "", medida: cfg.medida_default || "", psi: "", mm_borde_izq: "", mm_centro: "", mm_borde_der: "", tipo_desgaste: "normal", marca_modelo_no_registrado: false, medida_no_registrada: false, url_foto_desgaste_irregular: null, checkpoint: false });
   // Requerimiento: verificacion de Checkpoint tambien en la Auditoria (misma
   // logica que ya existia solo en la HC, TireInfoModal) -- unicamente aplica
@@ -1361,6 +1362,27 @@ function PosicionModal({ pos, equipo, cfg, clienteId, axleCfg, existing, onClose
   const psiVal = parseFloat(form.psi);
   const psiAlert = !autoinflado && form.psi !== "" && Math.abs(psiVal - ev.psiObjetivo) > (ev.psiObjetivo * cfg.psi_tolerancia_pct / 100) * 2;
   const psiWarn = !autoinflado && form.psi !== "" && Math.abs(psiVal - ev.psiObjetivo) > (ev.psiObjetivo * cfg.psi_tolerancia_pct / 100);
+  // Requerimiento: validaciones preventivas de carga (errores de tipeo).
+  // - cada lectura de mm: maximo 23 (rojo, no deja avanzar)
+  // - el promedio de mm nunca puede superar el ultimo valor cargado de ESE
+  //   neumatico (rojo) ni ser igual (amarillo). No aplica al reeditar una
+  //   auditoria ya guardada (ahi el "ultimo valor" es la propia auditoria).
+  // - PSI: maximo 150 y no mas de 25% sobre el ideal (rojo)
+  const [previo, setPrevio] = useState(null);
+  useEffect(() => {
+    let cancel = false;
+    setPrevio(null);
+    if (!form.numero_fuego) return undefined;
+    const tm = setTimeout(() => { fetchUltimosValoresNeumatico(clienteId, form.numero_fuego).then(r => { if (!cancel) setPrevio(r); }); }, 350);
+    return () => { cancel = true; clearTimeout(tm); };
+  }, [form.numero_fuego]);
+  const vLect = { mm_borde_izq: validarMM(form.mm_borde_izq, null), mm_centro: validarMM(form.mm_centro, null), mm_borde_der: validarMM(form.mm_borde_der, null) };
+  const lecturas = ["mm_borde_izq", "mm_centro", "mm_borde_der"].map(k => parseFloat(form[k]));
+  const promedioMm = lecturas.every(n => !isNaN(n)) ? Math.round((lecturas.reduce((a, b) => a + b, 0) / 3) * 100) / 100 : null;
+  const vProm = (!auditoriaGuardada && promedioMm != null && previo) ? validarMM(String(promedioMm), previo.mm) : null;
+  const vPsi = autoinflado ? null : validarPSI(form.psi, ev.psiObjetivo);
+  const hayErrorCarga = Object.values(vLect).some(v => v && v.nivel === "error") || (vProm && vProm.nivel === "error") || (vPsi && vPsi.nivel === "error");
+  const mensajesCarga = [...new Map([...Object.values(vLect), vProm, vPsi].filter(Boolean).map(v => [v.msg, v])).values()];
   // Requerimiento: evidencia fotografica obligatoria cuando se detecta
   // desgaste irregular -- mismo patron que RetiroModal (subirFotoRetiro).
   const [subiendoFoto, setSubiendoFoto] = useState(false);
@@ -1405,15 +1427,16 @@ function PosicionModal({ pos, equipo, cfg, clienteId, axleCfg, existing, onClose
           </Field>
         ) : (
           <Field label="PSI" required>
-            <TextInput type="number" inputMode="numeric" value={form.psi} alert={psiAlert} warn={psiWarn}
+            <TextInput type="number" inputMode="numeric" value={form.psi} alert={psiAlert || (vPsi && vPsi.nivel === "error")} warn={psiWarn || (vPsi && vPsi.nivel === "warn")}
               onChange={e => setForm(f => ({ ...f, psi: e.target.value }))} placeholder={`Objetivo ${ev.psiObjetivo}`} />
           </Field>
         )}
         <div className="grid grid-cols-3 gap-2">
-          <Field label="MM izq" required><TextInput type="number" step="0.1" value={form.mm_borde_izq} alert={form.mm_borde_izq !== "" && parseFloat(form.mm_borde_izq) < ev.mmMin} warn={form.mm_borde_izq !== "" && parseFloat(form.mm_borde_izq) < ev.mmAmarillo} onChange={e => setForm(f => ({ ...f, mm_borde_izq: e.target.value }))} /></Field>
-          <Field label="MM centro" required><TextInput type="number" step="0.1" value={form.mm_centro} alert={form.mm_centro !== "" && parseFloat(form.mm_centro) < ev.mmMin} warn={form.mm_centro !== "" && parseFloat(form.mm_centro) < ev.mmAmarillo} onChange={e => setForm(f => ({ ...f, mm_centro: e.target.value }))} /></Field>
-          <Field label="MM der" required><TextInput type="number" step="0.1" value={form.mm_borde_der} alert={form.mm_borde_der !== "" && parseFloat(form.mm_borde_der) < ev.mmMin} warn={form.mm_borde_der !== "" && parseFloat(form.mm_borde_der) < ev.mmAmarillo} onChange={e => setForm(f => ({ ...f, mm_borde_der: e.target.value }))} /></Field>
+          <Field label="MM izq" required><TextInput type="number" step="0.1" value={form.mm_borde_izq} alert={(form.mm_borde_izq !== "" && parseFloat(form.mm_borde_izq) < ev.mmMin) || (vLect.mm_borde_izq && vLect.mm_borde_izq.nivel === "error") || (vProm && vProm.nivel === "error")} warn={(form.mm_borde_izq !== "" && parseFloat(form.mm_borde_izq) < ev.mmAmarillo) || (vProm && vProm.nivel === "warn")} onChange={e => setForm(f => ({ ...f, mm_borde_izq: e.target.value }))} /></Field>
+          <Field label="MM centro" required><TextInput type="number" step="0.1" value={form.mm_centro} alert={(form.mm_centro !== "" && parseFloat(form.mm_centro) < ev.mmMin) || (vLect.mm_centro && vLect.mm_centro.nivel === "error") || (vProm && vProm.nivel === "error")} warn={(form.mm_centro !== "" && parseFloat(form.mm_centro) < ev.mmAmarillo) || (vProm && vProm.nivel === "warn")} onChange={e => setForm(f => ({ ...f, mm_centro: e.target.value }))} /></Field>
+          <Field label="MM der" required><TextInput type="number" step="0.1" value={form.mm_borde_der} alert={(form.mm_borde_der !== "" && parseFloat(form.mm_borde_der) < ev.mmMin) || (vLect.mm_borde_der && vLect.mm_borde_der.nivel === "error") || (vProm && vProm.nivel === "error")} warn={(form.mm_borde_der !== "" && parseFloat(form.mm_borde_der) < ev.mmAmarillo) || (vProm && vProm.nivel === "warn")} onChange={e => setForm(f => ({ ...f, mm_borde_der: e.target.value }))} /></Field>
         </div>
+        {mensajesCarga.map((m, i) => <p key={i} className={cx("text-[12.5px] font-bold rounded-xl px-3 py-2", m.nivel === "error" ? "text-[#B91C1C] bg-[#FEE2E2]" : "text-[#92400E] bg-[#FEF3C7]")}>{m.nivel === "error" ? "⛔ " : "⚠ "}{m.msg}</p>)}
         {(mmAlert || psiAlert) && <p className="text-[12.5px] font-bold text-[#B91C1C]">⚠ Valor por debajo del mínimo permitido</p>}
         {!mmAlert && !psiAlert && (mmWarn || psiWarn) && <p className="text-[12.5px] font-bold text-[#92400E]">⚠ Cerca del límite recomendado</p>}
         <Field label="Tipo de desgaste" required>
@@ -1457,7 +1480,7 @@ function PosicionModal({ pos, equipo, cfg, clienteId, axleCfg, existing, onClose
             graba directamente el objetivo de la faena (ya autoregulado), en
             vez de dejarlo vacio (se veria como "sin dato" en el resto de la
             app: PSI actual "-", mapa, etc.). */}
-        <Button className="w-full" disabled={(!autoinflado && form.psi === "") || form.mm_borde_izq === "" || form.mm_centro === "" || form.mm_borde_der === "" || !form.tipo_desgaste || faltaFotoIrregular || subiendoFoto}
+        <Button className="w-full" disabled={(!autoinflado && form.psi === "") || form.mm_borde_izq === "" || form.mm_centro === "" || form.mm_borde_der === "" || !form.tipo_desgaste || faltaFotoIrregular || subiendoFoto || hayErrorCarga}
           onClick={() => {
             const out = { ...form, checkpoint: mostrarCheckpoint ? !!form.checkpoint : null };
             if (autoinflado) out.psi = ev.psiObjetivo;
@@ -2624,6 +2647,13 @@ function TireInfoModal({ pos, data, cfg, equipo, axleCfg, onClose, onRegularPsi,
   // Requerimiento: "Tiene Autoinflado" por eje -- oculta la solicitud y
   // validacion de PSI (boton de regulacion, dato "PSI actual") en la HC.
   const autoinflado = axleCfg && tieneAutoinflado(axleCfg, pos);
+  const psiObjetivoReg = (() => {
+    if (!axleCfg || !cfg) return null;
+    const t = posType(axleCfg, pos);
+    const esSemi = equipo && equipo.tipo === "SEMI";
+    return t === "D" ? cfg.psi_delantero : t === "auxilio" ? (esSemi ? cfg.psi_auxilio_semi : cfg.psi_auxilio_tracto) : cfg.psi_traccion;
+  })();
+  const vPsiReg = validarPSI(psiField, psiObjetivoReg);
   // Fix 6: en el Instructivo (revision previa a la HC) este modal se usa
   // solo para consulta, sin las acciones de la hoja de cambio — se pasan
   // los handlers en undefined y se ocultan los botones correspondientes.
@@ -2694,8 +2724,11 @@ function TireInfoModal({ pos, data, cfg, equipo, axleCfg, onClose, onRegularPsi,
       )}
       {soloConsulta ? null : showPsi && !autoinflado ? (
         <div className="space-y-3 mb-2">
-          <Field label="Nuevo valor de PSI" required><TextInput type="number" inputMode="numeric" value={psiField} onChange={e => setPsiField(e.target.value)} /></Field>
-          <Button className="w-full" disabled={!psiField} onClick={() => onRegularPsi(parseInt(psiField, 10))}>Guardar regulación</Button>
+          {/* Requerimiento: validacion preventiva (max 150 PSI y no mas de 25%
+              sobre el ideal de la faena) tambien al regular PSI. */}
+          <Field label="Nuevo valor de PSI" required><TextInput type="number" inputMode="numeric" value={psiField} alert={vPsiReg && vPsiReg.nivel === "error"} warn={vPsiReg && vPsiReg.nivel === "warn"} onChange={e => setPsiField(e.target.value)} /></Field>
+          {vPsiReg && <p className={cx("text-[12.5px] font-bold rounded-xl px-3 py-2", vPsiReg.nivel === "error" ? "text-[#B91C1C] bg-[#FEE2E2]" : "text-[#92400E] bg-[#FEF3C7]")}>{vPsiReg.nivel === "error" ? "⛔ " : "⚠ "}{vPsiReg.msg}</p>}
+          <Button className="w-full" disabled={!psiField || (vPsiReg && vPsiReg.nivel === "error")} onClick={() => onRegularPsi(parseInt(psiField, 10))}>Guardar regulación</Button>
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-2">
@@ -2830,6 +2863,18 @@ function MontajeModal({ tipo, pos, equipo, clienteId, cfg, axleCfg, user, onClos
   // buscador con stock (Caso B) — en ambos casos se genera un fuego sugerido
   // y se arma la alerta correspondiente al confirmar.
   const [manual, setManual] = useState(false);
+  // Requerimiento: ultimo mm cargado de este neumatico (para validar que el
+  // mm del montaje no sea mayor al anterior -- ver validarMM). Se toma de la
+  // fila de bodega elegida, o se consulta por N° de fuego si se tipeo a mano.
+  const [previoNeu, setPrevioNeu] = useState(null);
+  useEffect(() => {
+    let cancel = false;
+    setPrevioNeu(null);
+    if (!fuego) return undefined;
+    if (seleccionado && seleccionado.numero_fuego === fuego) { setPrevioNeu({ mm: seleccionado.milimetros != null ? seleccionado.milimetros : null }); return undefined; }
+    const tm = setTimeout(() => { fetchUltimosValoresNeumatico(clienteId, fuego).then(r => { if (!cancel) setPrevioNeu(r); }); }, 350);
+    return () => { cancel = true; clearTimeout(tm); };
+  }, [fuego, seleccionado]);
 
   useEffect(() => {
     // Requerimiento 3 nota: para "nuevo" se filtra por el tipo esperado de la
@@ -3015,7 +3060,15 @@ function MontajeModal({ tipo, pos, equipo, clienteId, cfg, axleCfg, user, onClos
 
   const titulo = tipo === "nuevo" ? "Montar neumático nuevo" : tipo === "transito" ? "Confirmar montaje" : "Montar recauchado";
   const tipoOk = tipo !== "nuevo" || (tipoNeumatico && (tipoNeumaticoEsperado(equipo, axleCfg, pos) == null || tipoNeumatico === tipoNeumaticoEsperado(equipo, axleCfg, pos)));
-  const disabled = !fuego || (!autoinflado && psi === "") || mm === "" || !tipoOk
+  // Requerimiento: validaciones preventivas de carga. Un recauchado SI puede
+  // tener mas profundidad que antes (se le coloca banda nueva), asi que no se
+  // le aplica "no mayor al ultimo"; en un neumatico nuevo, igual al ultimo es
+  // lo normal (no se avisa). Maximo 23 mm / 150 PSI / +25% sobre el ideal
+  // aplican siempre y bloquean el avance.
+  const vMm = validarMM(mm, previoNeu ? previoNeu.mm : null, { permitirMayor: tipo === "recauchado", sinAvisoIgual: tipo !== "transito" });
+  const vPsiMont = autoinflado ? null : validarPSI(psi, psiObjetivoMontaje);
+  const hayErrorCarga = (vMm && vMm.nivel === "error") || (vPsiMont && vPsiMont.nivel === "error");
+  const disabled = hayErrorCarga || !fuego || (!autoinflado && psi === "") || mm === "" || !tipoOk
     || (tipo !== "nuevo" && (!marca.trim() || !modelo.trim()))
     || (tipo === "nuevo" && (!torqueado || !fotoUrl || subiendoFoto || !fisicoConfirmado));
 
@@ -3048,10 +3101,11 @@ function MontajeModal({ tipo, pos, equipo, clienteId, cfg, axleCfg, user, onClos
               </div>
             </Field>
           ) : (
-            <Field label="PSI actual" required><TextInput type="number" inputMode="numeric" value={psi} onChange={e => setPsi(e.target.value)} /></Field>
+            <Field label="PSI actual" required><TextInput type="number" inputMode="numeric" value={psi} alert={vPsiMont && vPsiMont.nivel === "error"} warn={vPsiMont && vPsiMont.nivel === "warn"} onChange={e => setPsi(e.target.value)} /></Field>
           )}
-          <Field label="MM actual" required><TextInput type="number" step="0.1" value={mm} onChange={e => setMm(e.target.value)} /></Field>
+          <Field label="MM actual" required><TextInput type="number" step="0.1" value={mm} alert={vMm && vMm.nivel === "error"} warn={vMm && vMm.nivel === "warn"} onChange={e => setMm(e.target.value)} /></Field>
         </div>
+        {[vMm, vPsiMont].filter(Boolean).map((m, i) => <p key={i} className={cx("text-[12.5px] font-bold rounded-xl px-3 py-2", m.nivel === "error" ? "text-[#B91C1C] bg-[#FEE2E2]" : "text-[#92400E] bg-[#FEF3C7]")}>{m.nivel === "error" ? "⛔ " : "⚠ "}{m.msg}</p>)}
         {errorValidacion && <p className="text-[12.5px] font-bold text-[#B91C1C] bg-[#FEE2E2] rounded-xl px-3 py-2.5">{errorValidacion}</p>}
         {tipo === "nuevo" && (
           <div className="space-y-3">

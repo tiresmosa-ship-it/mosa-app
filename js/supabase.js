@@ -259,6 +259,58 @@ function equiposDeBase(equipos, baseId) {
   if (!baseId || baseId === "todas") return equipos;
   return (equipos || []).filter(e => !e.base_id || e.base_id === baseId);
 }
+// Requerimiento: validaciones preventivas de carga (evitar errores de tipeo).
+// Limites absolutos y regla de desvio de PSI vs el ideal de la faena. Devuelven
+// { nivel: "error" | "warn", msg } o null si el valor esta bien (o vacio, que
+// ya lo controla el "campo obligatorio" de cada formulario).
+//   error = rojo, NO deja avanzar hasta corregir
+//   warn  = amarillo, avisa pero deja avanzar
+const LIMITES_CARGA = { mmMax: 23, psiMax: 150, psiDesvioPct: 25 };
+function validarMM(valor, anterior, opts) {
+  if (valor === "" || valor == null) return null;
+  const o = opts || {};
+  const v = parseFloat(valor);
+  if (isNaN(v)) return null;
+  if (v < 0) return { nivel: "error", msg: "El valor no puede ser negativo." };
+  if (v > LIMITES_CARGA.mmMax) return { nivel: "error", msg: `Máximo ${LIMITES_CARGA.mmMax} mm — revisá el número que ingresaste.` };
+  if (anterior != null && !o.permitirMayor) {
+    const a = Math.round(parseFloat(anterior) * 100) / 100;
+    const n = Math.round(v * 100) / 100;
+    if (!isNaN(a)) {
+      if (n > a) return { nivel: "error", msg: `No puede ser mayor al último valor cargado de este neumático (${a} mm): un neumático no recupera profundidad.` };
+      if (n === a && !o.sinAvisoIgual) return { nivel: "warn", msg: `Es igual al último valor cargado de este neumático (${a} mm). Verificá que lo mediste de nuevo.` };
+    }
+  }
+  return null;
+}
+function validarPSI(valor, objetivo) {
+  if (valor === "" || valor == null) return null;
+  const v = parseFloat(valor);
+  if (isNaN(v)) return null;
+  if (v < 0) return { nivel: "error", msg: "El valor no puede ser negativo." };
+  if (v > LIMITES_CARGA.psiMax) return { nivel: "error", msg: `Máximo ${LIMITES_CARGA.psiMax} PSI — revisá el número que ingresaste.` };
+  if (objetivo != null && objetivo > 0) {
+    if (v > objetivo * (1 + LIMITES_CARGA.psiDesvioPct / 100)) {
+      return { nivel: "error", msg: `Supera en más de ${LIMITES_CARGA.psiDesvioPct}% el PSI ideal (${objetivo}). Revisá el valor.` };
+    }
+    // Por debajo del ideal puede ser real (pinchazo, perdida de aire): se
+    // avisa pero no se bloquea, para no impedir registrar un neumatico bajo.
+    if (v < objetivo * (1 - LIMITES_CARGA.psiDesvioPct / 100)) {
+      return { nivel: "warn", msg: `Está más de ${LIMITES_CARGA.psiDesvioPct}% por debajo del PSI ideal (${objetivo}). Confirmá que es correcto.` };
+    }
+  }
+  return null;
+}
+// Ultimo mm / psi registrados de un neumatico (neumaticos.milimetros/psi_actual).
+// null si el neumatico no existe o nunca se midio.
+async function fetchUltimosValoresNeumatico(clienteId, numeroFuego) {
+  if (!clienteId || !numeroFuego) return null;
+  try {
+    const { data, error } = await sb.from("neumaticos").select("milimetros,psi_actual").eq("cliente_id", clienteId).eq("numero_fuego", numeroFuego).maybeSingle();
+    if (error || !data) return null;
+    return { mm: data.milimetros != null ? data.milimetros : null, psi: data.psi_actual != null ? data.psi_actual : null };
+  } catch (e) { return null; }
+}
 function posType(cfg, pos) {
   const row = cfg.rows.find(r => r.positions.includes(pos));
   return row ? row.type : "M";
