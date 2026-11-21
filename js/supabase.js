@@ -301,6 +301,22 @@ function validarPSI(valor, objetivo) {
   }
   return null;
 }
+// Kilometraje: tope absoluto (la columna es integer: un valor desmedido, ej.
+// 4564641232, hace que Supabase rechace el registro y quede trabado en la cola
+// offline) y aviso amarillo si el salto contra el ultimo km es muy grande.
+LIMITES_CARGA.kmMax = 3000000;
+LIMITES_CARGA.kmSaltoAviso = 20000;
+function validarKm(valor, anterior) {
+  if (valor === "" || valor == null) return null;
+  const v = parseInt(valor, 10);
+  if (isNaN(v)) return null;
+  if (v < 0) return { nivel: "error", msg: "El valor no puede ser negativo." };
+  if (v > LIMITES_CARGA.kmMax) return { nivel: "error", msg: `Máximo ${LIMITES_CARGA.kmMax.toLocaleString("es-CL")} km — revisá el número que ingresaste.` };
+  if (anterior != null && v - anterior > LIMITES_CARGA.kmSaltoAviso) {
+    return { nivel: "warn", msg: `Son ${(v - anterior).toLocaleString("es-CL")} km más que el último registro (${Number(anterior).toLocaleString("es-CL")}). Verificá el odómetro.` };
+  }
+  return null;
+}
 // Ultimo mm / psi registrados de un neumatico (neumaticos.milimetros/psi_actual).
 // null si el neumatico no existe o nunca se midio.
 async function fetchUltimosValoresNeumatico(clienteId, numeroFuego) {

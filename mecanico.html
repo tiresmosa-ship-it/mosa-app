@@ -1035,9 +1035,12 @@ function KmModal({ equipo, clienteId, mecanicoId, km, setKm, onContinue }) {
   const menor = km !== "" && !isNaN(kmNum) && kmActual != null && kmNum < kmActual;
   const igual = km !== "" && !isNaN(kmNum) && kmActual != null && kmNum === kmActual;
   const [confirmandoIgual, setConfirmandoIgual] = useState(false);
+  // Requerimiento: validacion preventiva (tope de km y aviso de salto grande).
+  const vKm = validarKm(km, kmActual);
+  const errorKm = !!(vKm && vKm.nivel === "error");
 
   function intentarContinuar() {
-    if (menor) return;
+    if (menor || errorKm) return;
     if (igual) { setConfirmandoIgual(true); return; }
     onContinue();
   }
@@ -1058,11 +1061,12 @@ function KmModal({ equipo, clienteId, mecanicoId, km, setKm, onContinue }) {
   return (
     <Modal title="Kilometraje actual">
       <Field label="Kilómetros" required>
-        <TextInput type="number" inputMode="numeric" value={km} alert={menor} onChange={e => setKm(e.target.value.replace(/[^0-9]/g, ""))} placeholder="Ingresá los km actuales" />
+        <TextInput type="number" inputMode="numeric" value={km} alert={menor || errorKm} warn={vKm && vKm.nivel === "warn"} onChange={e => setKm(e.target.value.replace(/[^0-9]/g, ""))} placeholder="Ingresá los km actuales" />
       </Field>
+      {vKm && <p className={cx("text-[12.5px] font-bold rounded-xl px-3 py-2 mt-2", vKm.nivel === "error" ? "text-[#B91C1C] bg-[#FEE2E2]" : "text-[#92400E] bg-[#FEF3C7]")}>{vKm.nivel === "error" ? "⛔ " : "⚠ "}{vKm.msg}</p>}
       {menor && <p className="text-[12.5px] font-bold text-[#B91C1C] mt-2">Los km ingresados son menores al último registro. Verificá el odómetro.</p>}
       {igual && !confirmandoIgual && <p className="text-[12.5px] font-bold text-[#92400E] mt-2">⚠ Los km son iguales al último registro. ¿Estás seguro?</p>}
-      <Button className="w-full mt-5" disabled={!km || menor} onClick={intentarContinuar}>Continuar</Button>
+      <Button className="w-full mt-5" disabled={!km || menor || errorKm} onClick={intentarContinuar}>Continuar</Button>
       {confirmandoIgual && (
         <Confirm title="KM repetidos" desc={`Ingresaste ${km} km, igual al último registro. ¿Confirmás que es correcto?`}
           onConfirm={confirmarIgual} onCancel={() => setConfirmandoIgual(false)} />
