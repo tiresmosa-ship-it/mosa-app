@@ -46,3 +46,13 @@
 <FilesMatch "^\.(ht|devserver)">
   Require all denied
 </FilesMatch>
+
+# 6) Si el sitio se despliega desde Git, el repo trae archivos que NO deben
+#    ser publicos (scripts SQL, documentacion, scripts de desarrollo). Se bloquea
+#    su descarga; las paginas, js, iconos y .well-known/assetlinks.json no se tocan.
+<FilesMatch "\.(sql|md|ps1|bak|log)$">
+  Require all denied
+</FilesMatch>
+<IfModule mod_rewrite.c>
+  RewriteRule "^(\.claude|\.git)(/|$)" - [F,L]
+</IfModule>
