@@ -1,4 +1,4 @@
-const CACHE_NAME = "mosa-system-shell-v65";
+﻿const CACHE_NAME = "mosa-system-shell-v66";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -59,7 +59,7 @@ self.addEventListener("fetch", (event) => {
             const offline = await cache.match("./offline.html");
             if (offline) return offline;
           }
-          return new Response("Sin conexión", { status: 503, statusText: "Offline", headers: { "Content-Type": "text/plain; charset=utf-8" } });
+          return new Response("Sin conexiÃ³n", { status: 503, statusText: "Offline", headers: { "Content-Type": "text/plain; charset=utf-8" } });
         });
       return cached || networkFetch;
     })

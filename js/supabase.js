@@ -141,6 +141,18 @@ const AXLE_CONFIGS = {
       { label: "Eje 2", type: "D", ejeTipo: "D", positions: [5, 6] }
     ],
     groups: [[1, 2, 3, 4], [5, 6]]
+  },
+  // Cliente ELB: Moffet (camion pluma HIAB) de 3 ruedas -- 2 traccionales
+  // adelante (pos 1-2) y 1 direccional atras (pos 3). Presion fija de 55 PSI
+  // en las 3 (psiFijo = objetivo y tambien maximo permitido al cargar).
+  "moffet-3r": {
+    total: 3,
+    psiFijo: 55,
+    rows: [
+      { label: "Eje 1", type: "M", ejeTipo: "M", positions: [1, 2] },
+      { label: "D", type: "D", ejeTipo: "D", positions: [3] }
+    ],
+    groups: [[1, 2], [3]]
   }
 };
 // Fix ELB: antes, un equipo tipo SEMI SIEMPRE caia en el layout fijo de 13
@@ -283,11 +295,12 @@ function validarMM(valor, anterior, opts) {
   }
   return null;
 }
-function validarPSI(valor, objetivo) {
+function validarPSI(valor, objetivo, maxFijo) {
   if (valor === "" || valor == null) return null;
   const v = parseFloat(valor);
   if (isNaN(v)) return null;
   if (v < 0) return { nivel: "error", msg: "El valor no puede ser negativo." };
+  if (maxFijo && v > maxFijo) return { nivel: "error", msg: `Máximo ${maxFijo} PSI para este equipo — revisá el número que ingresaste.` };
   if (v > LIMITES_CARGA.psiMax) return { nivel: "error", msg: `Máximo ${LIMITES_CARGA.psiMax} PSI — revisá el número que ingresaste.` };
   if (objetivo != null && objetivo > 0) {
     if (v > objetivo * (1 + LIMITES_CARGA.psiDesvioPct / 100)) {
@@ -1281,7 +1294,7 @@ function evaluarPosicion(axleCfg, cfg, pos, tipoEquipo, data) {
   const esSemi = tipoEquipo === "SEMI";
   const mmMin = tipo === "auxilio" ? cfg.mm_minimo_auxilio : (esSemi ? cfg.mm_minimo_semi : cfg.mm_minimo_tracto);
   const mmAmarillo = esSemi ? cfg.mm_amarillo_semi : cfg.mm_amarillo_tracto;
-  const psiObjetivo = tipo === "D" ? cfg.psi_delantero : tipo === "auxilio" ? (esSemi ? cfg.psi_auxilio_semi : cfg.psi_auxilio_tracto) : cfg.psi_traccion;
+  const psiObjetivo = axleCfg.psiFijo || (tipo === "D" ? cfg.psi_delantero : tipo === "auxilio" ? (esSemi ? cfg.psi_auxilio_semi : cfg.psi_auxilio_tracto) : cfg.psi_traccion);
   const tol = psiObjetivo * (cfg.psi_tolerancia_pct / 100);
   const psi = parseFloat(data.psi);
   // Requerimiento: "Tiene Autoinflado" por eje -- ese eje no tiene PSI

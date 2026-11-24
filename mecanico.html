@@ -1384,7 +1384,7 @@ function PosicionModal({ pos, equipo, cfg, clienteId, axleCfg, existing, auditor
   const lecturas = ["mm_borde_izq", "mm_centro", "mm_borde_der"].map(k => parseFloat(form[k]));
   const promedioMm = lecturas.every(n => !isNaN(n)) ? Math.round((lecturas.reduce((a, b) => a + b, 0) / 3) * 100) / 100 : null;
   const vProm = (!auditoriaGuardada && promedioMm != null && previo) ? validarMM(String(promedioMm), previo.mm) : null;
-  const vPsi = autoinflado ? null : validarPSI(form.psi, ev.psiObjetivo);
+  const vPsi = autoinflado ? null : validarPSI(form.psi, ev.psiObjetivo, axleCfg.psiFijo);
   const hayErrorCarga = Object.values(vLect).some(v => v && v.nivel === "error") || (vProm && vProm.nivel === "error") || (vPsi && vPsi.nivel === "error");
   const mensajesCarga = [...new Map([...Object.values(vLect), vProm, vPsi].filter(Boolean).map(v => [v.msg, v])).values()];
   // Requerimiento: evidencia fotografica obligatoria cuando se detecta
@@ -2300,7 +2300,7 @@ function CambioForm({ user, clienteId, equipo, cfg, axleCfg, posDataInicial, che
     if (d.psi == null || d.psi === "") return false;
     const tipo = posType(axleCfg, d.posicion);
     const esSemi = equipo.tipo === "SEMI";
-    const psiObjetivo = tipo === "D" ? cfg.psi_delantero : tipo === "auxilio" ? (esSemi ? cfg.psi_auxilio_semi : cfg.psi_auxilio_tracto) : cfg.psi_traccion;
+    const psiObjetivo = axleCfg.psiFijo || (tipo === "D" ? cfg.psi_delantero : tipo === "auxilio" ? (esSemi ? cfg.psi_auxilio_semi : cfg.psi_auxilio_tracto) : cfg.psi_traccion);
     const tol = psiObjetivo * (cfg.psi_tolerancia_pct / 100);
     return Math.abs(parseFloat(d.psi) - psiObjetivo) > tol * 2;
   }
@@ -2655,9 +2655,9 @@ function TireInfoModal({ pos, data, cfg, equipo, axleCfg, onClose, onRegularPsi,
     if (!axleCfg || !cfg) return null;
     const t = posType(axleCfg, pos);
     const esSemi = equipo && equipo.tipo === "SEMI";
-    return t === "D" ? cfg.psi_delantero : t === "auxilio" ? (esSemi ? cfg.psi_auxilio_semi : cfg.psi_auxilio_tracto) : cfg.psi_traccion;
+    return axleCfg.psiFijo || (t === "D" ? cfg.psi_delantero : t === "auxilio" ? (esSemi ? cfg.psi_auxilio_semi : cfg.psi_auxilio_tracto) : cfg.psi_traccion);
   })();
-  const vPsiReg = validarPSI(psiField, psiObjetivoReg);
+  const vPsiReg = validarPSI(psiField, psiObjetivoReg, axleCfg && axleCfg.psiFijo);
   // Fix 6: en el Instructivo (revision previa a la HC) este modal se usa
   // solo para consulta, sin las acciones de la hoja de cambio — se pasan
   // los handlers en undefined y se ocultan los botones correspondientes.
@@ -2829,7 +2829,7 @@ function MontajeModal({ tipo, pos, equipo, clienteId, cfg, axleCfg, user, onClos
   const psiObjetivoMontaje = (() => {
     const t = posType(axleCfg, pos);
     const esSemi = equipo.tipo === "SEMI";
-    return t === "D" ? cfg.psi_delantero : t === "auxilio" ? (esSemi ? cfg.psi_auxilio_semi : cfg.psi_auxilio_tracto) : cfg.psi_traccion;
+    return axleCfg.psiFijo || (t === "D" ? cfg.psi_delantero : t === "auxilio" ? (esSemi ? cfg.psi_auxilio_semi : cfg.psi_auxilio_tracto) : cfg.psi_traccion);
   })();
   const [fuego, setFuego] = useState("");
   const [tipoNeumatico, setTipoNeumatico] = useState("");
@@ -3070,7 +3070,7 @@ function MontajeModal({ tipo, pos, equipo, clienteId, cfg, axleCfg, user, onClos
   // lo normal (no se avisa). Maximo 23 mm / 150 PSI / +25% sobre el ideal
   // aplican siempre y bloquean el avance.
   const vMm = validarMM(mm, previoNeu ? previoNeu.mm : null, { permitirMayor: tipo === "recauchado", sinAvisoIgual: tipo !== "transito" });
-  const vPsiMont = autoinflado ? null : validarPSI(psi, psiObjetivoMontaje);
+  const vPsiMont = autoinflado ? null : validarPSI(psi, psiObjetivoMontaje, axleCfg.psiFijo);
   const hayErrorCarga = (vMm && vMm.nivel === "error") || (vPsiMont && vPsiMont.nivel === "error");
   const disabled = hayErrorCarga || !fuego || (!autoinflado && psi === "") || mm === "" || !tipoOk
     || (tipo !== "nuevo" && (!marca.trim() || !modelo.trim()))
