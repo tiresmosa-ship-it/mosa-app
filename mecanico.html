@@ -3293,7 +3293,7 @@ function CierreDelDia({ user, clienteId, onCerrado, cfg }) {
       // "cerrada" sin que el mecanico haya tocado el boton ese dia. Ahora se
       // guarda la FECHA del cierre, asi el flag deja de aplicar solo al pasar
       // a un dia distinto -- no hace falta borrarlo a mano en ningun lado.
-      localStorage.setItem("jornada_cerrada_hoy_fecha", todayISO());
+      localStorage.setItem("jornada_cerrada_hoy_fecha", todayISO() + "|" + user.id);
       setCerrado(true);
       if (onCerrado) onCerrado();
     } catch (e) {
@@ -3507,7 +3507,7 @@ function MecanicoApp({ user }) {
   // Bloqueo tras cerrar jornada: solo se levanta con un login nuevo (MecanicoGate
   // reevalua desde la DB). En esta misma sesion, solo queda accesible Alertas.
   const [jornadaCerrada, setJornadaCerrada] = useState(() => {
-    return localStorage.getItem("jornada_cerrada_hoy_fecha") === todayISO();
+    return localStorage.getItem("jornada_cerrada_hoy_fecha") === (todayISO() + "|" + user.id);
   });
   const [horasExtrasInfo, setHorasExtrasInfo] = useState(null);
 
