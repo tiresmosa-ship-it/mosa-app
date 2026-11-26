@@ -2796,18 +2796,30 @@ async function ultimaActividadDelDia(mecanicoId, fecha) {
    NUMERACION
 ===================================================================== */
 async function siguienteNumeroAuditoria(clienteId, cfg) {
-  const { data, error } = await sb.from("auditorias").select("numero_auditoria").eq("cliente_id", clienteId);
+  // Bug reportado (PXFC67, 26/11): con mala senal esta consulta fallaba y la
+  // numeracion volvia a empezar en 1 (salian dos "#1" en ELB, que ya iba en
+  // #48). Ahora se recuerda en el dispositivo el ultimo numero asignado por
+  // empresa y, si no hay red, se sigue desde ahi.
+  const claveUlt = "mosa_ult_num_auditoria_" + clienteId;
+  let ultLocal = null;
+  try { ultLocal = parseInt(localStorage.getItem(claveUlt), 10); if (isNaN(ultLocal)) ultLocal = null; } catch (e) {}
+  const recordar = (n) => { try { localStorage.setItem(claveUlt, String(n)); } catch (e) {} return String(n); };
+  let data = null, error = null;
+  try { ({ data, error } = await sb.from("auditorias").select("numero_auditoria").eq("cliente_id", clienteId)); }
+  catch (e) { error = e; }
   const inicio = parseInt(cfg.numero_auditoria_inicio || 1, 10);
-  let maxExistente = null;
-  if (!error && data) {
-    data.forEach(r => {
-      const n = parseInt(r.numero_auditoria, 10);
-      if (!isNaN(n) && (maxExistente === null || n > maxExistente)) maxExistente = n;
-    });
+  if (error || !data) {
+    // Sin red: el ultimo numero local ya incluye los que estan en la cola.
+    return recordar(ultLocal !== null ? ultLocal + 1 : inicio);
   }
+  let maxExistente = null;
+  data.forEach(r => {
+    const n = parseInt(r.numero_auditoria, 10);
+    if (!isNaN(n) && (maxExistente === null || n > maxExistente)) maxExistente = n;
+  });
   const base = maxExistente === null ? inicio : maxExistente + 1;
   const pendientes = getQueue().filter(q => q.clienteId === clienteId && q.tipo === "auditoria").length;
-  return String(base + pendientes);
+  return recordar(base + pendientes);
 }
 async function siguienteNumeroCambio(clienteId, cfg) {
   const { data, error } = await sb.from("cambios_neumaticos").select("numero_cambio").order("numero_cambio", { ascending: false }).limit(1);

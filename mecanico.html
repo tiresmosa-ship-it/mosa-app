@@ -1500,6 +1500,19 @@ function PosicionModal({ pos, equipo, cfg, clienteId, axleCfg, existing, auditor
 ===================================================================== */
 function Instructivo({ equipo, axleCfg, posData, recsInfo, checklist, setChecklist, discrepancias, onContinuar, onCerrar }) {
   const [nuevaTarea, setNuevaTarea] = useState("");
+  // Bug reportado (PXFC67, 26/11): con mala senal guardar tarda varios
+  // segundos y cada toque extra en "Continuar"/"Cerrar sin cambios" creaba
+  // OTRA auditoria completa. Se bloquean ambos botones hasta que termine
+  // (useRef ademas del state para cortar dos toques en el mismo frame).
+  const [guardando, setGuardando] = useState(null);
+  const guardandoRef = React.useRef(false);
+  async function guardarUnaVez(cual, fn) {
+    if (guardandoRef.current) return;
+    guardandoRef.current = true;
+    setGuardando(cual);
+    try { await fn({ pct, cumplidas, sistemaTotal, extra }); }
+    catch (e) { console.error("No se pudo guardar la auditoria", e); guardandoRef.current = false; setGuardando(null); }
+  }
   // Fix 6: tarea -> modal del neumatico de esa posicion (solo consulta, sin
   // acciones de HC). infoPos != null abre el mismo TireInfoModal que la HC;
   // al cerrar, se vuelve al instructivo tal cual estaba (no se pierde nada,
@@ -1624,8 +1637,8 @@ function Instructivo({ equipo, axleCfg, posData, recsInfo, checklist, setCheckli
           desde ahi; no significa saltear la HC para siempre, solo no
           continuar a la HC en este momento). */}
       <div className="space-y-3">
-        <Button className="w-full" onClick={() => onContinuar({ pct, cumplidas, sistemaTotal, extra })}>Continuar a hoja de cambio</Button>
-        <Button variant="ghost" className="w-full" onClick={() => onCerrar({ pct, cumplidas, sistemaTotal, extra })}>Cerrar sin cambios</Button>
+        <Button className="w-full" disabled={!!guardando} onClick={() => guardarUnaVez("continuar", onContinuar)}>{guardando === "continuar" ? "Guardando…" : "Continuar a hoja de cambio"}</Button>
+        <Button variant="ghost" className="w-full" disabled={!!guardando} onClick={() => guardarUnaVez("cerrar", onCerrar)}>{guardando === "cerrar" ? "Guardando…" : "Cerrar sin cambios"}</Button>
       </div>
     </div>
   );
