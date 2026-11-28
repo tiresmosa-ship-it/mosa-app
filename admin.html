@@ -5214,7 +5214,21 @@ const RESOLUCION_DESTINO = {
   cierre_dia: { view: "jornada", sub: "cierre" },
   rotacion_recomendada: { view: "equipos" }
 };
+const TIPOS_A_ORDEN = ["psi_bajo", "psi_alto", "mm_critico", "mm_bajo", "tipo_neumatico_incorrecto", "neumatico_no_registrado"];
 function irAResolucion(a, setView) {
+  // Rediseño: lo de una auditoria se resuelve en su orden de revision; check
+  // de herramientas y cierre, en la Bandeja. Jornada ya no es destino.
+  if (TIPOS_A_ORDEN.includes(a.tipo) && a.equipo_id && a.creado_en && fechaLocal(a.creado_en) >= ORDENES_DESDE) {
+    sessionStorage.setItem("abrir_orden", JSON.stringify({ equipo_id: a.equipo_id, dia: fechaLocal(a.creado_en), desde: a.creado_en }));
+    setView("ordenes");
+    return;
+  }
+  if (a.tipo === "discrepancia_inventario" || a.tipo === "cierre_dia") {
+    sessionStorage.setItem("abrir_alerta_bandeja", a.id);
+    window.dispatchEvent(new Event("mosa-abrir-bandeja"));
+    setView("bandeja");
+    return;
+  }
   const destino = RESOLUCION_DESTINO[a.tipo];
   if (!destino) return;
   sessionStorage.setItem("alerta_origen", JSON.stringify({
@@ -6397,7 +6411,7 @@ function armarItemsRevision(r, alertas) {
   const items = [];
   (alertas || []).forEach(a => {
     const nivel = a.severidad === "rojo" ? "urgente" : a.severidad === "amarillo" ? "revisar" : "info";
-    items.push({ id: "al:" + a.id, nivel, titulo: `${a.posicion != null ? "P" + a.posicion + " · " : ""}${ALERTA_TIPO_LABELS[a.tipo] || a.titulo || a.tipo}`, detalle: a.descripcion || "" });
+    items.push({ id: "al:" + a.id, resuelta: a.estado === "resuelta", nivel, titulo: `${a.posicion != null ? "P" + a.posicion + " · " : ""}${ALERTA_TIPO_LABELS[a.tipo] || a.titulo || a.tipo}`, detalle: a.descripcion || "" });
   });
   const hayAlertaTipo = (alertas || []).some(x => x.tipo === "tipo_neumatico_incorrecto");
   const hayAlertaNoReg = (alertas || []).some(x => x.tipo === "neumatico_no_registrado");
@@ -6440,6 +6454,7 @@ function OrdenRevisionDetalle({ orden, adminUser, onBack, onCambio }) {
   const [alertas, setAlertas] = useState(null);
   const [hc, setHc] = useState(null); // { cambio, detalle }
   const [finHito, setFinHito] = useState(null);
+  const [discNeu, setDiscNeu] = useState(null); // discrepancias de neumaticos sin resolver de esta auditoria
   const [verEquipo, setVerEquipo] = useState(false);
   const [nuevaTarea, setNuevaTarea] = useState("");
   const [ocupado, setOcupado] = useState(null);
@@ -6460,15 +6475,20 @@ function OrdenRevisionDetalle({ orden, adminUser, onBack, onCambio }) {
     const desde = a.creado_en;
     const hasta = new Date(new Date(r.creado_en || a.creado_en).getTime() + 2 * 3600 * 1000).toISOString();
     if (a.equipo_id && desde) {
-      sb.from("alertas").select("id,tipo,severidad,titulo,descripcion,posicion,creado_en").eq("equipo_id", a.equipo_id).gte("creado_en", desde).lte("creado_en", hasta).order("creado_en")
+      sb.from("alertas").select("id,tipo,severidad,titulo,descripcion,posicion,creado_en,estado").eq("equipo_id", a.equipo_id).gte("creado_en", desde).lte("creado_en", hasta).order("creado_en")
         .then(({ data }) => {
           if (cancel) return;
           const todas = data || [];
+          // (estado viene en el select para mostrar las ya resueltas)
           const finHc = todas.filter(x => x.tipo === "hito_operativo" && /finaliz/i.test(x.titulo || "")).pop();
           setFinHito(finHc ? finHc.creado_en : null);
           setAlertas(todas.filter(x => !ALERTAS_FUERA_DE_ORDEN.includes(x.tipo)));
         });
     } else setAlertas([]);
+    if (a.equipo_id) {
+      sb.from("discrepancias_inventario").select("*").eq("origen", "auditoria").eq("equipo_id", a.equipo_id).eq("fecha", a.fecha).eq("resuelta", false).order("posicion")
+        .then(({ data }) => { if (!cancel) setDiscNeu((data || []).map(d => ({ ...d, equipo: r.equipo, mecanico: r.mecanico }))); });
+    } else setDiscNeu([]);
     // La HC de esta auditoria: por hoja_cambio_id, o si no quedo vinculada,
     // la primera HC del mismo equipo despues de empezar la auditoria (mismo dia).
     (async () => {
@@ -6493,6 +6513,11 @@ function OrdenRevisionDetalle({ orden, adminUser, onBack, onCambio }) {
   }
   function toggleCheck(itemId) {
     const yaEsta = !!(rev.checks || {})[itemId];
+    // Revisar una alerta en la orden = resolverla (antes se hacia en Jornada / Alertas).
+    if (!yaEsta && itemId.startsWith("al:")) {
+      const alertaId = itemId.slice(3);
+      adminDb.marcarAlertaLeida(alertaId).then(() => marcarAlertaResuelta(alertaId, adminUser.id, null)).catch(e => console.error("No se pudo resolver la alerta", e));
+    }
     guardar(p => {
       const rv = p.revision || {};
       const checks = { ...(rv.checks || {}) };
@@ -6516,6 +6541,13 @@ function OrdenRevisionDetalle({ orden, adminUser, onBack, onCambio }) {
   // Corregir el texto de una tarea (Supervisor/Administrador, incluso del sistema).
   async function corregirTarea(lista, t, texto) {
     await guardar(p => ({ ...p, [lista]: (p[lista] || []).map(x => (x.id === t.id && x.texto === t.texto) ? { ...x, texto, texto_original: x.texto_original || x.texto, corregida_por: quien } : x) }), "✓ Tarea corregida");
+  }
+  async function resolverDiscNeu(d, aprobar, justificacion) {
+    try {
+      await resolverDiscrepanciaAuditoria(d, aprobar, justificacion, adminUser);
+      setDiscNeu(ds => (ds || []).filter(x => x.id !== d.id));
+      pushToast(aprobar ? "✓ Aprobada: el neumático anterior pasó a tránsito" : "✓ Discrepancia rechazada");
+    } catch (e) { console.error(e); pushToast("✕ No se pudo resolver la discrepancia", "red"); }
   }
   // Tarea nueva: queda pendiente en el equipo y sale en el proximo instructivo.
   async function agregarTarea() {
@@ -6590,6 +6622,14 @@ function OrdenRevisionDetalle({ orden, adminUser, onBack, onCambio }) {
             );
           })}
       </section>
+
+      {discNeu && discNeu.length > 0 && (
+        <section className="bg-white rounded-2xl border border-[#FDE68A] shadow-card p-5 space-y-3">
+          <h2 className="text-[15px] font-bold">Neumáticos distintos a lo registrado <span className="font-medium text-muted">· {discNeu.length}</span></h2>
+          <p className="text-[13px] text-muted">Aprobá o rechazá lo que encontró el mecánico. Antes esto se hacía en Jornada.</p>
+          {discNeu.map(d => <DiscrepanciaAuditoriaCard key={d.id} d={d} onResolver={resolverDiscNeu} />)}
+        </section>
+      )}
 
       <section className="bg-white rounded-2xl border border-bd shadow-card p-5 space-y-4">
         <h2 className="text-[15px] font-bold">Trabajo del mecánico</h2>
@@ -6780,6 +6820,7 @@ function BandejaView({ empresaCtl, adminUser, setView, onAbrirMecanico }) {
   const [datos, setDatos] = useState(null); // { ordenes, paquetes, horas }
   const [abierta, setAbierta] = useState(null);
   const [expandido, setExpandido] = useState(null);
+  const [modal, setModal] = useState(null); // { tipo: "discInv" | "cierre", alerta }
   const [pushToast, toastNode] = useToasts();
   function cargar() {
     Promise.all([fetchOrdenesRevision(filtro), fetchPaquetesAlertas(filtro, adminUser), horasEscaladaPorCliente()])
@@ -6787,9 +6828,25 @@ function BandejaView({ empresaCtl, adminUser, setView, onAbrirMecanico }) {
       .catch(e => { console.error("No se pudo cargar la bandeja", e); setDatos({ ordenes: [], paquetes: [], horas: {} }); });
   }
   useEffect(() => { cargar(); }, [filtro]);
+  useEffect(() => { const f = () => cargar(); window.addEventListener("mosa-abrir-bandeja", f); return () => window.removeEventListener("mosa-abrir-bandeja", f); }, [filtro]);
+  // Pedido desde un "Resolver" (campanita / orden): abrir el detalle aca.
+  useEffect(() => {
+    if (!datos) return;
+    try {
+      const id = sessionStorage.getItem("abrir_alerta_bandeja");
+      if (!id) return;
+      sessionStorage.removeItem("abrir_alerta_bandeja");
+      const a = datos.paquetes.flatMap(p => p.alertas).find(x => x.id === id);
+      if (a) abrirModalDe(a);
+    } catch (e) {}
+  }, [datos]);
+  function abrirModalDe(a) {
+    if (a.tipo === "discrepancia_inventario") setModal({ tipo: "discInv", alerta: a });
+    else if (a.tipo === "cierre_dia") setModal({ tipo: "cierre", alerta: a });
+  }
 
   const acciones = {
-    navegar(a) { irAResolucion(a, setView); },
+    navegar(a) { if (a.tipo === "discrepancia_inventario" || a.tipo === "cierre_dia") abrirModalDe(a); else irAResolucion(a, setView); },
     async marcarLeida(a) { await adminDb.marcarAlertaLeida(a.id); cargar(); },
     async marcarEnProc(a) { await marcarAlertaEnProceso(a.id, adminUser.id); cargar(); },
     async marcarResuelta(a) { await marcarAlertaResuelta(a.id, adminUser.id, null); cargar(); },
@@ -6902,6 +6959,14 @@ function BandejaView({ empresaCtl, adminUser, setView, onAbrirMecanico }) {
                 {f.minutosParaEscalar == null ? "–" : f.minutosParaEscalar <= 0 ? `Escalada hace ${fmtDuracionMin(f.minutosParaEscalar)}` : `Escala en ${fmtDuracionMin(f.minutosParaEscalar)}`}
               </span>
             </button>
+            {!f.orden && f.paquete && (f.tipo === "check" || f.tipo === "cierre") && (() => {
+              const a = f.paquete.alertas.find(x => f.tipo === "check" ? x.tipo === "discrepancia_inventario" : x.tipo === "cierre_dia");
+              return a ? (
+                <div className="px-5 pb-3 -mt-1 flex gap-2">
+                  <button onClick={() => abrirModalDe(a)} className="text-[12px] font-bold px-3 py-1.5 rounded-full bg-ink text-white">{f.tipo === "check" ? "Resolver diferencias" : "Ver reporte de cierre"}</button>
+                </div>
+              ) : null;
+            })()}
             {expandido === f.key && f.paquete && (
               <div className="space-y-2 px-5 pb-4">
                 {f.paquete.alertas.slice().reverse().map(a => (
@@ -6937,6 +7002,13 @@ function BandejaView({ empresaCtl, adminUser, setView, onAbrirMecanico }) {
           {!desbloqueos.length && <p className="text-[13px] text-muted">Nadie pidió desbloqueo.</p>}
         </section>
       </div>
+      {modal && modal.tipo === "discInv" && (
+        <DiscrepanciaInventarioDetalleModal alerta={modal.alerta} adminUser={adminUser} pushToast={pushToast}
+          onClose={() => { setModal(null); cargar(); }} onResuelto={() => cargar()} />
+      )}
+      {modal && modal.tipo === "cierre" && (
+        <ReporteCierreDetalleModal alerta={modal.alerta} empresas={empresaCtl.empresas} onClose={() => setModal(null)} />
+      )}
       {toastNode}
     </div>
   );
