@@ -555,6 +555,28 @@ async function horasEscaladaPorCliente() {
   _horasEscaladaCache = { t: Date.now(), map };
   return map;
 }
+// Filtro por base (ELB): solo los equipos tienen base. Ordenes y paquetes de
+// auditoria van por la base del equipo (sin base = se ven en todas, igual que
+// equiposDeBase). Los paquetes por mecanico (check, cierre, desbloqueo) van a
+// las bases donde ese mecanico audito equipos ese dia; si no audito nada, se
+// ven en todas para no perderlos.
+function baseEfectiva(empresaCtl) { return empresaCtl && empresaCtl.usaBases ? (empresaCtl.baseFiltro || "todas") : "todas"; }
+function ordenesDeBase(ordenes, baseId) {
+  if (!baseId || baseId === "todas") return ordenes || [];
+  return (ordenes || []).filter(o => !o.equipo || !o.equipo.base_id || o.equipo.base_id === baseId);
+}
+function paquetesDeBase(paquetes, baseId, ordenes) {
+  if (!baseId || baseId === "todas") return paquetes || [];
+  const basesMec = {};
+  const anotar = (mec, dia, base) => { if (mec && base) (basesMec[mec + "|" + dia] = basesMec[mec + "|" + dia] || new Set()).add(base); };
+  (paquetes || []).forEach(p => { if (p.equipo) anotar(p.mecanico_id, p.dia, p.equipo.base_id); });
+  (ordenes || []).forEach(o => { if (o.equipo) anotar(o.auditoria.bultero_id, o.auditoria.fecha, o.equipo.base_id); });
+  return (paquetes || []).filter(p => {
+    if (p.equipo) return !p.equipo.base_id || p.equipo.base_id === baseId;
+    const set = basesMec[(p.mecanico_id || "") + "|" + p.dia];
+    return !set || set.has(baseId);
+  });
+}
 function horasLimiteDe(map, clienteId) { return (map && map[clienteId]) || 4; }
 function esRolAdministrador(u) { return !!u && (u.rol === "administrador" || u.rol === "superadmin"); }
 const PAQUETE_INFO = {
@@ -579,7 +601,7 @@ async function fetchPaquetesAlertas(clienteId, adminUser) {
   const eqIds = [...new Set(alertas.map(a => a.equipo_id))].filter(Boolean);
   const mecIds = [...new Set(alertas.map(a => a.mecanico_id))].filter(Boolean);
   const [{ data: eqs }, { data: mecs }] = await Promise.all([
-    eqIds.length ? sb.from("equipos").select("id_equipo,patente,numero_interno").in("id_equipo", eqIds) : Promise.resolve({ data: [] }),
+    eqIds.length ? sb.from("equipos").select("id_equipo,patente,numero_interno,base_id").in("id_equipo", eqIds) : Promise.resolve({ data: [] }),
     mecIds.length ? sb.from("usuarios").select("id,nombre,apellido").in("id", mecIds) : Promise.resolve({ data: [] })
   ]);
   const eqMap = {}; (eqs || []).forEach(e => { eqMap[e.id_equipo] = e; });
@@ -595,7 +617,7 @@ async function fetchPaquetesAlertas(clienteId, adminUser) {
       : tipo === "check" || tipo === "cierre" ? `${tipo}|${a.mecanico_id || "-"}|${dia}`
       : tipo === "escalada" ? `esc|${a.equipo_id || a.mecanico_id || "-"}|${dia}`
       : `${tipo}|${dia}`;
-    const p = paquetes[clave] || (paquetes[clave] = { clave, tipo, dia, cliente_id: a.cliente_id, equipo: a.equipo, equipo_id: a.equipo_id, mecanico: a.mecanico, alertas: [], hitos: [] });
+    const p = paquetes[clave] || (paquetes[clave] = { clave, tipo, dia, cliente_id: a.cliente_id, mecanico_id: a.mecanico_id || null, equipo: a.equipo, equipo_id: a.equipo_id, mecanico: a.mecanico, alertas: [], hitos: [] });
     if (a.tipo === "hito_operativo") p.hitos.push(a); else p.alertas.push(a);
     if (!p.mecanico && a.mecanico) p.mecanico = a.mecanico;
   });
@@ -682,7 +704,7 @@ function AlertasPanelLateral({ onClose, empresaCtl, adminUser, setView }) {
   const [ordenes, setOrdenes] = useState(null);
   function cargar() {
     fetchPaquetesAlertas(filtro, adminUser).then(setPaquetes).catch(e => { console.error("No se pudo cargar el panel de alertas", e); setPaquetes([]); });
-    if (esAdm) fetchOrdenesRevision(filtro).then(setOrdenes).catch(() => setOrdenes([]));
+    fetchOrdenesRevision(filtro).then(setOrdenes).catch(() => setOrdenes([]));
   }
   useEffect(() => { cargar(); }, [filtro]);
 
@@ -709,11 +731,14 @@ function AlertasPanelLateral({ onClose, empresaCtl, adminUser, setView }) {
     setView("ordenes"); onClose();
   }
 
-  const abiertos = (paquetes || []).filter(p => p.abiertas > 0);
-  const vistos = (paquetes || []).filter(p => !p.abiertas);
+  const baseSel = baseEfectiva(empresaCtl);
+  const paqBase = paquetesDeBase(paquetes, baseSel, ordenes);
+  const ordBase = ordenesDeBase(ordenes, baseSel);
+  const abiertos = paqBase.filter(p => p.abiertas > 0);
+  const vistos = paqBase.filter(p => !p.abiertas);
   const escalados = abiertos.filter(p => p.escalado);
-  const ordEscaladas = (ordenes || []).filter(o => o.escalada);
-  const ordVistoBueno = (ordenes || []).filter(o => estadoOrden(o) === "revisada");
+  const ordEscaladas = ordBase.filter(o => o.escalada);
+  const ordVistoBueno = ordBase.filter(o => estadoOrden(o) === "revisada");
   const lista = tab === "abiertos" ? abiertos : tab === "vistos" ? vistos : escalados;
   const tabsPanel = [...(esAdm ? [["escaladas", "Escaladas", escalados.length + ordEscaladas.length]] : []), ["abiertos", "Por revisar", abiertos.length], ["vistos", "Vistos", vistos.length]];
   return (
@@ -6664,15 +6689,16 @@ function OrdenesRevisionView({ empresaCtl, adminUser }) {
 
   if (abierta) return <OrdenRevisionDetalle orden={abierta} adminUser={adminUser} onBack={() => setAbierta(null)} onCambio={actualizar} />;
   const esAdm = esRolAdministrador(adminUser);
+  const listaBase = lista ? ordenesDeBase(lista, baseEfectiva(empresaCtl)) : null;
   const conteo = { escaladas: 0, pendiente: 0, revisada: 0, visto_bueno: 0 };
-  (lista || []).forEach(r => { conteo[estadoOrden(r)]++; if (r.escalada) conteo.escaladas++; });
-  const visibles = (lista || []).filter(r => tab === "escaladas" ? r.escalada : estadoOrden(r) === tab);
+  (listaBase || []).forEach(r => { conteo[estadoOrden(r)]++; if (r.escalada) conteo.escaladas++; });
+  const visibles = (listaBase || []).filter(r => tab === "escaladas" ? r.escalada : estadoOrden(r) === tab);
   const tabsOrden = [...(esAdm ? [["escaladas", "Escaladas"]] : []), ["pendiente", "Pendientes"], ["revisada", esAdm ? "Esperan visto bueno" : "Revisadas"], ["visto_bueno", "Con visto bueno"]];
   // Respuesta de los supervisores (ultimos 7 dias): desde que el mecanico
   // cierra hasta que el supervisor marca revisada.
   const hace7 = Date.now() - 7 * 86400000;
   const porEmpresa = {};
-  (lista || []).filter(r => new Date(r.creado_en).getTime() > hace7).forEach(r => {
+  (listaBase || []).filter(r => new Date(r.creado_en).getTime() > hace7).forEach(r => {
     const k = r.auditoria.cliente_id || r.cliente_id || "-";
     const m = porEmpresa[k] || (porEmpresa[k] = { total: 0, revisadas: 0, minutos: 0, escaladas: 0 });
     m.total++;
@@ -6780,7 +6806,10 @@ function BandejaView({ empresaCtl, adminUser, setView, onAbrirMecanico }) {
   if (abierta) return <OrdenRevisionDetalle orden={abierta} adminUser={adminUser} onBack={() => { setAbierta(null); cargar(); }} onCambio={() => {}} />;
   if (!datos) return <div className="flex justify-center py-16"><span className="spinner" /></div>;
 
-  const { ordenes, paquetes, horas } = datos;
+  const baseSel = baseEfectiva(empresaCtl);
+  const ordenes = ordenesDeBase(datos.ordenes, baseSel);
+  const paquetes = paquetesDeBase(datos.paquetes, baseSel, datos.ordenes);
+  const { horas } = datos;
   const ahora = Date.now();
   const paqAud = {};
   paquetes.filter(p => p.tipo === "auditoria").forEach(p => { paqAud[`${p.equipo_id}|${p.dia}`] = p; });
@@ -6837,7 +6866,7 @@ function BandejaView({ empresaCtl, adminUser, setView, onAbrirMecanico }) {
       <div className="flex flex-wrap justify-between items-end gap-3">
         <div>
           <h1 className="text-[24px] font-extrabold">Bandeja de revisión</h1>
-          <p className="text-[13.5px] text-muted capitalize">{hoyTxt}</p>
+          <p className="text-[13.5px] text-muted"><span className="capitalize">{hoyTxt}</span>{baseSel !== "todas" ? ` · Base ${empresaCtl.nombreBase}` : ""}</p>
         </div>
         <div className="flex gap-2 flex-wrap">
           {conUrgentes > 0 && <span className="text-[13px] font-semibold px-3 py-1.5 rounded-full bg-[#FEE2E2] text-[#991B1B]">{conUrgentes} con urgentes</span>}
@@ -6929,10 +6958,12 @@ function AdminApp({ user, onLogout }) {
     try { setAlertasNoLeidas(await adminDb.countAlertasNoLeidasTotal()); } catch (e) {}
     // Campanita: cuenta PAQUETES abiertos (rojo si alguno trae urgentes), no alertas sueltas.
     try {
-      const ps = (await fetchPaquetesAlertas(empresaCtl.filtro, user)).filter(p => p.abiertas > 0);
+      const baseSel = baseEfectiva(empresaCtl);
+      const ordsTodas = await fetchOrdenesRevision(empresaCtl.filtro).catch(() => []);
+      const ords = ordenesDeBase(ordsTodas, baseSel);
+      const ps = paquetesDeBase(await fetchPaquetesAlertas(empresaCtl.filtro, user), baseSel, ordsTodas).filter(p => p.abiertas > 0);
       if (esRolAdministrador(user)) {
         // Administrador: solo lo escalado (paquetes + ordenes sin revisar a tiempo).
-        const ords = await fetchOrdenesRevision(empresaCtl.filtro).catch(() => []);
         setCampanita({ nivel1: ps.filter(p => p.escalado).length + ords.filter(o => o.escalada).length, nivel2SinVer: ords.filter(o => estadoOrden(o) === "revisada").length });
       } else setCampanita({ nivel1: ps.filter(p => p.urgentes > 0).length, nivel2SinVer: ps.length });
     } catch (e) {}
@@ -6941,7 +6972,7 @@ function AdminApp({ user, onLogout }) {
     refrescarCampanita();
     const t = setInterval(refrescarCampanita, 15000);
     return () => clearInterval(t);
-  }, [empresaCtl.filtro]);
+  }, [empresaCtl.filtro, empresaCtl.baseFiltro]);
 
   // Escalada automatica (mejor esfuerzo, ver notas de la tarea): solo corre
   // mientras este Admin tiene la app abierta, cada 30 min.

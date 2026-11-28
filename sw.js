@@ -1,4 +1,4 @@
-﻿const CACHE_NAME = "mosa-system-shell-v75";
+﻿const CACHE_NAME = "mosa-system-shell-v76";
 const APP_SHELL = [
   "./",
   "./index.html",
