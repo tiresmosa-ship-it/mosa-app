@@ -539,9 +539,23 @@ const PAQUETE_DE_TIPO = {
   discrepancia_inventario: "check", herramienta_nueva: "check", discrepancia_resuelta: "check",
   cierre_dia: "cierre", horas_extras: "cierre",
   stock_minimo: "stock",
-  solicitud_desbloqueo: "desbloqueo", desbloqueo_aprobado: "desbloqueo",
-  escalada_sin_resolver: "escalada"
+  solicitud_desbloqueo: "desbloqueo", desbloqueo_aprobado: "desbloqueo"
 };
+// Horas sin respuesta antes de escalar al Administrador (config_cliente
+// "horas_escalada_alerta", 4 por defecto). Cache corto: se pide seguido.
+let _horasEscaladaCache = null;
+async function horasEscaladaPorCliente() {
+  if (_horasEscaladaCache && Date.now() - _horasEscaladaCache.t < 5 * 60000) return _horasEscaladaCache.map;
+  const map = {};
+  try {
+    const { data } = await sb.from("config_cliente").select("cliente_id,valor").eq("clave", "horas_escalada_alerta");
+    (data || []).forEach(r => { map[r.cliente_id] = parseFloat(r.valor) || 4; });
+  } catch (e) {}
+  _horasEscaladaCache = { t: Date.now(), map };
+  return map;
+}
+function horasLimiteDe(map, clienteId) { return (map && map[clienteId]) || 4; }
+function esRolAdministrador(u) { return !!u && (u.rol === "administrador" || u.rol === "superadmin"); }
 const PAQUETE_INFO = {
   auditoria: { label: "AUDITORÍA", cls: "bg-[#EEF2FF] text-[#3730A3]" },
   check: { label: "CHECK / HERRAMIENTAS", cls: "bg-[#F3F4F6] text-[#374151]" },
@@ -559,8 +573,8 @@ async function fetchPaquetesAlertas(clienteId, adminUser) {
   q = filtroCliente(q, clienteId);
   const { data, error } = await q;
   if (error) throw error;
-  const verEscaladas = adminUser && adminUser.rol !== "admin";
-  const alertas = (data || []).filter(a => verEscaladas || a.tipo !== "escalada_sin_resolver");
+  const horasMap = await horasEscaladaPorCliente();
+  const alertas = (data || []).filter(a => a.tipo !== "escalada_sin_resolver");
   const eqIds = [...new Set(alertas.map(a => a.equipo_id))].filter(Boolean);
   const mecIds = [...new Set(alertas.map(a => a.mecanico_id))].filter(Boolean);
   const [{ data: eqs }, { data: mecs }] = await Promise.all([
@@ -580,7 +594,7 @@ async function fetchPaquetesAlertas(clienteId, adminUser) {
       : tipo === "check" || tipo === "cierre" ? `${tipo}|${a.mecanico_id || "-"}|${dia}`
       : tipo === "escalada" ? `esc|${a.equipo_id || a.mecanico_id || "-"}|${dia}`
       : `${tipo}|${dia}`;
-    const p = paquetes[clave] || (paquetes[clave] = { clave, tipo, dia, equipo: a.equipo, equipo_id: a.equipo_id, mecanico: a.mecanico, alertas: [], hitos: [] });
+    const p = paquetes[clave] || (paquetes[clave] = { clave, tipo, dia, cliente_id: a.cliente_id, equipo: a.equipo, equipo_id: a.equipo_id, mecanico: a.mecanico, alertas: [], hitos: [] });
     if (a.tipo === "hito_operativo") p.hitos.push(a); else p.alertas.push(a);
     if (!p.mecanico && a.mecanico) p.mecanico = a.mecanico;
   });
@@ -588,7 +602,15 @@ async function fetchPaquetesAlertas(clienteId, adminUser) {
     .filter(p => p.alertas.length) // un paquete solo con hitos (HC iniciada/finalizada) no pide nada
     .map(p => {
       const abiertas = p.alertas.filter(alertaAbierta);
+      const urgAbiertas = abiertas.filter(a => a.severidad === "rojo");
+      // Escalado: urgentes sin respuesta (sin ver, o vistas sin resolver)
+      // por mas de las horas de la empresa desde la primera.
+      const limite = horasLimiteDe(horasMap, p.cliente_id);
+      const primera = urgAbiertas.length ? urgAbiertas[0].creado_en : null;
+      const horasSin = primera ? (Date.now() - new Date(primera).getTime()) / 3600000 : 0;
       return {
+        escalado: !!primera && horasSin > limite,
+        horasSinRespuesta: horasSin,
         ...p,
         abiertas: abiertas.length,
         urgentes: abiertas.filter(a => a.severidad === "rojo").length,
@@ -626,6 +648,7 @@ function PaqueteAlertasCard({ p, acciones, onAbrirOrden, onMarcarPaquete }) {
         </div>
         <p className="font-bold text-[14.5px]">{titulo}{p.tipo === "auditoria" && p.mecanico ? <span className="font-medium text-muted text-[12.5px]"> · {nombreUsuario(p.mecanico)}</span> : null}</p>
         <div className="flex gap-1.5 flex-wrap">
+          {p.escalado && <Badge color="black">Escalada · {Math.floor(p.horasSinRespuesta)} h sin respuesta</Badge>}
           {p.urgentes > 0 && <Badge color="red">{p.urgentes} urgente{p.urgentes === 1 ? "" : "s"}</Badge>}
           {p.revisar > 0 && <Badge color="amber">{p.revisar} revisar</Badge>}
           {!p.abiertas && <Badge color="green">Visto</Badge>}
@@ -652,10 +675,13 @@ function PaqueteAlertasCard({ p, acciones, onAbrirOrden, onMarcarPaquete }) {
 
 function AlertasPanelLateral({ onClose, empresaCtl, adminUser, setView }) {
   const { filtro } = empresaCtl;
-  const [tab, setTab] = useState("abiertos");
+  const esAdm = esRolAdministrador(adminUser);
+  const [tab, setTab] = useState(esAdm ? "escaladas" : "abiertos");
   const [paquetes, setPaquetes] = useState(null);
+  const [ordenes, setOrdenes] = useState(null);
   function cargar() {
     fetchPaquetesAlertas(filtro, adminUser).then(setPaquetes).catch(e => { console.error("No se pudo cargar el panel de alertas", e); setPaquetes([]); });
+    if (esAdm) fetchOrdenesRevision(filtro).then(setOrdenes).catch(() => setOrdenes([]));
   }
   useEffect(() => { cargar(); }, [filtro]);
 
@@ -684,7 +710,11 @@ function AlertasPanelLateral({ onClose, empresaCtl, adminUser, setView }) {
 
   const abiertos = (paquetes || []).filter(p => p.abiertas > 0);
   const vistos = (paquetes || []).filter(p => !p.abiertas);
-  const lista = tab === "abiertos" ? abiertos : vistos;
+  const escalados = abiertos.filter(p => p.escalado);
+  const ordEscaladas = (ordenes || []).filter(o => o.escalada);
+  const ordVistoBueno = (ordenes || []).filter(o => estadoOrden(o) === "revisada");
+  const lista = tab === "abiertos" ? abiertos : tab === "vistos" ? vistos : escalados;
+  const tabsPanel = [...(esAdm ? [["escaladas", "Escaladas", escalados.length + ordEscaladas.length]] : []), ["abiertos", "Por revisar", abiertos.length], ["vistos", "Vistos", vistos.length]];
   return (
     <div className="fixed inset-0 z-50 flex justify-end" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="absolute inset-0 bg-black/30" />
@@ -695,7 +725,7 @@ function AlertasPanelLateral({ onClose, empresaCtl, adminUser, setView }) {
         </div>
         <p className="text-[12px] text-muted mb-3">Agrupadas por auditoría, check, cierre, stock y desbloqueos · últimos {PAQUETES_DIAS} días</p>
         <div className="flex gap-2 mb-4">
-          {[["abiertos", "Por revisar", abiertos.length], ["vistos", "Vistos", vistos.length]].map(([k, l, n]) => (
+          {tabsPanel.map(([k, l, n]) => (
             <button key={k} onClick={() => setTab(k)} className={cx("px-3 py-2 rounded-full text-[12px] font-bold whitespace-nowrap", tab === k ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>
               {l} ({paquetes == null ? "…" : n})
             </button>
@@ -703,8 +733,15 @@ function AlertasPanelLateral({ onClose, empresaCtl, adminUser, setView }) {
         </div>
         {paquetes == null ? <div className="flex justify-center py-10"><span className="spinner" /></div> : (
           <div className="space-y-2.5">
+            {tab === "escaladas" && (ordEscaladas.length > 0 || ordVistoBueno.length > 0) && (
+              <button onClick={() => { setView("ordenes"); onClose(); }} className="w-full text-left bg-[#FEF2F2] border border-[#FCA5A5] rounded-2xl p-3.5">
+                <p className="font-bold text-[14px]">Órdenes de revisión</p>
+                <p className="text-[12.5px] text-[#991B1B]">{ordEscaladas.length} sin revisar por el supervisor (+ horas límite)</p>
+                <p className="text-[12.5px] text-muted">{ordVistoBueno.length} esperan tu visto bueno · Abrir →</p>
+              </button>
+            )}
             {lista.map(p => <PaqueteAlertasCard key={p.clave} p={p} acciones={acciones} onAbrirOrden={abrirOrden} onMarcarPaquete={marcarPaquete} />)}
-            {!lista.length && <p className="text-center text-muted text-[13px] py-10">{tab === "abiertos" ? "Nada por revisar." : "Sin paquetes vistos."}</p>}
+            {!lista.length && <p className="text-center text-muted text-[13px] py-10">{tab === "abiertos" ? "Nada por revisar." : tab === "vistos" ? "Sin paquetes vistos." : "Nada escalado: los supervisores están al día."}</p>}
           </div>
         )}
       </div>
@@ -6307,9 +6344,14 @@ async function fetchOrdenesRevision(clienteId) {
   // Una orden por auditoria (si hubiera recetas duplicadas, la mas nueva).
   const porAud = {};
   (recetas || []).forEach(r => { const prev = porAud[r.auditoria_id]; if (!prev || (r.creado_en || "") > (prev.creado_en || "")) porAud[r.auditoria_id] = r; });
+  const horasMap = await horasEscaladaPorCliente();
   return Object.values(porAud).map(r => {
     const a = audMap[r.auditoria_id] || {};
-    return { ...r, auditoria: a, equipo: eqMap[a.equipo_id] || null, mecanico: mecMap[a.bultero_id] || null };
+    // Escalada: sigue pendiente mas horas que el limite de la empresa desde
+    // que el mecanico cerro el instructivo.
+    const horasSin = (Date.now() - new Date(r.creado_en || a.creado_en).getTime()) / 3600000;
+    const escalada = estadoOrden(r) === "pendiente" && horasSin > horasLimiteDe(horasMap, a.cliente_id || r.cliente_id);
+    return { ...r, auditoria: a, equipo: eqMap[a.equipo_id] || null, mecanico: mecMap[a.bultero_id] || null, escalada, horasSinRespuesta: horasSin };
   }).sort((x, y) => ((y.auditoria.creado_en || "").localeCompare(x.auditoria.creado_en || "")));
 }
 
@@ -6598,7 +6640,7 @@ function OrdenRevisionDetalle({ orden, adminUser, onBack, onCambio }) {
 function OrdenesRevisionView({ empresaCtl, adminUser }) {
   const { filtro } = empresaCtl;
   const [lista, setLista] = useState(null);
-  const [tab, setTab] = useState("pendiente");
+  const [tab, setTab] = useState(esRolAdministrador(adminUser) ? "escaladas" : "pendiente");
   const [abierta, setAbierta] = useState(null);
   useEffect(() => {
     setLista(null);
@@ -6620,19 +6662,48 @@ function OrdenesRevisionView({ empresaCtl, adminUser }) {
   function actualizar(r) { setLista(l => (l || []).map(x => x.id === r.id ? { ...x, ...r } : x)); }
 
   if (abierta) return <OrdenRevisionDetalle orden={abierta} adminUser={adminUser} onBack={() => setAbierta(null)} onCambio={actualizar} />;
-  const conteo = { pendiente: 0, revisada: 0, visto_bueno: 0 };
-  (lista || []).forEach(r => { conteo[estadoOrden(r)]++; });
-  const visibles = (lista || []).filter(r => estadoOrden(r) === tab);
+  const esAdm = esRolAdministrador(adminUser);
+  const conteo = { escaladas: 0, pendiente: 0, revisada: 0, visto_bueno: 0 };
+  (lista || []).forEach(r => { conteo[estadoOrden(r)]++; if (r.escalada) conteo.escaladas++; });
+  const visibles = (lista || []).filter(r => tab === "escaladas" ? r.escalada : estadoOrden(r) === tab);
+  const tabsOrden = [...(esAdm ? [["escaladas", "Escaladas"]] : []), ["pendiente", "Pendientes"], ["revisada", esAdm ? "Esperan visto bueno" : "Revisadas"], ["visto_bueno", "Con visto bueno"]];
+  // Respuesta de los supervisores (ultimos 7 dias): desde que el mecanico
+  // cierra hasta que el supervisor marca revisada.
+  const hace7 = Date.now() - 7 * 86400000;
+  const porEmpresa = {};
+  (lista || []).filter(r => new Date(r.creado_en).getTime() > hace7).forEach(r => {
+    const k = r.auditoria.cliente_id || r.cliente_id || "-";
+    const m = porEmpresa[k] || (porEmpresa[k] = { total: 0, revisadas: 0, minutos: 0, escaladas: 0 });
+    m.total++;
+    const rev = (r.posiciones_alerta || {}).revision || {};
+    if (rev.revisada_en) { m.revisadas++; m.minutos += Math.max(0, (new Date(rev.revisada_en) - new Date(r.creado_en)) / 60000); }
+    if (r.escalada) m.escaladas++;
+  });
+  const fmtMin = (min) => min < 60 ? `${Math.round(min)} min` : `${Math.floor(min / 60)} h ${String(Math.round(min % 60)).padStart(2, "0")}`;
   return (
     <div className="space-y-4">
       <div>
         <h1 className="text-[22px] font-extrabold">Órdenes de revisión</h1>
         <p className="text-[13px] text-muted">Una orden por auditoría (con su hoja de cambio). Desde el {ORDENES_DESDE.split("-").reverse().join("/")}.</p>
       </div>
+      {esAdm && lista && Object.keys(porEmpresa).length > 0 && (
+        <section className="bg-white rounded-2xl border border-bd shadow-card p-4">
+          <h2 className="text-[14.5px] font-bold mb-2">Respuesta de los supervisores · últimos 7 días</h2>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            {Object.entries(porEmpresa).map(([k, m]) => (
+              <div key={k} className="bg-[#F9FAFB] rounded-xl px-3 py-2.5">
+                <p className="text-[12.5px] text-muted">{((empresaCtl.empresas || []).find(e => e.id_cliente === k) || {}).nombre || k}</p>
+                <p className="text-[18px] font-extrabold">{m.revisadas ? fmtMin(m.minutos / m.revisadas) : "–"} <span className="text-[12px] font-medium text-muted">promedio</span></p>
+                <p className="text-[12px] text-muted">{m.revisadas} de {m.total} revisadas · {m.escaladas} escalada{m.escaladas === 1 ? "" : "s"}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
       <div className="flex gap-2 flex-wrap">
-        {Object.keys(ORDEN_ESTADO).map(k => (
-          <button key={k} onClick={() => setTab(k)} className={cx("rounded-full px-3.5 py-2 text-[13px] font-bold", tab === k ? "bg-ink text-white" : "bg-[#F3F4F6]")}>
-            {k === "pendiente" ? "Pendientes" : k === "revisada" ? "Revisadas" : "Con visto bueno"} · {conteo[k]}
+        {tabsOrden.map(([k, l]) => (
+          <button key={k} onClick={() => setTab(k)} className={cx("rounded-full px-3.5 py-2 text-[13px] font-bold", tab === k ? (k === "escaladas" ? "bg-[#B91C1C] text-white" : "bg-ink text-white") : "bg-[#F3F4F6]")}>
+            {l} · {conteo[k]}
           </button>
         ))}
       </div>
@@ -6652,6 +6723,7 @@ function OrdenesRevisionView({ empresaCtl, adminUser }) {
                   <p className="text-[13px] text-muted">{nombreUsuario(r.mecanico)} · {horaLocal(r.auditoria.creado_en)}</p>
                 </div>
                 <div className="flex gap-1.5 flex-wrap items-center">
+                  {r.escalada && <Badge color="black">Escalada · {Math.floor(r.horasSinRespuesta)} h</Badge>}
                   <Badge color="green">{hechas} hechas</Badge>
                   {diferidas > 0 && <Badge color="amber">{diferidas} a pendiente</Badge>}
                   {rev.revisada_por && <span className="text-[12px] text-muted">Revisó {rev.revisada_por}</span>}
@@ -6680,7 +6752,14 @@ function AdminApp({ user, onLogout }) {
   async function refrescarCampanita() {
     try { setAlertasNoLeidas(await adminDb.countAlertasNoLeidasTotal()); } catch (e) {}
     // Campanita: cuenta PAQUETES abiertos (rojo si alguno trae urgentes), no alertas sueltas.
-    try { const ps = (await fetchPaquetesAlertas(empresaCtl.filtro, user)).filter(p => p.abiertas > 0); setCampanita({ nivel1: ps.filter(p => p.urgentes > 0).length, nivel2SinVer: ps.length }); } catch (e) {}
+    try {
+      const ps = (await fetchPaquetesAlertas(empresaCtl.filtro, user)).filter(p => p.abiertas > 0);
+      if (esRolAdministrador(user)) {
+        // Administrador: solo lo escalado (paquetes + ordenes sin revisar a tiempo).
+        const ords = await fetchOrdenesRevision(empresaCtl.filtro).catch(() => []);
+        setCampanita({ nivel1: ps.filter(p => p.escalado).length + ords.filter(o => o.escalada).length, nivel2SinVer: ords.filter(o => estadoOrden(o) === "revisada").length });
+      } else setCampanita({ nivel1: ps.filter(p => p.urgentes > 0).length, nivel2SinVer: ps.length });
+    } catch (e) {}
   }
   useEffect(() => {
     refrescarCampanita();

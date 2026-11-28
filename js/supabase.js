@@ -2996,6 +2996,13 @@ async function verificarEscaladas(clienteId) {
     if (horasTranscurridas <= horasLimite) continue;
     const ahoraISO = new Date().toISOString();
     await sb.from("alertas").update({ escalada_superadmin: true, escalada_en: ahoraISO }).eq("id", a.id);
+    // Rediseño de roles (28/11/2026): ya no se crea una alerta
+    // "escalada_sin_resolver" por cada alerta vencida (generaba cientos de
+    // avisos repetidos). La escalada al Administrador se calcula en vivo por
+    // orden de revision / paquete (admin.html, horasEscaladaPorCliente). Solo
+    // se deja la marca escalada_superadmin para las metricas de Gerencia.
+    escaladas++;
+    continue;
     const eq = equiposMap[a.equipo_id];
     const horasRedondeadas = Math.floor(horasTranscurridas);
     await insertAlerta({
