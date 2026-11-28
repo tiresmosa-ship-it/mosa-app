@@ -411,11 +411,24 @@ function BottomNav({ view, setView, disabledExcept, alertasNoLeidas }) {
 /* =====================================================================
    EMPRESA (filtro transversal a toda la app del admin)
 ===================================================================== */
+// Nombres visibles de los roles (el valor en la base no cambia).
+const ROL_NOMBRE = { superadmin: "Gerencia", administrador: "Administrador", admin: "Supervisor", mecanico: "MecÃ¡nico", cliente: "Cliente" };
 const LS_EMPRESA_FILTRO = "empresa_filtro_admin";
-function useEmpresaFiltro() {
+// Supervisor (rol "admin") solo ve su empresa + empresas_adicionales.
+// Administrador ve todas.
+function empresasPermitidas(user) {
+  if (!user || user.rol !== "admin") return null;
+  return [user.cliente_id, ...(user.empresas_adicionales || [])].filter(Boolean);
+}
+function useEmpresaFiltro(user) {
+  const permitidas = empresasPermitidas(user);
   const [empresas, setEmpresas] = useState([]);
-  const [filtro, setFiltroState] = useState(() => localStorage.getItem(LS_EMPRESA_FILTRO) || "todas");
-  useEffect(() => { sb.from("clientes").select("*").eq("activo", true).order("nombre").then(({ data }) => setEmpresas(data || [])); }, []);
+  const [filtro, setFiltroState] = useState(() => {
+    const v = localStorage.getItem(LS_EMPRESA_FILTRO) || "todas";
+    if (permitidas && !permitidas.includes(v)) return permitidas[0] || "todas";
+    return v;
+  });
+  useEffect(() => { sb.from("clientes").select("*").eq("activo", true).order("nombre").then(({ data }) => setEmpresas((data || []).filter(e => !permitidas || permitidas.includes(e.id_cliente)))); }, []);
   // Requerimiento: Bases por cliente. Si la empresa elegida se divide en
   // bases (clientes.usa_bases), se elige ademas una base. baseFiltro:
   // "" = todavia no elegida (el selector se abre solo para pedirla), "todas"
@@ -434,7 +447,7 @@ function useEmpresaFiltro() {
   function setBaseFiltro(v) { localStorage.setItem("mosa_admin_base_" + filtro, v); setBaseFiltroState(v); }
   const nombreFiltro = filtro === "todas" ? "Todas" : ((empresas.find(e => e.id_cliente === filtro) || {}).nombre || filtro);
   const nombreBase = baseFiltro === "todas" ? "Todas las bases" : ((bases.find(b => b.id === baseFiltro) || {}).nombre || "Elegí base");
-  return { empresas, filtro, setFiltro, nombreFiltro, usaBases, bases, baseFiltro, setBaseFiltro, nombreBase };
+  return { empresas, filtro, setFiltro, nombreFiltro, usaBases, bases, baseFiltro, setBaseFiltro, nombreBase, sinTodas: !!permitidas };
 }
 // Selector de base (al lado del de empresa): solo aparece si la empresa
 // elegida se divide en bases, y se abre solo mientras no se haya elegido una.
@@ -466,7 +479,7 @@ function BaseSelector({ usaBases, bases, baseFiltro, setBaseFiltro, nombreBase }
     </div>
   );
 }
-function EmpresaSelector({ empresas, filtro, setFiltro, nombreFiltro }) {
+function EmpresaSelector({ empresas, filtro, setFiltro, nombreFiltro, sinTodas }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="relative">
@@ -479,10 +492,10 @@ function EmpresaSelector({ empresas, filtro, setFiltro, nombreFiltro }) {
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
           <div className="absolute left-0 top-full mt-2 w-56 bg-white rounded-2xl border border-bd shadow-card z-50 overflow-hidden">
-            <button onClick={() => { setFiltro("todas"); setOpen(false); }} className={cx("w-full text-left px-4 py-3 text-[14px] font-semibold flex items-center gap-2", filtro === "todas" ? "bg-[#F3F4F6]" : "")}>
+            {!sinTodas && <button onClick={() => { setFiltro("todas"); setOpen(false); }} className={cx("w-full text-left px-4 py-3 text-[14px] font-semibold flex items-center gap-2", filtro === "todas" ? "bg-[#F3F4F6]" : "")}>
               <span className={cx("w-3.5 h-3.5 rounded-full border-2", filtro === "todas" ? "border-ink bg-ink" : "border-[#D1D5DB]")} />
               Todas las empresas
-            </button>
+            </button>}
             {empresas.map(e => (
               <button key={e.id_cliente} onClick={() => { setFiltro(e.id_cliente); setOpen(false); }} className={cx("w-full text-left px-4 py-3 text-[14px] font-semibold flex items-center gap-2", filtro === e.id_cliente ? "bg-[#F3F4F6]" : "")}>
                 <span className={cx("w-3.5 h-3.5 rounded-full border-2", filtro === e.id_cliente ? "border-ink bg-ink" : "border-[#D1D5DB]")} />
@@ -1409,7 +1422,7 @@ function EquiposView({ empresaCtl, adminUser, setView }) {
   const [detalle, setDetalle] = useState(null);
   const [modalEquipo, setModalEquipo] = useState(undefined); // undefined=cerrado, null=nuevo, {..}=editar
   const [pushToast, toastNode] = useToasts();
-  const puedeGestionar = adminUser && (adminUser.rol === "admin" || adminUser.rol === "superadmin");
+  const puedeGestionar = adminUser && (["admin","administrador","superadmin"].includes(adminUser.rol));
 
   function cargar() {
     setLoading(true);
@@ -6098,7 +6111,7 @@ function PerfilAdminView({ user, onLogout }) {
           <div>
             <p className="font-bold text-[16px]">{user.nombre} {user.apellido || ""}</p>
             <p className="text-[12.5px] text-muted">{user.email || "Sin email registrado"}</p>
-            <p className="text-[12.5px] text-muted">Usuario: {user.usuario} · Rol: {user.rol}</p>
+            <p className="text-[12.5px] text-muted">Usuario: {user.usuario} · Rol: {ROL_NOMBRE[user.rol] || user.rol}</p>
           </div>
         </div>
       </Card>
@@ -6118,7 +6131,7 @@ function PerfilAdminView({ user, onLogout }) {
    APP DEL ADMIN
 ===================================================================== */
 function AdminApp({ user, onLogout }) {
-  const empresaCtl = useEmpresaFiltro();
+  const empresaCtl = useEmpresaFiltro(user);
   const [view, setView] = useState("dashboard");
   const [mecanicoBloqueado, setMecanicoBloqueado] = useState(null);
   const [alertasNoLeidas, setAlertasNoLeidas] = useState(0);
@@ -6185,15 +6198,18 @@ function AdminApp({ user, onLogout }) {
 /* =====================================================================
    ENTRADA DE LA PAGINA — guarda de sesion (solo rol admin)
 ===================================================================== */
+// Roles que entran a este panel: "admin" = Supervisor (una empresa) y
+// "administrador" (todas las empresas). Ver useEmpresaFiltro.
+const ROLES_PANEL_ADMIN = ["admin", "administrador"];
 function AdminPage() {
   const [user, setUser] = useState(null);
   const [checking, setChecking] = useState(true);
 
   useEffect(() => {
     const cached = getSession();
-    if (!cached || cached.rol !== "admin") { location.replace("index.html"); return; }
+    if (!cached || !ROLES_PANEL_ADMIN.includes(cached.rol)) { location.replace("index.html"); return; }
     db.fetchUsuario(cached.id).then(fresh => {
-      if (!fresh || !fresh.activo || fresh.rol !== "admin") { clearSession(); location.replace("index.html"); return; }
+      if (!fresh || !fresh.activo || !ROLES_PANEL_ADMIN.includes(fresh.rol)) { clearSession(); location.replace("index.html"); return; }
       setSession(fresh); setUser(fresh); setChecking(false);
     }).catch(() => { setUser(cached); setChecking(false); }); // sin conexion: seguir con la sesion cacheada
   }, []);

@@ -1696,7 +1696,7 @@ function EquiposView({ empresaCtl, adminUser, setView }) {
   const [detalle, setDetalle] = useState(null);
   const [modalEquipo, setModalEquipo] = useState(undefined); // undefined=cerrado, null=nuevo, {..}=editar
   const [pushToast, toastNode] = useToasts();
-  const puedeGestionar = adminUser && (adminUser.rol === "admin" || adminUser.rol === "superadmin");
+  const puedeGestionar = adminUser && (["admin","administrador","superadmin"].includes(adminUser.rol));
 
   function cargar() {
     setLoading(true);
@@ -5093,7 +5093,7 @@ function PerfilAdminView({ user, onLogout }) {
           <div>
             <p className="font-bold text-[16px]">{user.nombre} {user.apellido || ""}</p>
             <p className="text-[12.5px] text-muted">{user.email || "Sin email registrado"}</p>
-            <p className="text-[12.5px] text-muted">Usuario: {user.usuario} · Rol: {user.rol}</p>
+            <p className="text-[12.5px] text-muted">Usuario: {user.usuario} · Rol: {ROL_NOMBRE[user.rol] || user.rol}</p>
           </div>
         </div>
       </Card>
@@ -5367,6 +5367,10 @@ const ROL_PERMISOS_DEFAULT = {
     dashboard: [true, true], equipos: [true, true], jornada: [true, true], maestros: [true, true],
     alertas: [true, true], clientes: [true, true], usuarios_permisos: [true, true], configuracion: [true, true]
   },
+  administrador: {
+    dashboard: [true, true], equipos: [true, true], jornada: [true, true], maestros: [true, true],
+    alertas: [true, true], configuracion: [true, true], usuarios_permisos: [false, false]
+  },
   admin: {
     dashboard: [true, true], equipos: [true, true], jornada: [true, true], maestros: [true, true],
     alertas: [true, true], configuracion: [true, true], usuarios_permisos: [false, false]
@@ -5378,8 +5382,9 @@ const ROL_PERMISOS_DEFAULT = {
     dashboard: [true, true], equipos_lectura: [true, false]
   }
 };
-const ROLES_USUARIO = ["superadmin", "admin", "mecanico", "cliente"];
-const ROL_LABELS = { superadmin: "SuperAdmin", admin: "Admin", mecanico: "Mecánico", cliente: "Cliente" };
+const ROLES_USUARIO = ["superadmin", "administrador", "admin", "mecanico", "cliente"];
+const ROL_LABELS = { superadmin: "Gerencia", administrador: "Administrador", admin: "Supervisor", mecanico: "Mecánico", cliente: "Cliente" };
+const ROL_NOMBRE = ROL_LABELS;
 
 async function aplicarPermisosDefaultRol(usuarioId, rol) {
   const map = ROL_PERMISOS_DEFAULT[rol] || {};
@@ -5604,7 +5609,7 @@ function UsuariosView({ empresaCtl }) {
       </div>
 
       <div className="flex gap-2 mb-4 flex-wrap">
-        {["todos", "superadmin", "admin", "mecanico", "cliente"].map(r => (
+        {["todos", "superadmin", "administrador", "admin", "mecanico", "cliente"].map(r => (
           <button key={r} onClick={() => setFiltroRol(r)}
             className={cx("px-3.5 py-2 rounded-full text-[12.5px] font-bold", filtroRol === r ? "bg-ink text-white" : "bg-[#F3F4F6] text-ink")}>
             {r === "todos" ? "Todos" : ROL_LABELS[r]}
