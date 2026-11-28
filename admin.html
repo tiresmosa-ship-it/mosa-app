@@ -516,6 +516,7 @@ function EmpresaSelector({ empresas, filtro, setFiltro, nombreFiltro, sinTodas }
 // Jornada/Dashboard siguen existiendo solo como destino de los botones
 // "Resolver" de algunas alertas (RESOLUCION_DESTINO), para no romper esos flujos.
 const ADMIN_NAV = [
+  { id: "bandeja", label: "Bandeja", icon: Icon.home },
   { id: "ordenes", label: "Órdenes de revisión", icon: Icon.clipboard },
   { id: "equipos", label: "Equipos", icon: Icon.truck },
   { id: "maestros", label: "Maestros", icon: Icon.box },
@@ -6739,11 +6740,186 @@ function OrdenesRevisionView({ empresaCtl, adminUser }) {
 }
 
 /* =====================================================================
+   BANDEJA DE REVISION (pantalla de inicio del Supervisor / Administrador)
+   Junta en una sola lista, de mas urgente a menos, las ordenes de revision
+   pendientes y los paquetes abiertos (check, cierre, auditorias viejas),
+   con cuanto falta para que escale al Administrador. Abajo, Stock y
+   Desbloqueos (con el boton para desbloquear).
+===================================================================== */
+function fmtDuracionMin(min) {
+  const m = Math.abs(Math.round(min));
+  return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")}`;
+}
+function BandejaView({ empresaCtl, adminUser, setView, onAbrirMecanico }) {
+  const { filtro } = empresaCtl;
+  const [datos, setDatos] = useState(null); // { ordenes, paquetes, horas }
+  const [abierta, setAbierta] = useState(null);
+  const [expandido, setExpandido] = useState(null);
+  const [pushToast, toastNode] = useToasts();
+  function cargar() {
+    Promise.all([fetchOrdenesRevision(filtro), fetchPaquetesAlertas(filtro, adminUser), horasEscaladaPorCliente()])
+      .then(([ordenes, paquetes, horas]) => setDatos({ ordenes, paquetes, horas }))
+      .catch(e => { console.error("No se pudo cargar la bandeja", e); setDatos({ ordenes: [], paquetes: [], horas: {} }); });
+  }
+  useEffect(() => { cargar(); }, [filtro]);
+
+  const acciones = {
+    navegar(a) { irAResolucion(a, setView); },
+    async marcarLeida(a) { await adminDb.marcarAlertaLeida(a.id); cargar(); },
+    async marcarEnProc(a) { await marcarAlertaEnProceso(a.id, adminUser.id); cargar(); },
+    async marcarResuelta(a) { await marcarAlertaResuelta(a.id, adminUser.id, null); cargar(); },
+    async ignorar(a) { await adminDb.marcarAlertaLeida(a.id); await marcarAlertaResuelta(a.id, adminUser.id, null); cargar(); },
+    async aprobarHerramienta(a) { try { await aprobarHerramientaNueva(a, adminUser.id); cargar(); } catch (e) { console.error(e); } }
+  };
+  async function desbloquear(a) {
+    if (!a.mecanico_id) return;
+    const { data } = await sb.from("usuarios").select("*").eq("id", a.mecanico_id).maybeSingle();
+    if (data) onAbrirMecanico(data); else pushToast("✕ No se encontró el mecánico", "red");
+  }
+
+  if (abierta) return <OrdenRevisionDetalle orden={abierta} adminUser={adminUser} onBack={() => { setAbierta(null); cargar(); }} onCambio={() => {}} />;
+  if (!datos) return <div className="flex justify-center py-16"><span className="spinner" /></div>;
+
+  const { ordenes, paquetes, horas } = datos;
+  const ahora = Date.now();
+  const paqAud = {};
+  paquetes.filter(p => p.tipo === "auditoria").forEach(p => { paqAud[`${p.equipo_id}|${p.dia}`] = p; });
+  const filas = [];
+  ordenes.filter(o => estadoOrden(o) === "pendiente").forEach(o => {
+    const p = paqAud[`${o.auditoria.equipo_id}|${o.auditoria.fecha}`];
+    const limite = horasLimiteDe(horas, o.auditoria.cliente_id || o.cliente_id);
+    const tieneHc = !!(o.hoja_cambio_id || (p && p.hitos.some(h => /hoja de cambio/i.test(h.titulo || ""))));
+    filas.push({
+      key: "o" + o.id, tipo: tieneHc ? "hc" : "auditoria", orden: o, paquete: p || null,
+      titulo: o.equipo ? o.equipo.patente : "-",
+      sub: `${nombreUsuario(o.mecanico)} · ${formatHora(o.auditoria.creado_en)} – ${formatHora(o.creado_en)}`,
+      detalle: p ? (resumenHitos(p) || "Auditoría finalizada") : "Auditoría finalizada",
+      urgentes: p ? p.urgentes : 0, revisar: p ? p.revisar : 0,
+      minutosParaEscalar: limite * 60 - (ahora - new Date(o.creado_en).getTime()) / 60000
+    });
+  });
+  paquetes.filter(p => p.abiertas > 0 && (p.tipo === "check" || p.tipo === "cierre" || (p.tipo === "auditoria" && p.dia < ORDENES_DESDE))).forEach(p => {
+    const limite = horasLimiteDe(horas, p.cliente_id);
+    filas.push({
+      key: "p" + p.clave, tipo: p.tipo, paquete: p,
+      titulo: p.tipo === "auditoria" ? (p.equipo ? p.equipo.patente : "-") : nombreUsuario(p.mecanico),
+      sub: p.dia === fechaLocal(new Date().toISOString()) ? formatHora(p.desde) : p.dia.split("-").reverse().slice(0, 2).join("/"),
+      detalle: p.tipo === "check" ? "Herramientas y stock contados" : p.tipo === "cierre" ? "Cierre de jornada" : "Auditoría anterior al 28/11",
+      urgentes: p.urgentes, revisar: p.revisar,
+      minutosParaEscalar: p.urgentes ? limite * 60 - p.horasSinRespuesta * 60 : null
+    });
+  });
+  // Mas urgentes primero: con urgentes, y entre ellas la que escala antes.
+  // Primero las ordenes actuales (desde el 28/11), despues paquetes viejos.
+  filas.sort((a, b) => (!!b.orden - !!a.orden) || (b.urgentes > 0) - (a.urgentes > 0) || ((a.minutosParaEscalar == null ? 1e9 : a.minutosParaEscalar) - (b.minutosParaEscalar == null ? 1e9 : b.minutosParaEscalar)));
+
+  const conUrgentes = filas.filter(f => f.urgentes > 0).length;
+  const proximas = filas.filter(f => f.minutosParaEscalar != null && f.minutosParaEscalar > 0).sort((a, b) => a.minutosParaEscalar - b.minutosParaEscalar);
+  const abiertosDe = (t) => paquetes.filter(p => p.tipo === t && p.abiertas > 0);
+  const stock = abiertosDe("stock");
+  const desbloqueos = abiertosDe("desbloqueo").flatMap(p => p.alertas.filter(a => a.tipo === "solicitud_desbloqueo" && a.estado !== "resuelta"));
+  const tiles = [
+    ["Auditorías", filas.filter(f => f.orden).length],
+    ["Hojas de cambio", filas.filter(f => f.tipo === "hc").length],
+    ["Check diario", abiertosDe("check").length],
+    ["Cierres", abiertosDe("cierre").length],
+    ["Stock", stock.length],
+    ["Desbloqueos", desbloqueos.length]
+  ];
+  const ETIQ = {
+    auditoria: ["AUDITORÍA", "bg-[#EEF2FF] text-[#3730A3]"], hc: ["HOJA CAMBIO", "bg-[#ECFDF5] text-[#065F46]"],
+    check: ["CHECK DIARIO", "bg-[#F3F4F6] text-[#374151]"], cierre: ["CIERRE", "bg-[#F3F4F6] text-[#374151]"]
+  };
+  const hoyTxt = new Date().toLocaleDateString("es-CL", { weekday: "long", day: "2-digit", month: "2-digit" });
+
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-wrap justify-between items-end gap-3">
+        <div>
+          <h1 className="text-[24px] font-extrabold">Bandeja de revisión</h1>
+          <p className="text-[13.5px] text-muted capitalize">{hoyTxt}</p>
+        </div>
+        <div className="flex gap-2 flex-wrap">
+          {conUrgentes > 0 && <span className="text-[13px] font-semibold px-3 py-1.5 rounded-full bg-[#FEE2E2] text-[#991B1B]">{conUrgentes} con urgentes</span>}
+          {proximas.length > 0 && <span className="text-[13px] font-semibold px-3 py-1.5 rounded-full bg-[#FEF3C7] text-[#92400E]">1 por escalar en {fmtDuracionMin(proximas[0].minutosParaEscalar)}</span>}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 md:grid-cols-6 gap-2.5">
+        {tiles.map(([l, n], i) => (
+          <div key={l} className={cx("rounded-xl px-3.5 py-3", i === 0 ? "bg-ink text-white" : "bg-white border border-bd")}>
+            <p className={cx("text-[12px]", i === 0 ? "opacity-80" : "text-muted")}>{l}</p>
+            <p className="text-[22px] font-extrabold">{n}</p>
+          </div>
+        ))}
+      </div>
+
+      <section className="bg-white rounded-2xl border border-bd shadow-card overflow-hidden">
+        <div className="px-5 py-3.5 border-b border-bd flex justify-between items-center">
+          <h2 className="text-[15.5px] font-bold">Órdenes de revisión</h2>
+          <span className="text-[12.5px] text-muted">Más urgentes primero</span>
+        </div>
+        {filas.map(f => (
+          <div key={f.key} className="border-b border-[#F3F4F6]">
+            <button className="w-full text-left grid grid-cols-[96px_minmax(0,1fr)] md:grid-cols-[110px_minmax(0,1fr)_150px_130px] gap-3 items-center px-5 py-3.5 hover:bg-[#F9FAFB]"
+              onClick={() => f.orden ? setAbierta(f.orden) : setExpandido(expandido === f.key ? null : f.key)}>
+              <span className={cx("text-[11px] font-bold px-2 py-1 rounded-md text-center", ETIQ[f.tipo][1])}>{ETIQ[f.tipo][0]}</span>
+              <span className="min-w-0"><b className="text-[15px]">{f.titulo}</b> <span className="text-[13px] text-muted">· {f.sub}</span><br /><span className="text-[12.5px] text-muted">{f.detalle}</span></span>
+              <span className="flex gap-1.5 flex-wrap col-start-2 md:col-start-auto">
+                {f.urgentes > 0 && <Badge color="red">{f.urgentes} urgente{f.urgentes === 1 ? "" : "s"}</Badge>}
+                {f.revisar > 0 && <Badge color="amber">{f.revisar} revisar</Badge>}
+                {!f.urgentes && !f.revisar && <span className="text-[12.5px] text-muted">Sin alertas</span>}
+              </span>
+              <span className={cx("text-[12.5px] font-semibold col-start-2 md:col-start-auto", f.minutosParaEscalar == null ? "text-muted" : f.minutosParaEscalar <= 0 ? "text-[#991B1B]" : f.minutosParaEscalar < 60 ? "text-[#991B1B]" : "text-muted")}>
+                {f.minutosParaEscalar == null ? "–" : f.minutosParaEscalar <= 0 ? `Escalada hace ${fmtDuracionMin(f.minutosParaEscalar)}` : `Escala en ${fmtDuracionMin(f.minutosParaEscalar)}`}
+              </span>
+            </button>
+            {expandido === f.key && f.paquete && (
+              <div className="space-y-2 px-5 pb-4">
+                {f.paquete.alertas.slice().reverse().map(a => (
+                  <AlertaCard key={a.id} a={a} onVer={acciones.navegar} onMarcarLeida={acciones.marcarLeida} onMarcarEnProceso={acciones.marcarEnProc}
+                    onMarcarResuelta={acciones.marcarResuelta} onIgnorar={acciones.ignorar} onAbrirMecanico={acciones.navegar} onNavegar={acciones.navegar} onAprobarHerramienta={acciones.aprobarHerramienta} />
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+        {!filas.length && <p className="px-5 py-6 text-[13.5px] text-muted">Nada pendiente. Todo revisado.</p>}
+      </section>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <section className="bg-white rounded-2xl border border-bd shadow-card p-5 space-y-2.5">
+          <h2 className="text-[15.5px] font-bold">Stock</h2>
+          {stock.flatMap(p => p.alertas).map(a => (
+            <div key={a.id} className="flex justify-between items-center gap-3 text-[13.5px]">
+              <span className="min-w-0">{a.titulo}{a.descripcion ? <span className="text-muted"> · {a.descripcion}</span> : null}</span>
+              <button onClick={() => acciones.navegar(a)} className="text-[12px] font-bold px-3 py-1.5 rounded-full bg-[#FEF3C7] text-[#92400E] shrink-0">Revisar</button>
+            </div>
+          ))}
+          {!stock.length && <p className="text-[13px] text-muted">Sin avisos de stock.</p>}
+        </section>
+        <section className="bg-white rounded-2xl border border-bd shadow-card p-5 space-y-2.5">
+          <h2 className="text-[15.5px] font-bold">Desbloqueos</h2>
+          {desbloqueos.map(a => (
+            <div key={a.id} className="flex justify-between items-center gap-3 text-[13.5px]">
+              <span className="min-w-0">{nombreUsuario(a.mecanico)} pide reabrir la jornada · {formatHora(a.creado_en)}</span>
+              <Button className="h-9 px-4 text-[13px] shrink-0" onClick={() => desbloquear(a)}>Desbloquear</Button>
+            </div>
+          ))}
+          {!desbloqueos.length && <p className="text-[13px] text-muted">Nadie pidió desbloqueo.</p>}
+        </section>
+      </div>
+      {toastNode}
+    </div>
+  );
+}
+
+/* =====================================================================
    APP DEL ADMIN
 ===================================================================== */
 function AdminApp({ user, onLogout }) {
   const empresaCtl = useEmpresaFiltro(user);
-  const [view, setView] = useState("ordenes");
+  const [view, setView] = useState("bandeja");
   const [mecanicoBloqueado, setMecanicoBloqueado] = useState(null);
   const [alertasNoLeidas, setAlertasNoLeidas] = useState(0);
   const [campanita, setCampanita] = useState({ nivel1: 0, nivel2SinVer: 0 });
@@ -6793,7 +6969,8 @@ function AdminApp({ user, onLogout }) {
   }
 
   let body;
-  if (view === "ordenes") body = <OrdenesRevisionView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} />;
+  if (view === "bandeja") body = <BandejaView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} setView={setView} onAbrirMecanico={setMecanicoBloqueado} />;
+  else if (view === "ordenes") body = <OrdenesRevisionView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} />;
   else if (view === "equipos") body = <EquiposView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} setView={setView} />;
   else if (view === "jornada") body = <JornadaView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} />;
   else if (view === "productividad") body = <ProductividadView key={refreshToken} empresaCtl={empresaCtl} esSuperAdmin={false} />;
