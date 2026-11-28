@@ -4237,7 +4237,7 @@ function LlantasPatioSeccion({ insumos, onCambio }) {
     </div>
   );
 }
-function InventarioMaestroView({ empresaCtl, onBack, adminUser }) {
+function InventarioMaestroView({ empresaCtl, onBack, adminUser, volverA = "Maestros" }) {
   const { filtro } = empresaCtl;
   const [tab, setTab] = useState("resumen");
   const [counts, setCounts] = useState(null);
@@ -4282,7 +4282,7 @@ function InventarioMaestroView({ empresaCtl, onBack, adminUser }) {
   return (
     <div>
       {toastNode}
-      <button onClick={onBack} className="flex items-center gap-2 text-[13.5px] font-bold text-muted mb-4"><Icon.back width="15" height="15" /> Maestros</button>
+      <button onClick={onBack} className="flex items-center gap-2 text-[13.5px] font-bold text-muted mb-4"><Icon.back width="15" height="15" /> {volverA}</button>
       <div className="flex items-center justify-between gap-3 mb-5 flex-wrap">
         <h1 className="text-[26px] font-extrabold">📦 Inventario</h1>
         <Button className="h-11 px-4 text-[13.5px]" onClick={() => setModalEntradaNeumaticos(true)}>+ Entrada de neumáticos</Button>
@@ -7077,7 +7077,7 @@ function AdminApp({ user, onLogout }) {
   else if (view === "equipos") body = <EquiposView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} setView={setView} />;
   else if (view === "jornada") body = <JornadaView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} />;
   else if (view === "productividad") body = <ProductividadView key={refreshToken} empresaCtl={empresaCtl} esSuperAdmin={false} />;
-  else if (view === "bodega") body = <InventarioMaestroView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} onBack={() => setView("bandeja")} />;
+  else if (view === "bodega") body = <InventarioMaestroView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} onBack={() => setView("bandeja")} volverA="Bandeja" />;
   else if (view === "maestros") body = <MaestrosView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} />;
   else if (view === "alertas") body = <AlertasAdminView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} setView={setView} />;
   else if (view === "configuracion") body = <ConfiguracionAdminView key={refreshToken} empresaCtl={empresaCtl} />;
