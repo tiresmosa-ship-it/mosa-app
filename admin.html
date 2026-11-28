@@ -412,7 +412,7 @@ function BottomNav({ view, setView, disabledExcept, alertasNoLeidas }) {
    EMPRESA (filtro transversal a toda la app del admin)
 ===================================================================== */
 // Nombres visibles de los roles (el valor en la base no cambia).
-const ROL_NOMBRE = { superadmin: "Gerencia", administrador: "Administrador", admin: "Supervisor", mecanico: "MecÃ¡nico", cliente: "Cliente" };
+const ROL_NOMBRE = { superadmin: "Gerencia", administrador: "Administrador", admin: "Supervisor", mecanico: "Mecánico", cliente: "Cliente" };
 const LS_EMPRESA_FILTRO = "empresa_filtro_admin";
 // Supervisor (rol "admin") solo ve su empresa + empresas_adicionales.
 // Administrador ve todas.
@@ -523,68 +523,194 @@ const ADMIN_NAV = [
   { id: "configuracion", label: "Configuración", icon: Icon.settings },
   { id: "perfil", label: "Perfil", icon: Icon.user }
 ];
+/* =====================================================================
+   ALERTAS EMPAQUETADAS (campanita del Supervisor / Administrador)
+   En vez de una lista suelta, las alertas de los ultimos dias se agrupan
+   en paquetes: una auditoria (con su hoja de cambio), check/herramientas
+   por mecanico y dia, cierre, stock, desbloqueos y escaladas (estas solo
+   las ve el Administrador / Gerencia). Cada paquete se despliega y muestra
+   las mismas AlertaCard de siempre, asi no se pierde ninguna accion.
+===================================================================== */
+const PAQUETES_DIAS = 3;
+const PAQUETE_DE_TIPO = {
+  psi_bajo: "auditoria", psi_alto: "auditoria", mm_critico: "auditoria", mm_bajo: "auditoria",
+  neumatico_no_registrado: "auditoria", tipo_neumatico_incorrecto: "auditoria", rotacion_recomendada: "auditoria",
+  km_repetidos: "auditoria", marca_modelo_no_registrado: "auditoria", baja_prematura: "auditoria",
+  discrepancia_inventario: "check", herramienta_nueva: "check", discrepancia_resuelta: "check",
+  cierre_dia: "cierre", horas_extras: "cierre",
+  stock_minimo: "stock",
+  solicitud_desbloqueo: "desbloqueo", desbloqueo_aprobado: "desbloqueo",
+  escalada_sin_resolver: "escalada"
+};
+const PAQUETE_INFO = {
+  auditoria: { label: "AUDITORÍA", cls: "bg-[#EEF2FF] text-[#3730A3]" },
+  check: { label: "CHECK / HERRAMIENTAS", cls: "bg-[#F3F4F6] text-[#374151]" },
+  cierre: { label: "CIERRE", cls: "bg-[#F3F4F6] text-[#374151]" },
+  stock: { label: "STOCK", cls: "bg-[#FFEDD5] text-[#C2410C]" },
+  desbloqueo: { label: "DESBLOQUEO", cls: "bg-[#DBEAFE] text-[#1D4ED8]" },
+  escalada: { label: "ESCALADA", cls: "bg-[#FEE2E2] text-[#991B1B]" }
+};
+function fechaLocal(iso) { return new Date(iso).toLocaleDateString("sv"); }
+function alertaAbierta(a) { return !a.leida_admin || (a.severidad === "rojo" && a.estado !== "resuelta"); }
+
+async function fetchPaquetesAlertas(clienteId, adminUser) {
+  const desde = new Date(Date.now() - PAQUETES_DIAS * 86400000).toISOString();
+  let q = sb.from("alertas").select("*").gte("creado_en", desde).order("creado_en", { ascending: true }).limit(1500);
+  q = filtroCliente(q, clienteId);
+  const { data, error } = await q;
+  if (error) throw error;
+  const verEscaladas = adminUser && adminUser.rol !== "admin";
+  const alertas = (data || []).filter(a => verEscaladas || a.tipo !== "escalada_sin_resolver");
+  const eqIds = [...new Set(alertas.map(a => a.equipo_id))].filter(Boolean);
+  const mecIds = [...new Set(alertas.map(a => a.mecanico_id))].filter(Boolean);
+  const [{ data: eqs }, { data: mecs }] = await Promise.all([
+    eqIds.length ? sb.from("equipos").select("id_equipo,patente,numero_interno").in("id_equipo", eqIds) : Promise.resolve({ data: [] }),
+    mecIds.length ? sb.from("usuarios").select("id,nombre,apellido").in("id", mecIds) : Promise.resolve({ data: [] })
+  ]);
+  const eqMap = {}; (eqs || []).forEach(e => { eqMap[e.id_equipo] = e; });
+  const mecMap = {}; (mecs || []).forEach(m => { mecMap[m.id] = m; });
+  const paquetes = {};
+  alertas.forEach(a0 => {
+    const a = { ...a0, equipo: eqMap[a0.equipo_id] || null, mecanico: mecMap[a0.mecanico_id] || null };
+    let tipo = PAQUETE_DE_TIPO[a.tipo];
+    if (a.tipo === "hito_operativo") tipo = a.equipo_id ? "auditoria" : null;
+    if (!tipo) return;
+    const dia = fechaLocal(a.creado_en);
+    const clave = tipo === "auditoria" ? `aud|${a.equipo_id}|${dia}`
+      : tipo === "check" || tipo === "cierre" ? `${tipo}|${a.mecanico_id || "-"}|${dia}`
+      : tipo === "escalada" ? `esc|${a.equipo_id || a.mecanico_id || "-"}|${dia}`
+      : `${tipo}|${dia}`;
+    const p = paquetes[clave] || (paquetes[clave] = { clave, tipo, dia, equipo: a.equipo, equipo_id: a.equipo_id, mecanico: a.mecanico, alertas: [], hitos: [] });
+    if (a.tipo === "hito_operativo") p.hitos.push(a); else p.alertas.push(a);
+    if (!p.mecanico && a.mecanico) p.mecanico = a.mecanico;
+  });
+  return Object.values(paquetes)
+    .filter(p => p.alertas.length) // un paquete solo con hitos (HC iniciada/finalizada) no pide nada
+    .map(p => {
+      const abiertas = p.alertas.filter(alertaAbierta);
+      return {
+        ...p,
+        abiertas: abiertas.length,
+        urgentes: abiertas.filter(a => a.severidad === "rojo").length,
+        revisar: abiertas.filter(a => a.severidad === "amarillo").length,
+        desde: p.alertas[0].creado_en,
+        ultima: p.alertas[p.alertas.length - 1].creado_en
+      };
+    })
+    .sort((x, y) => (y.urgentes > 0) - (x.urgentes > 0) || (y.ultima || "").localeCompare(x.ultima || ""));
+}
+
+function resumenHitos(p) {
+  const hc = p.hitos.filter(h => /hoja de cambio/i.test(h.titulo || ""));
+  if (!hc.length) return null;
+  const fin = hc.filter(h => /finaliz/i.test(h.titulo || "")).pop();
+  return fin ? `Hoja de cambio finalizada ${formatHora(fin.creado_en)}` : `Hoja de cambio en curso desde ${formatHora(hc[0].creado_en)}`;
+}
+
+function PaqueteAlertasCard({ p, acciones, onAbrirOrden, onMarcarPaquete }) {
+  const [abierto, setAbierto] = useState(false);
+  const info = PAQUETE_INFO[p.tipo];
+  const titulo = p.tipo === "auditoria" ? (p.equipo ? p.equipo.patente : "Equipo")
+    : p.tipo === "stock" ? "Stock de bodega"
+    : p.tipo === "escalada" ? (p.equipo ? p.equipo.patente : nombreUsuario(p.mecanico))
+    : nombreUsuario(p.mecanico);
+  const hoy = fechaLocal(new Date().toISOString());
+  const cuando = p.dia === hoy ? formatHora(p.desde) : p.dia.split("-").reverse().slice(0, 2).join("/");
+  const hitos = resumenHitos(p);
+  return (
+    <div className={cx("bg-white rounded-2xl border shadow-card", p.urgentes ? "border-[#FCA5A5]" : "border-bd", !p.abiertas && "opacity-70")}>
+      <button className="w-full text-left p-3.5 space-y-1.5" onClick={() => setAbierto(o => !o)}>
+        <div className="flex items-center justify-between gap-2">
+          <span className={cx("text-[10.5px] font-bold px-2 py-0.5 rounded-md", info.cls)}>{info.label}</span>
+          <span className="text-[11.5px] text-muted">{cuando}</span>
+        </div>
+        <p className="font-bold text-[14.5px]">{titulo}{p.tipo === "auditoria" && p.mecanico ? <span className="font-medium text-muted text-[12.5px]"> · {nombreUsuario(p.mecanico)}</span> : null}</p>
+        <div className="flex gap-1.5 flex-wrap">
+          {p.urgentes > 0 && <Badge color="red">{p.urgentes} urgente{p.urgentes === 1 ? "" : "s"}</Badge>}
+          {p.revisar > 0 && <Badge color="amber">{p.revisar} revisar</Badge>}
+          {!p.abiertas && <Badge color="green">Visto</Badge>}
+          {p.abiertas > 0 && !p.urgentes && !p.revisar && <Badge>{p.abiertas} sin ver</Badge>}
+        </div>
+        {hitos && <p className="text-[12px] text-muted">{hitos}</p>}
+      </button>
+      <div className="flex gap-2 px-3.5 pb-3 flex-wrap">
+        {p.tipo === "auditoria" && p.dia >= ORDENES_DESDE && <button className="text-[12px] font-bold px-3 py-1.5 rounded-full bg-ink text-white" onClick={() => onAbrirOrden(p)}>Abrir orden de revisión</button>}
+        {p.abiertas > 0 && <button className="text-[12px] font-bold px-3 py-1.5 rounded-full bg-[#F3F4F6]" onClick={() => onMarcarPaquete(p)}>Marcar paquete visto</button>}
+        <button className="text-[12px] font-bold px-3 py-1.5 rounded-full bg-[#F3F4F6]" onClick={() => setAbierto(o => !o)}>{abierto ? "Ocultar" : `Ver ${p.alertas.length} alerta${p.alertas.length === 1 ? "" : "s"}`}</button>
+      </div>
+      {abierto && (
+        <div className="space-y-2 px-3 pb-3">
+          {p.alertas.slice().reverse().map(a => (
+            <AlertaCard key={a.id} a={a} onVer={acciones.navegar} onMarcarLeida={acciones.marcarLeida} onMarcarEnProceso={acciones.marcarEnProc}
+              onMarcarResuelta={acciones.marcarResuelta} onIgnorar={acciones.ignorar} onAbrirMecanico={acciones.navegar} onNavegar={acciones.navegar} onAprobarHerramienta={acciones.aprobarHerramienta} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AlertasPanelLateral({ onClose, empresaCtl, adminUser, setView }) {
   const { filtro } = empresaCtl;
-  const [tab, setTab] = useState("rojo");
-  const [porNivel, setPorNivel] = useState({ rojo: null, amarillo: null, info: null });
-
-  async function enriquecer(data) {
-    const eqIds = [...new Set(data.map(a => a.equipo_id))].filter(Boolean);
-    const mecIds = [...new Set(data.map(a => a.mecanico_id))].filter(Boolean);
-    const [{ data: eqs }, { data: mecs }] = await Promise.all([
-      eqIds.length ? sb.from("equipos").select("id_equipo,patente,numero_interno").in("id_equipo", eqIds) : Promise.resolve({ data: [] }),
-      mecIds.length ? sb.from("usuarios").select("id,nombre,apellido").in("id", mecIds) : Promise.resolve({ data: [] })
-    ]);
-    const eqMap = {}; (eqs || []).forEach(e => { eqMap[e.id_equipo] = e; });
-    const mecMap = {}; (mecs || []).forEach(m => { mecMap[m.id] = m; });
-    return data.map(a => ({ ...a, equipo: eqMap[a.equipo_id] || null, mecanico: mecMap[a.mecanico_id] || null }));
-  }
+  const [tab, setTab] = useState("abiertos");
+  const [paquetes, setPaquetes] = useState(null);
   function cargar() {
-    Promise.all(["rojo", "amarillo", "info"].map(c => adminDb.fetchAlertasNivel(filtro, c).then(enriquecer)))
-      .then(([r, a, i]) => setPorNivel({ rojo: r, amarillo: a, info: i }))
-      .catch(e => console.error("No se pudo cargar el panel de alertas", e));
+    fetchPaquetesAlertas(filtro, adminUser).then(setPaquetes).catch(e => { console.error("No se pudo cargar el panel de alertas", e); setPaquetes([]); });
   }
   useEffect(() => { cargar(); }, [filtro]);
 
-  function navegar(a) { irAResolucion(a, setView); onClose(); }
-  async function marcarLeida(a) { await adminDb.marcarAlertaLeida(a.id); cargar(); }
-  async function marcarEnProc(a) { await marcarAlertaEnProceso(a.id, adminUser.id); cargar(); }
-  async function marcarResuelta(a) { await marcarAlertaResuelta(a.id, adminUser.id, null); cargar(); }
-  async function ignorar(a) { await adminDb.marcarAlertaLeida(a.id); await marcarAlertaResuelta(a.id, adminUser.id, null); cargar(); }
-  async function aprobarHerramienta(a) { try { await aprobarHerramientaNueva(a, adminUser.id); cargar(); } catch (e) { console.error("No se pudo sumar la herramienta al catálogo", e); } }
+  const acciones = {
+    navegar(a) { irAResolucion(a, setView); onClose(); },
+    async marcarLeida(a) { await adminDb.marcarAlertaLeida(a.id); cargar(); },
+    async marcarEnProc(a) { await marcarAlertaEnProceso(a.id, adminUser.id); cargar(); },
+    async marcarResuelta(a) { await marcarAlertaResuelta(a.id, adminUser.id, null); cargar(); },
+    async ignorar(a) { await adminDb.marcarAlertaLeida(a.id); await marcarAlertaResuelta(a.id, adminUser.id, null); cargar(); },
+    async aprobarHerramienta(a) { try { await aprobarHerramientaNueva(a, adminUser.id); cargar(); } catch (e) { console.error("No se pudo sumar la herramienta al catálogo", e); } }
+  };
+  // "Visto" = leida por el admin. Las urgentes siguen abiertas hasta resolverlas.
+  async function marcarPaquete(p) {
+    const ids = p.alertas.filter(a => !a.leida_admin).map(a => a.id);
+    if (ids.length) {
+      const { error } = await sb.from("alertas").update({ leida_admin: true }).in("id", ids);
+      if (error) console.error("No se pudo marcar el paquete", error);
+      notificarAlertasCambiaron();
+    }
+    cargar();
+  }
+  function abrirOrden(p) {
+    sessionStorage.setItem("abrir_orden", JSON.stringify({ equipo_id: p.equipo_id, dia: p.dia, desde: p.desde }));
+    setView("ordenes"); onClose();
+  }
 
-  const tabs = [["rojo", "🔴 Urgentes"], ["amarillo", "🟡 Revisión"], ["info", "ℹ️ Info"]];
-  const lista = porNivel[tab];
-
+  const abiertos = (paquetes || []).filter(p => p.abiertas > 0);
+  const vistos = (paquetes || []).filter(p => !p.abiertas);
+  const lista = tab === "abiertos" ? abiertos : vistos;
   return (
     <div className="fixed inset-0 z-50 flex justify-end" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="absolute inset-0 bg-black/30" />
-      <div className="relative w-full sm:w-96 bg-white h-full overflow-y-auto p-4 safe-top">
-        <div className="flex items-center justify-between mb-4">
+      <div className="relative w-full sm:w-[420px] bg-white h-full overflow-y-auto p-4 safe-top">
+        <div className="flex items-center justify-between mb-1">
           <h2 className="font-extrabold text-[18px]">Alertas</h2>
           <button onClick={onClose} className="w-9 h-9 rounded-full bg-[#F3F4F6] flex items-center justify-center"><Icon.close width="16" height="16" /></button>
         </div>
+        <p className="text-[12px] text-muted mb-3">Agrupadas por auditoría, check, cierre, stock y desbloqueos · últimos {PAQUETES_DIAS} días</p>
         <div className="flex gap-2 mb-4">
-          {tabs.map(([k, l]) => (
+          {[["abiertos", "Por revisar", abiertos.length], ["vistos", "Vistos", vistos.length]].map(([k, l, n]) => (
             <button key={k} onClick={() => setTab(k)} className={cx("px-3 py-2 rounded-full text-[12px] font-bold whitespace-nowrap", tab === k ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>
-              {l} ({porNivel[k] == null ? "…" : porNivel[k].length})
+              {l} ({paquetes == null ? "…" : n})
             </button>
           ))}
         </div>
-        {lista == null ? <div className="flex justify-center py-10"><span className="spinner" /></div> : (
-          <div className="space-y-2">
-            {lista.map(a => (
-              <AlertaCard key={a.id} a={a} onVer={navegar} onMarcarLeida={marcarLeida} onMarcarEnProceso={marcarEnProc}
-                onMarcarResuelta={marcarResuelta} onIgnorar={ignorar} onAbrirMecanico={navegar} onNavegar={navegar} onAprobarHerramienta={aprobarHerramienta} />
-            ))}
-            {!lista.length && <p className="text-center text-muted text-[13px] py-10">Sin alertas en este nivel.</p>}
+        {paquetes == null ? <div className="flex justify-center py-10"><span className="spinner" /></div> : (
+          <div className="space-y-2.5">
+            {lista.map(p => <PaqueteAlertasCard key={p.clave} p={p} acciones={acciones} onAbrirOrden={abrirOrden} onMarcarPaquete={marcarPaquete} />)}
+            {!lista.length && <p className="text-center text-muted text-[13px] py-10">{tab === "abiertos" ? "Nada por revisar." : "Sin paquetes vistos."}</p>}
           </div>
         )}
       </div>
     </div>
   );
 }
-
 function AdminShell({ view, setView, empresaCtl, alertasNoLeidas, campanita, adminUser, children }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [panelAlertas, setPanelAlertas] = useState(false);
@@ -6476,7 +6602,20 @@ function OrdenesRevisionView({ empresaCtl, adminUser }) {
   const [abierta, setAbierta] = useState(null);
   useEffect(() => {
     setLista(null);
-    fetchOrdenesRevision(filtro).then(setLista).catch(e => { console.error("No se pudieron cargar las órdenes", e); setLista([]); });
+    fetchOrdenesRevision(filtro).then(l => {
+      setLista(l);
+      // Pedido desde la campanita (paquete de auditoria): abrir esa orden.
+      try {
+        const pedido = JSON.parse(sessionStorage.getItem("abrir_orden") || "null");
+        sessionStorage.removeItem("abrir_orden");
+        if (pedido) {
+          const delDia = l.filter(r => r.auditoria.equipo_id === pedido.equipo_id && r.auditoria.fecha === pedido.dia);
+          const previas = delDia.filter(r => (r.auditoria.creado_en || "") <= pedido.desde);
+          const o = previas[0] || delDia[delDia.length - 1];
+          if (o) { setTab(estadoOrden(o)); setAbierta(o); }
+        }
+      } catch (e) {}
+    }).catch(e => { console.error("No se pudieron cargar las órdenes", e); setLista([]); });
   }, [filtro]);
   function actualizar(r) { setLista(l => (l || []).map(x => x.id === r.id ? { ...x, ...r } : x)); }
 
@@ -6540,7 +6679,8 @@ function AdminApp({ user, onLogout }) {
 
   async function refrescarCampanita() {
     try { setAlertasNoLeidas(await adminDb.countAlertasNoLeidasTotal()); } catch (e) {}
-    try { setCampanita(await adminDb.fetchCampanitaCounts(empresaCtl.filtro)); } catch (e) {}
+    // Campanita: cuenta PAQUETES abiertos (rojo si alguno trae urgentes), no alertas sueltas.
+    try { const ps = (await fetchPaquetesAlertas(empresaCtl.filtro, user)).filter(p => p.abiertas > 0); setCampanita({ nivel1: ps.filter(p => p.urgentes > 0).length, nivel2SinVer: ps.length }); } catch (e) {}
   }
   useEffect(() => {
     refrescarCampanita();
