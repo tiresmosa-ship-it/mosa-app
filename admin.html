@@ -520,7 +520,6 @@ const ADMIN_NAV = [
   { id: "ordenes", label: "Órdenes de revisión", icon: Icon.clipboard },
   { id: "equipos", label: "Equipos", icon: Icon.truck },
   { id: "maestros", label: "Maestros", icon: Icon.box },
-  { id: "alertas", label: "Alertas", icon: Icon.bell },
   { id: "configuracion", label: "Configuración", icon: Icon.settings },
   { id: "perfil", label: "Perfil", icon: Icon.user }
 ];
@@ -781,7 +780,7 @@ function AdminShell({ view, setView, empresaCtl, alertasNoLeidas, campanita, adm
   const nivel2SinVer = (campanita && campanita.nivel2SinVer) || 0;
   const NavList = ({ onPick }) => (
     <nav className="space-y-1">
-      {ADMIN_NAV.filter(it => !(it.id === "alertas" && adminUser && adminUser.rol === "admin")).map(it => ( // el Supervisor no tiene "Alertas": usa la Bandeja y la campanita
+      {ADMIN_NAV.map(it => ( // sin "Alertas": Supervisor y Administrador usan la Bandeja y la campanita
         <button key={it.id} onClick={() => { setView(it.id); if (onPick) onPick(); }}
           className={cx("w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-[14.5px] font-bold text-left relative", view === it.id ? "bg-ink text-white" : "text-[#374151] hover:bg-[#F3F4F6]")}>
           <it.icon width="19" height="19" />
