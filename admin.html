@@ -512,12 +512,12 @@ function EmpresaSelector({ empresas, filtro, setFiltro, nombreFiltro, sinTodas }
 /* =====================================================================
    NAV DEL ADMIN (sidebar en tablet+, hamburguesa en mobile)
 ===================================================================== */
+// Rediseño 28/11/2026: Dashboard, Jornada y Productividad salen del menú.
+// Jornada/Dashboard siguen existiendo solo como destino de los botones
+// "Resolver" de algunas alertas (RESOLUCION_DESTINO), para no romper esos flujos.
 const ADMIN_NAV = [
-  { id: "dashboard", label: "Dashboard", icon: Icon.home },
   { id: "ordenes", label: "Órdenes de revisión", icon: Icon.clipboard },
   { id: "equipos", label: "Equipos", icon: Icon.truck },
-  { id: "jornada", label: "Jornada", icon: Icon.calendar },
-  { id: "productividad", label: "Productividad", icon: Icon.trend },
   { id: "maestros", label: "Maestros", icon: Icon.box },
   { id: "alertas", label: "Alertas", icon: Icon.bell },
   { id: "configuracion", label: "Configuración", icon: Icon.settings },
@@ -5184,8 +5184,8 @@ const RESOLUCION_DESTINO = {
   stock_minimo: { view: "maestros", sub: "inventario" },
   marca_modelo_no_registrado: { view: "configuracion" },
   km_repetidos: { view: "equipos" },
-  horas_extras: { view: "productividad" },
-  solicitud_desbloqueo: { view: "dashboard" },
+  horas_extras: { view: "alertas" },
+  solicitud_desbloqueo: { view: "alertas" },
   cierre_dia: { view: "jornada", sub: "cierre" },
   rotacion_recomendada: { view: "equipos" }
 };
@@ -6743,7 +6743,7 @@ function OrdenesRevisionView({ empresaCtl, adminUser }) {
 ===================================================================== */
 function AdminApp({ user, onLogout }) {
   const empresaCtl = useEmpresaFiltro(user);
-  const [view, setView] = useState("dashboard");
+  const [view, setView] = useState("ordenes");
   const [mecanicoBloqueado, setMecanicoBloqueado] = useState(null);
   const [alertasNoLeidas, setAlertasNoLeidas] = useState(0);
   const [campanita, setCampanita] = useState({ nivel1: 0, nivel2SinVer: 0 });
