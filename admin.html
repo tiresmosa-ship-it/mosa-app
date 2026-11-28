@@ -781,7 +781,7 @@ function AdminShell({ view, setView, empresaCtl, alertasNoLeidas, campanita, adm
   const nivel2SinVer = (campanita && campanita.nivel2SinVer) || 0;
   const NavList = ({ onPick }) => (
     <nav className="space-y-1">
-      {ADMIN_NAV.map(it => (
+      {ADMIN_NAV.filter(it => !(it.id === "alertas" && adminUser && adminUser.rol === "admin")).map(it => ( // el Supervisor no tiene "Alertas": usa la Bandeja y la campanita
         <button key={it.id} onClick={() => { setView(it.id); if (onPick) onPick(); }}
           className={cx("w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-[14.5px] font-bold text-left relative", view === it.id ? "bg-ink text-white" : "text-[#374151] hover:bg-[#F3F4F6]")}>
           <it.icon width="19" height="19" />
@@ -5210,8 +5210,8 @@ const RESOLUCION_DESTINO = {
   stock_minimo: { view: "maestros", sub: "inventario" },
   marca_modelo_no_registrado: { view: "configuracion" },
   km_repetidos: { view: "equipos" },
-  horas_extras: { view: "alertas" },
-  solicitud_desbloqueo: { view: "alertas" },
+  horas_extras: { view: "bandeja" },
+  solicitud_desbloqueo: { view: "bandeja" },
   cierre_dia: { view: "jornada", sub: "cierre" },
   rotacion_recomendada: { view: "equipos" }
 };
@@ -5234,9 +5234,9 @@ function BannerVolverAlertas({ setView }) {
   try { origen = JSON.parse(sessionStorage.getItem("alerta_origen") || "null"); } catch (e) {}
   if (!origen) return null;
   return (
-    <button onClick={() => { sessionStorage.removeItem("alerta_origen"); setView("alertas"); }}
+    <button onClick={() => { sessionStorage.removeItem("alerta_origen"); setView("bandeja"); }}
       className="w-full text-left bg-[#111] text-white rounded-2xl px-4 py-3 mb-4 text-[13px] font-bold flex items-center gap-2">
-      <Icon.back width="15" height="15" /> Volvé a Alertas para seguir resolviendo
+      <Icon.back width="15" height="15" /> Volvé a la Bandeja para seguir revisando
       {(origen.equipoPatente || origen.mecanicoNombre) && <span className="font-normal opacity-70">· Buscá: {origen.equipoPatente || origen.mecanicoNombre}</span>}
     </button>
   );
