@@ -3439,11 +3439,66 @@ function AlertasScreen({ user, clienteId }) {
     window.dispatchEvent(new Event("mosa-alertas-changed"));
   }
 
-  const filtradas = alertas.filter(a => filter === "todas" ? true : filter === "noleidas" ? !a.leida_mecanico : true);
+  // Rediseño 28/11/2026: el mecanico ve su trabajo empaquetado igual que el
+  // supervisor -- una tarjeta por auditoria (equipo + dia, con su hoja de
+  // cambio y el estado de la revision del supervisor) y tarjetas aparte para
+  // cierre, desbloqueos y el resto. Cada tarjeta despliega sus alertas.
+  const [ordenes, setOrdenes] = useState({});
+  const [abierto, setAbierto] = useState(null);
+  useEffect(() => {
+    let cancel = false;
+    (async () => {
+      const desde = new Date(Date.now() - 7 * 86400000).toLocaleDateString("sv");
+      const { data: auds } = await sb.from("auditorias").select("id_auditoria,equipo_id,fecha,creado_en,numero_auditoria").eq("bultero_id", user.id).eq("cliente_id", clienteId).gte("fecha", desde);
+      if (!auds || !auds.length) return;
+      const { data: recs } = await sb.from("auditorias_receta").select("auditoria_id,creado_en,posiciones_alerta").in("auditoria_id", auds.map(a => a.id_auditoria));
+      const map = {};
+      auds.forEach(a => {
+        const r = (recs || []).filter(x => x.auditoria_id === a.id_auditoria).sort((x, y) => (y.creado_en || "").localeCompare(x.creado_en || ""))[0];
+        const k = `${a.equipo_id}|${a.fecha}`;
+        // Si hubo varias auditorias del mismo equipo en el dia, queda la ultima.
+        if (!map[k] || (a.creado_en || "") > (map[k].auditoria.creado_en || "")) map[k] = { auditoria: a, receta: r || null };
+      });
+      if (!cancel) setOrdenes(map);
+    })().catch(() => {});
+    return () => { cancel = true; };
+  }, [clienteId, user.id, pendientesCount]);
+
+  const TIPOS_AUDITORIA = ["psi_bajo", "psi_alto", "mm_critico", "mm_bajo", "neumatico_no_registrado", "tipo_neumatico_incorrecto", "rotacion_recomendada", "km_repetidos", "marca_modelo_no_registrado", "baja_prematura", "hito_operativo"];
+  const GRUPO_DE_TIPO = { cierre_dia: "Cierre de jornada", horas_extras: "Cierre de jornada", solicitud_desbloqueo: "Desbloqueo", desbloqueo_aprobado: "Desbloqueo", herramienta_nueva: "Check diario", discrepancia_resuelta: "Check diario" };
+  const diaDe = (iso) => new Date(iso).toLocaleDateString("sv");
+  const paquetes = {};
+  alertas.filter(a => a.tipo !== "escalada_sin_resolver").forEach(a => {
+    const dia = a.creado_en ? diaDe(a.creado_en) : todayISO();
+    const esAud = a.equipo_id && TIPOS_AUDITORIA.includes(a.tipo);
+    const clave = esAud ? `aud|${a.equipo_id}|${dia}` : `${GRUPO_DE_TIPO[a.tipo] || "Otros avisos"}|${dia}`;
+    const p = paquetes[clave] || (paquetes[clave] = { clave, esAud, dia, equipo_id: a.equipo_id, titulo: esAud ? null : (GRUPO_DE_TIPO[a.tipo] || "Otros avisos"), alertas: [], hitos: [], ultima: a.creado_en || "" });
+    if (a.tipo === "hito_operativo") p.hitos.push(a); else p.alertas.push(a);
+    if ((a.creado_en || "") > p.ultima) p.ultima = a.creado_en || "";
+  });
+  // Auditorias sin ninguna alerta igual aparecen ("todo en verde").
+  Object.entries(ordenes).forEach(([k, o]) => {
+    const clave = `aud|${k}`;
+    if (!paquetes[clave]) paquetes[clave] = { clave, esAud: true, dia: o.auditoria.fecha, equipo_id: o.auditoria.equipo_id, alertas: [], hitos: [], ultima: o.auditoria.creado_en || "" };
+  });
+  const lista = Object.values(paquetes)
+    .filter(p => p.alertas.length || p.esAud)
+    .filter(p => filter === "todas" ? true : p.alertas.some(a => !a.leida_mecanico))
+    .sort((x, y) => (y.ultima || "").localeCompare(x.ultima || ""));
+  const hoy = todayISO();
+  const cuando = (p) => p.dia === hoy ? (p.ultima ? formatHora(p.ultima) : "hoy") : p.dia.split("-").reverse().slice(0, 2).join("/");
+  async function marcarPaqueteLeido(p) {
+    const ids = p.alertas.filter(a => !a.leida_mecanico && !a.__pendiente).map(a => a.id);
+    if (!ids.length) return;
+    setRemotas(as => as.map(x => ids.includes(x.id) ? { ...x, leida_mecanico: true } : x));
+    await sb.from("alertas").update({ leida_mecanico: true }).in("id", ids);
+    window.dispatchEvent(new Event("mosa-alertas-changed"));
+  }
 
   return (
     <div className="min-h-screen pb-24 px-5 pt-14 safe-top">
-      <h1 className="text-[30px] font-extrabold mb-4">Alertas</h1>
+      <h1 className="text-[30px] font-extrabold mb-1">Alertas</h1>
+      <p className="text-[13px] text-muted mb-4">Tu trabajo agrupado por auditoría · últimos 7 días</p>
       <div className="flex gap-2 mb-5">
         {[["todas", "Todas"], ["noleidas", "No leídas"]].map(([k, l]) => (
           <button key={k} onClick={() => setFilter(k)} className={cx("px-4 py-2 rounded-full text-[13px] font-bold", filter === k ? "bg-ink text-white" : "bg-[#F3F4F6] text-[#374151]")}>{l}</button>
@@ -3451,37 +3506,76 @@ function AlertasScreen({ user, clienteId }) {
       </div>
       {loading && <div className="flex justify-center py-10"><span className="spinner" /></div>}
       <div className="space-y-3">
-        {filtradas.map(a => (
-          <div key={a.id} className="w-full text-left bg-white rounded-2xl border border-bd shadow-card p-4">
-            <div className="flex items-start justify-between gap-2">
-              <div className="flex-1">
-                <p className="font-bold text-[14.5px]">{a.titulo}</p>
-                <p className="text-[12.5px] text-muted mt-0.5">{a.descripcion}</p>
-              </div>
-              <Badge color={a.severidad === "rojo" ? "red" : a.severidad === "amarillo" ? "amber" : "gray"}>{a.severidad === "rojo" ? "Alerta" : a.severidad === "amarillo" ? "Atención" : "Info"}</Badge>
-            </div>
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-[12px] text-muted">
-              {a.equipo_id && <span>{equiposMap[a.equipo_id] || "Equipo"}</span>}
-              {a.posicion != null && <span>P{a.posicion}</span>}
-              {a.creado_en && <span>{formatFechaHora(a.creado_en)}</span>}
-            </div>
-            <div className="flex items-center justify-between gap-2 mt-2.5">
-              <div className="flex items-center gap-2">
-                {!a.leida_mecanico && <span className="text-[11px] font-bold text-ink">● No leída</span>}
-                {a.__pendiente && <span className="text-[11px] font-bold text-[#92400E]">Sincronizando...</span>}
-              </div>
-              {!a.leida_mecanico && !a.__pendiente && (
-                <button onClick={() => marcarLeida(a)} className="text-[12px] font-bold text-ink px-3 py-1.5 rounded-full bg-[#F3F4F6]">Marcar como leída</button>
+        {lista.map(p => {
+          const orden = p.esAud ? ordenes[`${p.equipo_id}|${p.dia}`] : null;
+          const pa = (orden && orden.receta && orden.receta.posiciones_alerta) || {};
+          const rev = pa.revision || {};
+          const tareas = [...(pa.recomendaciones || []), ...(pa.tareas_extra || [])];
+          const hechas = tareas.filter(t => t.done).length;
+          const aPend = (pa.tareas_diferidas || []).filter(t => t.tipo_origen !== "admin").length;
+          const urg = p.alertas.filter(a => a.severidad === "rojo").length;
+          const revi = p.alertas.filter(a => a.severidad === "amarillo").length;
+          const noLeidas = p.alertas.filter(a => !a.leida_mecanico).length;
+          const hc = p.hitos.filter(h => /hoja de cambio/i.test(h.titulo || ""));
+          const hcFin = hc.some(h => /finaliz/i.test(h.titulo || ""));
+          const titulo = p.esAud ? `Auditoría ${equiposMap[p.equipo_id] || "equipo"}` : p.titulo;
+          const estadoSup = !orden || !orden.receta || p.dia < "2026-11-28" ? null // ordenes de revision existen desde el 28/11/2026
+            : rev.estado === "visto_bueno" ? ["Visto bueno del administrador", "text-[#15803D]"]
+            : rev.estado === "revisada" ? ["Supervisor: revisado", "text-[#15803D]"]
+            : ["Supervisor: pendiente", "text-[#92400E]"];
+          const enviadas = urg + revi;
+          return (
+            <div key={p.clave} className="bg-white rounded-2xl border border-bd shadow-card">
+              <button className="w-full text-left p-4 space-y-1.5" onClick={() => setAbierto(abierto === p.clave ? null : p.clave)}>
+                <div className="flex justify-between items-center gap-2">
+                  <b className="text-[15px]">{titulo}</b>
+                  <span className="text-[12px] text-muted shrink-0">{cuando(p)}</span>
+                </div>
+                {p.esAud && <p className="text-[13px] text-muted">{enviadas ? `${enviadas} cosa${enviadas === 1 ? "" : "s"} enviada${enviadas === 1 ? "" : "s"} a revisión del supervisor` : "Todo en verde · sin envíos a revisión"}</p>}
+                {!p.esAud && <p className="text-[13px] text-muted">{p.alertas.length} aviso{p.alertas.length === 1 ? "" : "s"}</p>}
+                <div className="flex gap-1.5 flex-wrap">
+                  {urg > 0 && <Badge color="red">{urg} urgente{urg === 1 ? "" : "s"}</Badge>}
+                  {revi > 0 && <Badge color="amber">{revi} revisar</Badge>}
+                  {tareas.length > 0 && <Badge color="green">{hechas} hecha{hechas === 1 ? "" : "s"}</Badge>}
+                  {aPend > 0 && <Badge color="amber">{aPend} a pendiente</Badge>}
+                  {noLeidas > 0 && <Badge>{noLeidas} sin leer</Badge>}
+                </div>
+                {hc.length > 0 && <p className="text-[12.5px] text-muted">Hoja de cambio {hcFin ? "finalizada" : "en curso"}</p>}
+                {estadoSup && <p className={cx("text-[12.5px] font-semibold", estadoSup[1])}>{estadoSup[0]}</p>}
+              </button>
+              {(noLeidas > 0 || abierto === p.clave) && p.alertas.length > 0 && (
+                <div className="flex gap-2 px-4 pb-3">
+                  {noLeidas > 0 && <button onClick={() => marcarPaqueteLeido(p)} className="text-[12px] font-bold px-3 py-1.5 rounded-full bg-[#F3F4F6]">Marcar todo leído</button>}
+                  <button onClick={() => setAbierto(abierto === p.clave ? null : p.clave)} className="text-[12px] font-bold px-3 py-1.5 rounded-full bg-[#F3F4F6]">{abierto === p.clave ? "Ocultar" : `Ver ${p.alertas.length}`}</button>
+                </div>
+              )}
+              {abierto === p.clave && (
+                <div className="space-y-2 px-3 pb-3">
+                  {p.alertas.map(a => (
+                    <div key={a.id} className="rounded-xl border border-bd p-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex-1">
+                          <p className="font-bold text-[13.5px]">{a.titulo}</p>
+                          <p className="text-[12.5px] text-muted mt-0.5">{a.descripcion}</p>
+                        </div>
+                        <Badge color={a.severidad === "rojo" ? "red" : a.severidad === "amarillo" ? "amber" : "gray"}>{a.severidad === "rojo" ? "Alerta" : a.severidad === "amarillo" ? "Atención" : "Info"}</Badge>
+                      </div>
+                      <div className="flex items-center justify-between gap-2 mt-2 text-[12px] text-muted">
+                        <span>{a.posicion != null ? `P${a.posicion} · ` : ""}{a.creado_en ? formatFechaHora(a.creado_en) : ""}{a.__pendiente ? " · Sincronizando..." : ""}</span>
+                        {!a.leida_mecanico && !a.__pendiente && <button onClick={() => marcarLeida(a)} className="text-[12px] font-bold text-ink px-3 py-1 rounded-full bg-[#F3F4F6]">Marcar leída</button>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
-          </div>
-        ))}
-        {!loading && filtradas.length === 0 && <p className="text-center text-muted py-10 text-sm">Sin alertas.</p>}
+          );
+        })}
+        {!loading && lista.length === 0 && <p className="text-center text-muted py-10 text-sm">Sin alertas.</p>}
       </div>
     </div>
   );
 }
-
 /* =====================================================================
    APP DEL MECANICO
 ===================================================================== */
