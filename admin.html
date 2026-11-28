@@ -519,7 +519,8 @@ const ADMIN_NAV = [
   { id: "bandeja", label: "Bandeja", icon: Icon.home },
   { id: "ordenes", label: "Órdenes de revisión", icon: Icon.clipboard },
   { id: "equipos", label: "Equipos", icon: Icon.truck },
-  { id: "maestros", label: "Maestros", icon: Icon.box },
+  { id: "bodega", label: "Bodega", icon: Icon.box },
+  { id: "maestros", label: "Maestros", icon: Icon.settings },
   { id: "configuracion", label: "Configuración", icon: Icon.settings },
   { id: "perfil", label: "Perfil", icon: Icon.user }
 ];
@@ -5205,8 +5206,8 @@ const RESOLUCION_DESTINO = {
   tipo_neumatico_incorrecto: { view: "jornada", sub: "movimientos", tab: "alertas" },
   neumatico_no_registrado: { view: "jornada", sub: "movimientos", tab: "discrepancias" },
   discrepancia_inventario: { view: "jornada", sub: "inicio" },
-  baja_prematura: { view: "maestros", sub: "inventario" },
-  stock_minimo: { view: "maestros", sub: "inventario" },
+  baja_prematura: { view: "bodega" },
+  stock_minimo: { view: "bodega" },
   marca_modelo_no_registrado: { view: "configuracion" },
   km_repetidos: { view: "equipos" },
   horas_extras: { view: "bandeja" },
@@ -7076,6 +7077,7 @@ function AdminApp({ user, onLogout }) {
   else if (view === "equipos") body = <EquiposView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} setView={setView} />;
   else if (view === "jornada") body = <JornadaView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} />;
   else if (view === "productividad") body = <ProductividadView key={refreshToken} empresaCtl={empresaCtl} esSuperAdmin={false} />;
+  else if (view === "bodega") body = <InventarioMaestroView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} onBack={() => setView("bandeja")} />;
   else if (view === "maestros") body = <MaestrosView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} />;
   else if (view === "alertas") body = <AlertasAdminView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} setView={setView} />;
   else if (view === "configuracion") body = <ConfiguracionAdminView key={refreshToken} empresaCtl={empresaCtl} />;
