@@ -514,6 +514,7 @@ function EmpresaSelector({ empresas, filtro, setFiltro, nombreFiltro, sinTodas }
 ===================================================================== */
 const ADMIN_NAV = [
   { id: "dashboard", label: "Dashboard", icon: Icon.home },
+  { id: "ordenes", label: "Órdenes de revisión", icon: Icon.clipboard },
   { id: "equipos", label: "Equipos", icon: Icon.truck },
   { id: "jornada", label: "Jornada", icon: Icon.calendar },
   { id: "productividad", label: "Productividad", icon: Icon.trend },
@@ -2122,8 +2123,8 @@ const EQUIPO_DETALLE_TABS_BASE = [
   { id: "mapa", label: "Mapa" },
   { id: "historial", label: "Tareas Pendientes e Historial" }
 ];
-function EquipoDetalleView({ equipo, onBack, setView, adminUser }) {
-  const [tab, setTab] = useState("info");
+function EquipoDetalleView({ equipo, onBack, setView, adminUser, tabInicial }) {
+  const [tab, setTab] = useState(tabInicial || "info");
   const [ultimaAuditoria, setUltimaAuditoria] = useState(undefined); // undefined=cargando, null=sin auditorías
   const [instructivoPendiente, setInstructivoPendiente] = useState(undefined);
   const [pushToast, toastNode] = useToasts();
@@ -6128,6 +6129,405 @@ function PerfilAdminView({ user, onLogout }) {
 }
 
 /* =====================================================================
+   ORDENES DE REVISION (auditoria + hoja de cambio)
+   Una orden por auditoria (auditorias_receta). El estado de la revision
+   vive en posiciones_alerta.revision (mismo read-modify-write que el resto
+   de la app usa sobre posiciones_alerta):
+     { estado: "pendiente"|"revisada"|"visto_bueno", checks: {itemId:{por,en}},
+       revisada_por, revisada_en, visto_bueno_por, visto_bueno_en }
+   Supervisor (rol "admin") marca revisada. Administrador / Gerencia dan el
+   visto bueno (y tambien pueden revisar si el supervisor no lo hizo).
+   No se migran auditorias viejas: solo desde ORDENES_DESDE.
+===================================================================== */
+const ORDENES_DESDE = "2026-11-28";
+const ORDEN_ESTADO = {
+  pendiente: { label: "Pendiente de revisión", color: "amber" },
+  revisada: { label: "Revisada · espera visto bueno", color: "blue" },
+  visto_bueno: { label: "Visto bueno", color: "green" }
+};
+const NIVEL_ITEM = [
+  { id: "urgente", label: "URGENTES", color: "text-[#991B1B]" },
+  { id: "revisar", label: "PARA REVISAR", color: "text-[#92400E]" },
+  { id: "info", label: "INFORMATIVAS", color: "text-[#1E40AF]" }
+];
+const ALERTAS_FUERA_DE_ORDEN = ["escalada_sin_resolver", "hito_operativo", "discrepancia_inventario", "cierre_dia", "solicitud_desbloqueo", "desbloqueo_aprobado"];
+function nombreUsuario(u) { return u ? `${u.nombre || ""} ${u.apellido || ""}`.trim() : "-"; }
+function estadoOrden(r) { const rev = ((r.posiciones_alerta || {}).revision) || {}; return rev.estado || "pendiente"; }
+function horaLocal(iso) { if (!iso) return "-"; const d = new Date(iso); return d.toLocaleString("es-CL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }); }
+function duracionTexto(desde, hasta) {
+  if (!desde || !hasta) return "";
+  const min = Math.round((new Date(hasta) - new Date(desde)) / 60000);
+  if (min < 0) return "";
+  return min < 60 ? `${min} min` : `${Math.floor(min / 60)} h ${String(min % 60).padStart(2, "0")}`;
+}
+
+async function fetchOrdenesRevision(clienteId) {
+  let qa = sb.from("auditorias").select("id_auditoria,equipo_id,bultero_id,fecha,creado_en,numero_auditoria,cliente_id,estado").gte("fecha", ORDENES_DESDE).order("creado_en", { ascending: false }).limit(300);
+  qa = filtroCliente(qa, clienteId);
+  const { data: auds, error: e1 } = await qa;
+  if (e1) throw e1;
+  if (!auds || !auds.length) return [];
+  const { data: recetas, error: e2 } = await sb.from("auditorias_receta").select("*").in("auditoria_id", auds.map(a => a.id_auditoria));
+  if (e2) throw e2;
+  const equipoIds = [...new Set(auds.map(a => a.equipo_id))].filter(Boolean);
+  const mecIds = [...new Set(auds.map(a => a.bultero_id))].filter(Boolean);
+  const [{ data: eqs }, { data: mecs }] = await Promise.all([
+    equipoIds.length ? sb.from("equipos").select("*").in("id_equipo", equipoIds) : Promise.resolve({ data: [] }),
+    mecIds.length ? sb.from("usuarios").select("id,nombre,apellido").in("id", mecIds) : Promise.resolve({ data: [] })
+  ]);
+  const audMap = {}; auds.forEach(a => { audMap[a.id_auditoria] = a; });
+  const eqMap = {}; (eqs || []).forEach(e => { eqMap[e.id_equipo] = e; });
+  const mecMap = {}; (mecs || []).forEach(m => { mecMap[m.id] = m; });
+  // Una orden por auditoria (si hubiera recetas duplicadas, la mas nueva).
+  const porAud = {};
+  (recetas || []).forEach(r => { const prev = porAud[r.auditoria_id]; if (!prev || (r.creado_en || "") > (prev.creado_en || "")) porAud[r.auditoria_id] = r; });
+  return Object.values(porAud).map(r => {
+    const a = audMap[r.auditoria_id] || {};
+    return { ...r, auditoria: a, equipo: eqMap[a.equipo_id] || null, mecanico: mecMap[a.bultero_id] || null };
+  }).sort((x, y) => ((y.auditoria.creado_en || "").localeCompare(x.auditoria.creado_en || "")));
+}
+
+// Read-modify-write de posiciones_alerta (siempre sobre la fila fresca).
+async function modificarPosicionesAlerta(recetaId, fn) {
+  const { data, error: e1 } = await sb.from("auditorias_receta").select("posiciones_alerta").eq("id", recetaId).maybeSingle();
+  if (e1) throw e1;
+  const pa = (data && data.posiciones_alerta) || {};
+  const nueva = fn(pa);
+  const { error: e2 } = await sb.from("auditorias_receta").update({ posiciones_alerta: nueva }).eq("id", recetaId);
+  if (e2) throw e2;
+  return nueva;
+}
+
+// Arma la lista de cosas a revisar, de urgente a informativa.
+function armarItemsRevision(r, alertas) {
+  const pa = r.posiciones_alerta || {};
+  const items = [];
+  (alertas || []).forEach(a => {
+    const nivel = a.severidad === "rojo" ? "urgente" : a.severidad === "amarillo" ? "revisar" : "info";
+    items.push({ id: "al:" + a.id, nivel, titulo: `${a.posicion != null ? "P" + a.posicion + " · " : ""}${ALERTA_TIPO_LABELS[a.tipo] || a.titulo || a.tipo}`, detalle: a.descripcion || "" });
+  });
+  const hayAlertaTipo = (alertas || []).some(x => x.tipo === "tipo_neumatico_incorrecto");
+  const hayAlertaNoReg = (alertas || []).some(x => x.tipo === "neumatico_no_registrado");
+  (hayAlertaTipo || !Array.isArray(pa.tipos_incorrectos) ? [] : pa.tipos_incorrectos).forEach((t, i) => {
+    items.push({ id: "ti:" + i, nivel: "urgente", titulo: `P${t.posicion != null ? t.posicion : "?"} · Tipo de neumático incorrecto`, detalle: t.texto || t.detalle || [t.esperado && `Esperado: ${t.esperado}`, t.actual && `Montado: ${t.actual}`].filter(Boolean).join(" · ") });
+  });
+  (hayAlertaNoReg || !Array.isArray(pa.discrepancias_neumaticos) ? [] : pa.discrepancias_neumaticos).forEach((d, i) => {
+    items.push({ id: "dn:" + i, nivel: "revisar", titulo: `P${d.posicion != null ? d.posicion : "?"} · ${d.campo || "dato"} distinto al sistema`, detalle: `Sistema: ${d.valor_sistema != null ? d.valor_sistema : "-"} · Mecánico: ${d.valor_mecanico != null ? d.valor_mecanico : "-"}${d.aprobada ? " · Aprobada" : ""}` });
+  });
+  const recs = Array.isArray(pa.recomendaciones) ? pa.recomendaciones : [];
+  if (recs.length) items.push({ id: "rec", nivel: "info", titulo: `Recomendaciones del sistema: ${recs.length} tarea${recs.length === 1 ? "" : "s"}`, detalle: recs.slice(0, 3).map(t => t.texto).join(" · ") });
+  const orden = { urgente: 0, revisar: 1, info: 2 };
+  return items.sort((a, b) => orden[a.nivel] - orden[b.nivel]);
+}
+
+function TareaLinea({ t, tono, puedeCorregir, onCorregir }) {
+  const [editando, setEditando] = useState(false);
+  const [texto, setTexto] = useState(t.texto || "");
+  const origen = (t.tipo_origen === "sistema" || (!t.tipo_origen && t.key)) ? "Sistema" : t.tipo_origen === "admin" ? (t.creado_por || "Supervisor") : (t.creado_por || "Mecánico");
+  return (
+    <div className={cx("rounded-xl px-3 py-2.5 text-[13.5px]", tono)}>
+      {editando ? (
+        <div className="flex gap-2">
+          <TextInput value={texto} onChange={e => setTexto(e.target.value)} className="h-9 text-[13px]" />
+          <Button variant="subtle" className="h-9 px-3 text-[12.5px]" onClick={async () => { if (texto.trim() && texto.trim() !== t.texto) await onCorregir(t, texto.trim()); setEditando(false); }}>Guardar</Button>
+        </div>
+      ) : (
+        <div className="flex items-start justify-between gap-2">
+          <span className="flex-1">{t.texto}</span>
+          <span className="text-[11.5px] text-muted shrink-0 text-right">{origen}{t.corregida_por ? <><br />corregida por {t.corregida_por}</> : null}</span>
+          {puedeCorregir && <button className="text-[11.5px] font-bold underline shrink-0" onClick={() => setEditando(true)}>Corregir</button>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function OrdenRevisionDetalle({ orden, adminUser, onBack, onCambio }) {
+  const [r, setR] = useState(orden);
+  const [alertas, setAlertas] = useState(null);
+  const [hc, setHc] = useState(null); // { cambio, detalle }
+  const [finHito, setFinHito] = useState(null);
+  const [verEquipo, setVerEquipo] = useState(false);
+  const [nuevaTarea, setNuevaTarea] = useState("");
+  const [ocupado, setOcupado] = useState(null);
+  const [pushToast, toastNode] = useToasts();
+  const a = r.auditoria || {};
+  const pa = r.posiciones_alerta || {};
+  const rev = pa.revision || {};
+  const estado = rev.estado || "pendiente";
+  const est = ORDEN_ESTADO[estado];
+  const quien = nombreUsuario(adminUser);
+  const esSupervisor = adminUser && adminUser.rol === "admin";
+  const esAdministrador = adminUser && (adminUser.rol === "administrador" || adminUser.rol === "superadmin");
+
+  useEffect(() => {
+    let cancel = false;
+    // Alertas generadas por esta auditoria: mismo equipo, desde que empezo
+    // hasta 2 h despues de cerrar el instructivo.
+    const desde = a.creado_en;
+    const hasta = new Date(new Date(r.creado_en || a.creado_en).getTime() + 2 * 3600 * 1000).toISOString();
+    if (a.equipo_id && desde) {
+      sb.from("alertas").select("id,tipo,severidad,titulo,descripcion,posicion,creado_en").eq("equipo_id", a.equipo_id).gte("creado_en", desde).lte("creado_en", hasta).order("creado_en")
+        .then(({ data }) => {
+          if (cancel) return;
+          const todas = data || [];
+          const finHc = todas.filter(x => x.tipo === "hito_operativo" && /finaliz/i.test(x.titulo || "")).pop();
+          setFinHito(finHc ? finHc.creado_en : null);
+          setAlertas(todas.filter(x => !ALERTAS_FUERA_DE_ORDEN.includes(x.tipo)));
+        });
+    } else setAlertas([]);
+    // La HC de esta auditoria: por hoja_cambio_id, o si no quedo vinculada,
+    // la primera HC del mismo equipo despues de empezar la auditoria (mismo dia).
+    (async () => {
+      let cambio = null;
+      if (r.hoja_cambio_id) cambio = (await sb.from("cambios_neumaticos").select("*").eq("id_cambio", r.hoja_cambio_id).maybeSingle()).data;
+      else if (a.equipo_id && a.creado_en) cambio = ((await sb.from("cambios_neumaticos").select("*").eq("equipo_id", a.equipo_id).eq("fecha", a.fecha).gte("creado_en", a.creado_en).order("creado_en").limit(1)).data || [])[0] || null;
+      if (!cambio) { if (!cancel) setHc(false); return; }
+      const d = await sb.from("cambio_detalle").select("*").eq("cambio_id", cambio.id_cambio).order("creado_en");
+      if (!cancel) setHc({ cambio, detalle: d.data || [] });
+    })();
+    return () => { cancel = true; };
+  }, [r.id]);
+
+  async function guardar(fn, msg) {
+    try {
+      const nueva = await modificarPosicionesAlerta(r.id, fn);
+      const actualizada = { ...r, posiciones_alerta: nueva };
+      setR(actualizada);
+      onCambio && onCambio(actualizada);
+      if (msg) pushToast(msg);
+    } catch (e) { console.error(e); pushToast("✕ No se pudo guardar", "red"); }
+  }
+  function toggleCheck(itemId) {
+    const yaEsta = !!(rev.checks || {})[itemId];
+    guardar(p => {
+      const rv = p.revision || {};
+      const checks = { ...(rv.checks || {}) };
+      if (yaEsta) delete checks[itemId]; else checks[itemId] = { por: quien, en: new Date().toISOString() };
+      return { ...p, revision: { ...rv, estado: rv.estado || "pendiente", checks } };
+    });
+  }
+  async function marcarRevisada() {
+    setOcupado("estado");
+    await guardar(p => ({ ...p, revision: { ...(p.revision || {}), estado: "revisada", revisada_por: quien, revisada_en: new Date().toISOString() } }), "✓ Orden marcada como revisada");
+    setOcupado(null);
+  }
+  async function darVistoBueno() {
+    setOcupado("estado");
+    await guardar(p => {
+      const rv = p.revision || {};
+      return { ...p, revision: { ...rv, estado: "visto_bueno", revisada_por: rv.revisada_por || quien, revisada_en: rv.revisada_en || new Date().toISOString(), visto_bueno_por: quien, visto_bueno_en: new Date().toISOString() } };
+    }, "✓ Visto bueno dado");
+    setOcupado(null);
+  }
+  // Corregir el texto de una tarea (Supervisor/Administrador, incluso del sistema).
+  async function corregirTarea(lista, t, texto) {
+    await guardar(p => ({ ...p, [lista]: (p[lista] || []).map(x => (x.id === t.id && x.texto === t.texto) ? { ...x, texto, texto_original: x.texto_original || x.texto, corregida_por: quien } : x) }), "✓ Tarea corregida");
+  }
+  // Tarea nueva: queda pendiente en el equipo y sale en el proximo instructivo.
+  async function agregarTarea() {
+    if (!nuevaTarea.trim() || !a.equipo_id) return;
+    setOcupado("nueva");
+    try {
+      await db.agregarTareaEquipo(a.equipo_id, nuevaTarea.trim(), adminUser);
+      const { data } = await sb.from("auditorias_receta").select("posiciones_alerta").eq("id", r.id).maybeSingle();
+      if (data) { const act = { ...r, posiciones_alerta: data.posiciones_alerta }; setR(act); onCambio && onCambio(act); }
+      setNuevaTarea("");
+      pushToast("✓ Tarea agregada: sale en el próximo instructivo");
+    } catch (e) { console.error(e); pushToast("✕ " + (e.message || "No se pudo agregar la tarea"), "red"); }
+    setOcupado(null);
+  }
+
+  if (verEquipo && r.equipo) return <EquipoDetalleView equipo={r.equipo} onBack={() => setVerEquipo(false)} setView={() => {}} adminUser={adminUser} tabInicial="mapa" />;
+
+  const items = alertas ? armarItemsRevision(r, alertas) : [];
+  const checks = rev.checks || {};
+  const tildadas = items.filter(i => checks[i.id]).length;
+  const recs = Array.isArray(pa.recomendaciones) ? pa.recomendaciones : [];
+  const extras = Array.isArray(pa.tareas_extra) ? pa.tareas_extra : [];
+  const hechas = [...recs.filter(t => t.done).map(t => ({ ...t, _lista: "recomendaciones" })), ...extras.filter(t => t.done).map(t => ({ ...t, _lista: "tareas_extra" }))];
+  const sinTerminar = [...recs.filter(t => !t.done).map(t => ({ ...t, _lista: "recomendaciones" })), ...extras.filter(t => !t.done).map(t => ({ ...t, _lista: "tareas_extra" }))];
+  const diferidas = (Array.isArray(pa.tareas_diferidas) ? pa.tareas_diferidas : []).map(t => ({ ...t, _lista: "tareas_diferidas" }));
+  const aPendientePorMecanico = diferidas.filter(t => t.tipo_origen !== "admin");
+  const agregadasPorSupervision = diferidas.filter(t => t.tipo_origen === "admin");
+  const fin = (hc && hc.cambio && hc.cambio.creado_en) || finHito || r.creado_en;
+
+  return (
+    <div className="space-y-4">
+      <button className="text-[13.5px] font-semibold" onClick={onBack}>← Volver a las órdenes</button>
+
+      <section className="bg-white rounded-2xl border border-bd shadow-card p-5 space-y-3">
+        <div className="flex flex-wrap justify-between gap-3 items-start">
+          <div>
+            <p className="text-[12px] font-bold tracking-wide text-[#3730A3]">ORDEN DE REVISIÓN · AUDITORÍA #{a.numero_auditoria || "-"}{hc ? " + HOJA DE CAMBIO" : ""}</p>
+            <h1 className="text-[24px] font-extrabold mt-1">{r.equipo ? r.equipo.patente : "-"}{r.equipo && r.equipo.numero_interno ? ` · ${r.equipo.numero_interno}` : ""}</h1>
+          </div>
+          <Badge color={est.color}>{est.label}</Badge>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+          {[["Mecánico", nombreUsuario(r.mecanico)], ["Inicio", horaLocal(a.creado_en)], ["Fin", horaLocal(fin)], ["Duración", duracionTexto(a.creado_en, fin) || "-"]].map(([k, v]) => (
+            <div key={k} className="bg-[#F9FAFB] rounded-xl px-3 py-2"><p className="text-[12px] text-muted">{k}</p><p className="text-[14.5px] font-bold">{v}</p></div>
+          ))}
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="subtle" className="h-10 px-4 text-[13.5px]" disabled={!r.equipo} onClick={() => setVerEquipo(true)}>Ver diagrama del equipo</Button>
+          {hc && <Button variant="subtle" className="h-10 px-4 text-[13.5px]" onClick={() => { const el = document.getElementById("orden-hc"); el && el.scrollIntoView({ behavior: "smooth" }); }}>Ir a la hoja de cambio</Button>}
+        </div>
+      </section>
+
+      <section className="bg-white rounded-2xl border border-bd shadow-card overflow-hidden">
+        <div className="px-5 py-3 border-b border-bd flex justify-between flex-wrap gap-2">
+          <h2 className="text-[15px] font-bold">Para revisar <span className="font-medium text-muted">· {tildadas} de {items.length} tildadas</span></h2>
+          <span className="text-[12.5px] text-muted">De urgente a informativa</span>
+        </div>
+        {alertas === null ? <div className="flex justify-center py-6"><span className="spinner" /></div> : !items.length ? <p className="px-5 py-4 text-[13.5px] text-muted">Todo en verde: nada para revisar.</p> :
+          NIVEL_ITEM.map(n => {
+            const del = items.filter(i => i.nivel === n.id);
+            if (!del.length) return null;
+            return (
+              <div key={n.id}>
+                <p className={cx("px-5 pt-3 text-[12px] font-bold tracking-wide", n.color)}>{n.label}</p>
+                {del.map(i => (
+                  <label key={i.id} className="flex gap-3 items-start px-5 py-3 border-b border-[#F3F4F6] cursor-pointer">
+                    <input type="checkbox" className="w-5 h-5 mt-0.5" checked={!!checks[i.id]} onChange={() => toggleCheck(i.id)} />
+                    <span><b className="text-[14px]">{i.titulo}</b>{i.detalle ? <><br /><span className="text-[13px] text-muted">{i.detalle}</span></> : null}{checks[i.id] ? <><br /><span className="text-[12px] text-[#15803D]">Revisado por {checks[i.id].por} · {horaLocal(checks[i.id].en)}</span></> : null}</span>
+                  </label>
+                ))}
+              </div>
+            );
+          })}
+      </section>
+
+      <section className="bg-white rounded-2xl border border-bd shadow-card p-5 space-y-4">
+        <h2 className="text-[15px] font-bold">Trabajo del mecánico</h2>
+        <div className="space-y-2">
+          <p className="text-[12.5px] font-bold text-[#15803D]">HECHAS · {hechas.length}</p>
+          {hechas.map(t => <TareaLinea key={t._lista + t.id + t.texto} t={t} tono="bg-[#F0FDF4]" puedeCorregir={false} />)}
+          {!hechas.length && <p className="text-[13px] text-muted">No completó tareas en esta orden.</p>}
+        </div>
+        <div className="space-y-2">
+          <p className="text-[12.5px] font-bold text-[#92400E]">MANDADAS A PENDIENTE POR EL MECÁNICO · {aPendientePorMecanico.length}</p>
+          {aPendientePorMecanico.map(t => <TareaLinea key={t._lista + t.id + t.texto} t={t} tono="bg-[#FFFBEB]" puedeCorregir onCorregir={(x, txt) => corregirTarea("tareas_diferidas", x, txt)} />)}
+          {!aPendientePorMecanico.length && <p className="text-[13px] text-muted">No mandó tareas a pendiente.</p>}
+        </div>
+        {sinTerminar.length > 0 && (
+          <div className="space-y-2">
+            <p className="text-[12.5px] font-bold text-[#991B1B]">SIN TERMINAR · {sinTerminar.length}</p>
+            {sinTerminar.map(t => <TareaLinea key={t._lista + t.id + t.texto} t={t} tono="bg-[#FEF2F2]" puedeCorregir onCorregir={(x, txt) => corregirTarea(x._lista, x, txt)} />)}
+          </div>
+        )}
+      </section>
+
+      {hc && (
+        <section id="orden-hc" className="bg-white rounded-2xl border border-bd shadow-card overflow-hidden">
+          <div className="px-5 py-3 border-b border-bd"><h2 className="text-[15px] font-bold">Hoja de cambio{hc.cambio ? ` #${hc.cambio.numero_cambio || "-"} · ${hc.cambio.hora_ingreso ? hc.cambio.hora_ingreso.slice(0, 5) : "-"} a ${hc.cambio.hora_salida ? hc.cambio.hora_salida.slice(0, 5) : "en curso"}` : ""}</h2></div>
+          {(
+            <div className="overflow-x-auto">
+              <table className="w-full text-[13.5px] min-w-[560px]">
+                <thead><tr className="text-left text-muted text-[12.5px]"><th className="px-5 py-2 font-semibold">Hora</th><th className="px-2 py-2 font-semibold">Movimiento</th><th className="px-2 py-2 font-semibold">Pos.</th><th className="px-2 py-2 font-semibold">Fuego</th><th className="px-5 py-2 font-semibold">Detalle</th></tr></thead>
+                <tbody>
+                  {hc.detalle.map(d => (
+                    <tr key={d.id} className="border-t border-[#F3F4F6]">
+                      <td className="px-5 py-2">{formatHora(d.creado_en)}</td>
+                      <td className="px-2 py-2 font-semibold">{d.tipo === "entra" ? "Entra" : d.motivo_salida === "rotacion" ? "Rotación" : "Sale"}</td>
+                      <td className="px-2 py-2">P{d.posicion}</td>
+                      <td className="px-2 py-2">{d.numero_fuego || "-"}</td>
+                      <td className="px-5 py-2 text-muted">{[d.milimetros != null && `${d.milimetros} mm`, d.psi != null && `${d.psi} PSI`, d.estado, d.motivo_salida && `→ ${d.motivo_salida}`].filter(Boolean).join(" · ")}</td>
+                    </tr>
+                  ))}
+                  {!hc.detalle.length && <tr><td colSpan="5" className="px-5 py-3 text-muted">Sin cambios de neumáticos.</td></tr>}
+                  {hc.cambio && <tr className="border-t border-[#F3F4F6]"><td className="px-5 py-2">{hc.cambio.hora_salida ? hc.cambio.hora_salida.slice(0, 5) : "-"}</td><td className="px-2 py-2 font-semibold">Cierre</td><td className="px-2 py-2">–</td><td className="px-2 py-2">–</td><td className="px-5 py-2 text-muted">{[hc.cambio.psi_regulados ? "PSI regulados" : null, hc.cambio.ruedas_torqueadas ? `${hc.cambio.ruedas_torqueadas} ruedas torqueadas` : null, hc.cambio.observaciones].filter(Boolean).join(" · ") || "Hoja finalizada"}</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      )}
+
+      <section className="bg-white rounded-2xl border border-bd shadow-card p-5 space-y-3">
+        <h2 className="text-[15px] font-bold">Tareas pendientes para el próximo mecánico</h2>
+        <p className="text-[13px] text-muted">Salen en el instructivo la próxima vez que alguien tome este equipo.</p>
+        {agregadasPorSupervision.map(t => <TareaLinea key={t.id + t.texto} t={t} tono="bg-[#F9FAFB]" puedeCorregir onCorregir={(x, txt) => corregirTarea("tareas_diferidas", x, txt)} />)}
+        <div className="flex gap-2">
+          <TextInput placeholder="Agregar una tarea pendiente…" value={nuevaTarea} onChange={e => setNuevaTarea(e.target.value)} onKeyDown={e => { if (e.key === "Enter") agregarTarea(); }} />
+          <Button className="px-4" disabled={ocupado === "nueva" || !nuevaTarea.trim()} onClick={agregarTarea}>{ocupado === "nueva" ? "…" : "Agregar"}</Button>
+        </div>
+      </section>
+
+      <section className="bg-white rounded-2xl border border-bd shadow-card p-5 flex flex-wrap gap-3 items-center justify-between">
+        <div>
+          <p className="text-[14px] font-bold">{estado === "pendiente" ? "Pendiente de revisión" : `Revisada por ${rev.revisada_por || "-"} · ${horaLocal(rev.revisada_en)}`}</p>
+          <p className="text-[13px] text-muted">{estado === "visto_bueno" ? `Visto bueno de ${rev.visto_bueno_por} · ${horaLocal(rev.visto_bueno_en)}` : "Pendiente → Revisada por supervisor → Visto bueno del administrador"}</p>
+        </div>
+        <div className="flex gap-2 flex-wrap">
+          {estado === "pendiente" && (esSupervisor || esAdministrador) && <Button disabled={ocupado === "estado"} onClick={marcarRevisada}>Marcar como revisada</Button>}
+          {estado !== "visto_bueno" && esAdministrador && <Button disabled={ocupado === "estado"} className="bg-[#15803D]" onClick={darVistoBueno}>Dar visto bueno</Button>}
+        </div>
+      </section>
+      {toastNode}
+    </div>
+  );
+}
+
+function OrdenesRevisionView({ empresaCtl, adminUser }) {
+  const { filtro } = empresaCtl;
+  const [lista, setLista] = useState(null);
+  const [tab, setTab] = useState("pendiente");
+  const [abierta, setAbierta] = useState(null);
+  useEffect(() => {
+    setLista(null);
+    fetchOrdenesRevision(filtro).then(setLista).catch(e => { console.error("No se pudieron cargar las órdenes", e); setLista([]); });
+  }, [filtro]);
+  function actualizar(r) { setLista(l => (l || []).map(x => x.id === r.id ? { ...x, ...r } : x)); }
+
+  if (abierta) return <OrdenRevisionDetalle orden={abierta} adminUser={adminUser} onBack={() => setAbierta(null)} onCambio={actualizar} />;
+  const conteo = { pendiente: 0, revisada: 0, visto_bueno: 0 };
+  (lista || []).forEach(r => { conteo[estadoOrden(r)]++; });
+  const visibles = (lista || []).filter(r => estadoOrden(r) === tab);
+  return (
+    <div className="space-y-4">
+      <div>
+        <h1 className="text-[22px] font-extrabold">Órdenes de revisión</h1>
+        <p className="text-[13px] text-muted">Una orden por auditoría (con su hoja de cambio). Desde el {ORDENES_DESDE.split("-").reverse().join("/")}.</p>
+      </div>
+      <div className="flex gap-2 flex-wrap">
+        {Object.keys(ORDEN_ESTADO).map(k => (
+          <button key={k} onClick={() => setTab(k)} className={cx("rounded-full px-3.5 py-2 text-[13px] font-bold", tab === k ? "bg-ink text-white" : "bg-[#F3F4F6]")}>
+            {k === "pendiente" ? "Pendientes" : k === "revisada" ? "Revisadas" : "Con visto bueno"} · {conteo[k]}
+          </button>
+        ))}
+      </div>
+      {lista === null ? <div className="flex justify-center py-10"><span className="spinner" /></div> : (
+        <div className="space-y-2">
+          {visibles.map(r => {
+            const pa = r.posiciones_alerta || {};
+            const recs = Array.isArray(pa.recomendaciones) ? pa.recomendaciones : [];
+            const extras = Array.isArray(pa.tareas_extra) ? pa.tareas_extra : [];
+            const hechas = [...recs, ...extras].filter(t => t.done).length;
+            const diferidas = (Array.isArray(pa.tareas_diferidas) ? pa.tareas_diferidas : []).filter(t => t.tipo_origen !== "admin").length;
+            const rev = pa.revision || {};
+            return (
+              <button key={r.id} onClick={() => setAbierta(r)} className="w-full text-left bg-white rounded-2xl border border-bd shadow-card p-4 flex flex-wrap gap-3 justify-between items-center">
+                <div>
+                  <p className="text-[15px] font-bold">{r.equipo ? r.equipo.patente : "-"} <span className="font-medium text-muted text-[13px]">· Auditoría #{r.auditoria.numero_auditoria || "-"}{r.hoja_cambio_id ? " + HC" : ""}</span></p>
+                  <p className="text-[13px] text-muted">{nombreUsuario(r.mecanico)} · {horaLocal(r.auditoria.creado_en)}</p>
+                </div>
+                <div className="flex gap-1.5 flex-wrap items-center">
+                  <Badge color="green">{hechas} hechas</Badge>
+                  {diferidas > 0 && <Badge color="amber">{diferidas} a pendiente</Badge>}
+                  {rev.revisada_por && <span className="text-[12px] text-muted">Revisó {rev.revisada_por}</span>}
+                </div>
+              </button>
+            );
+          })}
+          {!visibles.length && <p className="text-[13.5px] text-muted py-4">No hay órdenes en esta lista.</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* =====================================================================
    APP DEL ADMIN
 ===================================================================== */
 function AdminApp({ user, onLogout }) {
@@ -6174,7 +6574,8 @@ function AdminApp({ user, onLogout }) {
   }
 
   let body;
-  if (view === "equipos") body = <EquiposView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} setView={setView} />;
+  if (view === "ordenes") body = <OrdenesRevisionView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} />;
+  else if (view === "equipos") body = <EquiposView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} setView={setView} />;
   else if (view === "jornada") body = <JornadaView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} />;
   else if (view === "productividad") body = <ProductividadView key={refreshToken} empresaCtl={empresaCtl} esSuperAdmin={false} />;
   else if (view === "maestros") body = <MaestrosView key={refreshToken} empresaCtl={empresaCtl} adminUser={user} />;
